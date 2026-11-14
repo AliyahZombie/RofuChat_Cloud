@@ -132,9 +132,101 @@ impl Harness {
         panic!("generation did not finish");
     }
 }
+// Capture upstream requests, including the exact empty-content retry sent by Flutter.
+async fn retry_history(h: &Harness, mock: &MockServer) {
+    for instant in [false, true] {
+        for tools in [false, true] {
+            let (model, mut c, _) = h.fixture(mock, "openai", "http").await;
+            c["card"] = json!({"system_prompt":"retry history system"});
+            c["context"] = json!({"mode":if instant {"instant"} else {"traditional"},"display_recent":0,"compress_threshold":999999});
+            c["memory"] = json!({"enabled":tools,"auto_scan":false});
+            if !tools {
+                c["tool_ids"] = json!([]);
+                c["mcp"] = json!([]);
+            }
+            h.json(
+                Method::PUT,
+                &format!("/characters/{}", text(&c, "id")),
+                c.clone(),
+            )
+            .await;
+            let conv = h
+                .post("/conversations", json!({"character_id":c["id"]}))
+                .await;
+            let cid = text(&conv, "id");
+            // Avoid unrelated asynchronous title requests in the capture window.
+            h.json(
+                Method::PATCH,
+                &format!("/conversations/{cid}"),
+                json!({"title":"Retry regression"}),
+            )
+            .await;
+            for round in 1..=3 {
+                h.events(&cid, json!({"content":format!("history user {round}")}))
+                    .await;
+            }
+            let stored = h.get(&format!("/conversations/{cid}/messages")).await;
+            assert_eq!(stored.as_array().unwrap().len(), 6);
+            let last = &stored[5];
+            h.json(
+                Method::PATCH,
+                &format!("/messages/{}", text(last, "id")),
+                json!({"content":"OLD SWIPE MUST NOT LEAK","actual":"OLD ACTUAL MUST NOT LEAK"}),
+            )
+            .await;
+            let start = mock.state.requests.lock().await.len();
+            h.events(&cid, json!({"regenerate":true,"content":"","images":[]}))
+                .await;
+            let captured = mock.state.requests.lock().await[start..].to_vec();
+            let upstream = &captured[0];
+            let history = upstream["messages"].as_array().unwrap();
+            assert_eq!(history[0]["role"], "system");
+            assert!(text(&history[0], "content").contains("retry history system"));
+            let users: Vec<_> = history
+                .iter()
+                .filter(|m| m["role"] == "user")
+                .map(|m| text(m, "content"))
+                .collect();
+            assert_eq!(
+                users,
+                vec!["history user 1", "history user 2", "history user 3"]
+            );
+            assert_eq!(history.last().unwrap()["content"], "history user 3");
+            let assistants: Vec<_> = history
+                .iter()
+                .filter(|m| m["role"] == "assistant")
+                .collect();
+            if instant {
+                assert_eq!(assistants.len(), 2);
+                assert!(assistants
+                    .iter()
+                    .all(|m| m["content"] == "compressed reply"));
+            } else if tools {
+                assert_eq!(assistants.len(), 5); // three tool calls + final text, then second reply
+                assert_eq!(history.iter().filter(|m| m["role"] == "tool").count(), 3);
+                assert_eq!(assistants.last().unwrap()["content"], "Answer complete");
+            } else {
+                assert_eq!(assistants.len(), 2);
+                assert!(assistants.iter().all(|m| m["content"] == "Answer complete"));
+            }
+            assert!(assistants
+                .iter()
+                .all(|m| !text(m, "content").is_empty() || m["tool_calls"].is_array()));
+            assert!(!upstream.to_string().contains("OLD SWIPE"));
+            assert!(!upstream.to_string().contains("OLD ACTUAL"));
+            assert_eq!(
+                upstream["tools"].as_array().is_some_and(|t| !t.is_empty()),
+                tools
+            );
+            assert_eq!(upstream["model"], model["model_id"]);
+        }
+    }
+}
+
 async fn run_suite(database: Option<String>) {
     let mock = MockServer::start().await;
     let h = Harness::new(database).await;
+    retry_history(&h, &mock).await;
     assert_eq!(h.get("/health").await["allow_register"], false);
     let user = h
         .post(
@@ -205,6 +297,55 @@ async fn run_suite(database: Option<String>) {
         let stored = h.get(&format!("/conversations/{cid}/messages")).await;
         assert_eq!(stored.as_array().unwrap().len(), 3);
         assert_eq!(stored[2], done["message"]);
+        assert_eq!(
+            h.get(&format!("/conversations/{cid}")).await["message_count"],
+            3
+        );
+        let page = h
+            .get(&format!("/conversations/{cid}/messages?limit=2"))
+            .await;
+        assert_eq!(
+            page,
+            json!({"messages":[stored[1],stored[2]],"has_more":true})
+        );
+        let page = h
+            .get(&format!(
+                "/conversations/{cid}/messages?limit=2&before_seq={}",
+                stored[1]["seq"]
+            ))
+            .await;
+        assert_eq!(page, json!({"messages":[stored[0]],"has_more":false}));
+        assert_eq!(
+            h.get(&format!(
+                "/conversations/{cid}/messages?limit=10&before_seq=0"
+            ))
+            .await,
+            json!({"messages":[],"has_more":false})
+        );
+        assert_eq!(
+            h.get(&format!("/conversations/{cid}/messages?limit=3"))
+                .await,
+            json!({"messages":stored,"has_more":false})
+        );
+        for query in [
+            "limit=0",
+            "limit=-1",
+            "limit=no",
+            "limit=9223372036854775807",
+            "limit=1&before_seq=no",
+        ] {
+            assert_eq!(
+                h.request(
+                    Method::GET,
+                    &format!("/conversations/{cid}/messages?{query}"),
+                    json!({})
+                )
+                .await
+                .status(),
+                400
+            );
+        }
+
         let tools: Vec<_> = stored[2]["parts"]["segments"]
             .as_array()
             .unwrap()

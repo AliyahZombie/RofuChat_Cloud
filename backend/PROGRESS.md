@@ -24,3 +24,13 @@ PATH=/workspace/tools/cargo/bin:$PATH，RUSTUP_HOME=/workspace/tools/rustup，CA
 本机已安装 gcc、lld、rustfmt、clippy、PostgreSQL 17；PG 连接通过 ROFU_TEST_PG_URL 提供。
 JuiceFS 曾在 mmap 链接和重用测试二进制时 SIGBUS。已将要求的 target 路径设为指向本机磁盘 /var/tmp/rofu-target 的符号链接，并完整重建验证通过。/workspace/work/rofu-sol/target-fuse-backup 为旧依赖缓存，不属于仓库。可选本机 /tmp/rofu-bin/cc 包装器：exec /usr/bin/cc -fuse-ld=lld -Wl,--no-mmap-output-file "$@"。CI 不依赖这些本机设置。
 仅修改 backend/、.github/workflows/backend.yml、docs/api.md；不修改或提交 app/。
+
+## Swipe / 分页 / 重试任务（2026-11-14）
+- 范围：只修改 backend/ 和 docs/api.md（必要时 backend-spec §6）；不触碰同时修改的 app/。
+- 阶段 1 已完成：SQL 倒序 LIMIT 分页与 message_count、参数/边界回归、API 示例；在旧 regenerate 实现上验证传统/即时 × 工具开关四种三轮重试上下文，SQLite 与实际 PostgreSQL 17 全通过（每库四种场景）。C 项未复现后端丢上下文，历史用户/助手保留，空占位和被重试旧回复排除。
+- 阶段 1 检查：cargo fmt --all、cargo clippy --all-targets -- -D warnings、cargo test（24 项，SQLite/PG 均实际执行）全部通过。
+- 阶段 2 待办：swipe 快照、事务切换/删除、greeting、保留 regenerate 原版、编辑 user 的 tail、PATCH 非 text 段保留、branch 去历史、HTTP/SSE 过滤、完整回归和契约文档。
+- 每阶段 fmt/clippy/test 全过后提交，不 push。最终报告 /workspace/work/rofu-sol/result_swipes.md。
+
+- 当前环境已安装/启动 PostgreSQL 17，测试 URL：postgresql:///postgres?host=/var/run/postgresql（本机 peer 身份验证，无口令）；target 原符号链接目标丢失，已重建 /var/tmp/rofu-target 并完成 debug 编译。
+- 共享索引中有前端暂存，提交使用 git commit --only -- backend docs/api.md 保留前端索引、不带入前端文件。

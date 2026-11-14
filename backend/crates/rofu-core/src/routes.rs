@@ -190,6 +190,7 @@ pub async fn dispatch(
             if parts.len() == 2 {
                 if method == Method::GET {
                     conv["generating"] = json!(s.generating.lock().await.contains_key(cid));
+                    conv["message_count"] = json!(s.db.message_count(uid, cid).await?);
                     return Ok(Some(ok(conv)));
                 }
                 if method == Method::PATCH {
@@ -214,7 +215,19 @@ pub async fn dispatch(
             if parts.len() == 3 {
                 match (method.as_str(), parts[2]) {
                     ("GET", "messages") => {
-                        return Ok(Some(ok(json!(s.db.messages(uid, cid).await?))))
+                        if let Some(limit) = q.get("limit") {
+                            let limit = limit.parse::<i64>().ok().filter(|n| *n > 0 && *n < i64::MAX)
+                                .ok_or_else(|| ApiError::bad("limit must be a positive integer less than 9223372036854775807"))?;
+                            let before = q
+                                .get("before_seq")
+                                .map(|v| v.parse::<i64>())
+                                .transpose()
+                                .map_err(|_| ApiError::bad("before_seq must be an integer"))?;
+                            let (messages, has_more) =
+                                s.db.messages_page(uid, cid, limit, before).await?;
+                            return Ok(Some(ok(json!({"messages":messages,"has_more":has_more}))));
+                        }
+                        return Ok(Some(ok(json!(s.db.messages(uid, cid).await?))));
                     }
                     ("GET", "context") => {
                         return Ok(Some(ok(chat::context_info(s, uid, cid).await?)))

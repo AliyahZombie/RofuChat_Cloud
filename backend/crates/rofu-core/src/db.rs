@@ -181,6 +181,39 @@ impl Db {
             .map(|s| Ok(serde_json::from_str(&s)?))
             .collect()
     }
+    pub async fn message_count(&self, uid: &str, cid: &str) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM messages WHERE user_id=$1 AND conversation_id=$2",
+        )
+        .bind(uid)
+        .bind(cid)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+    pub async fn messages_page(
+        &self,
+        uid: &str,
+        cid: &str,
+        limit: i64,
+        before: Option<i64>,
+    ) -> Result<(Vec<Value>, bool)> {
+        // Fetch one extra row to determine has_more without loading the full history.
+        let rows: Vec<String> = if let Some(before) = before {
+            sqlx::query_scalar("SELECT data FROM messages WHERE user_id=$1 AND conversation_id=$2 AND seq<$3 ORDER BY seq DESC,id DESC LIMIT $4")
+                .bind(uid).bind(cid).bind(before).bind(limit + 1).fetch_all(&self.pool).await?
+        } else {
+            sqlx::query_scalar("SELECT data FROM messages WHERE user_id=$1 AND conversation_id=$2 ORDER BY seq DESC,id DESC LIMIT $3")
+                .bind(uid).bind(cid).bind(limit + 1).fetch_all(&self.pool).await?
+        };
+        let has_more = rows.len() as i64 > limit;
+        let mut messages = rows
+            .into_iter()
+            .take(limit as usize)
+            .map(|s| serde_json::from_str(&s))
+            .collect::<serde_json::Result<Vec<Value>>>()?;
+        messages.reverse();
+        Ok((messages, has_more))
+    }
     pub async fn message(&self, uid: &str, mid: &str) -> Result<Option<Value>> {
         let s: Option<String> =
             sqlx::query_scalar("SELECT data FROM messages WHERE user_id=$1 AND id=$2")
