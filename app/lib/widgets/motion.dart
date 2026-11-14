@@ -115,3 +115,61 @@ class _BlobPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _BlobPainter o) => o.color != color;
 }
+
+/// Expands and collapses its child with a size + fade animation. The child stays built
+/// while collapsing and is dropped once fully closed.
+class Collapsible extends StatefulWidget {
+  final bool open;
+  final Widget child;
+  final Duration duration;
+  const Collapsible({super.key, required this.open, required this.child, this.duration = const Duration(milliseconds: 260)});
+  @override
+  State<Collapsible> createState() => _CollapsibleState();
+}
+
+class _CollapsibleState extends State<Collapsible> with SingleTickerProviderStateMixin {
+  late final AnimationController _a = AnimationController(vsync: this, duration: widget.duration, value: widget.open ? 1 : 0)
+    ..addStatusListener((_) => setState(() {}));
+  late final Animation<double> _size = CurvedAnimation(parent: _a, curve: Curves.easeOutCubic, reverseCurve: Curves.easeInCubic);
+  late final Animation<double> _fade = CurvedAnimation(parent: _a, curve: const Interval(0.25, 1, curve: Curves.easeOut), reverseCurve: const Interval(0, 0.6));
+
+  @override
+  void didUpdateWidget(Collapsible old) {
+    super.didUpdateWidget(old);
+    if (widget.open != old.open) widget.open ? _a.forward() : _a.reverse();
+  }
+
+  @override
+  void dispose() {
+    _a.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_a.isDismissed && !widget.open) return const SizedBox(width: double.infinity);
+    return ClipRect(
+      child: SizeTransition(
+        sizeFactor: _size,
+        axisAlignment: -1,
+        child: FadeTransition(opacity: _fade, child: widget.child),
+      ),
+    );
+  }
+}
+
+/// A chevron that turns smoothly between its closed and open directions.
+class TurnChevron extends StatelessWidget {
+  final bool open;
+  final bool sideways;
+  final double size;
+  final Color? color;
+  const TurnChevron({super.key, required this.open, this.sideways = false, this.size = 18, this.color});
+  @override
+  Widget build(BuildContext context) => AnimatedRotation(
+        turns: open ? (sideways ? 0.25 : 0.5) : 0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        child: Icon(sideways ? Icons.chevron_right : Icons.expand_more, size: size, color: color),
+      );
+}

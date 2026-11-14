@@ -14,6 +14,7 @@ import '../../core/i18n.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/common.dart';
+import '../../widgets/slide_drawer.dart';
 import '../../widgets/motion.dart';
 import '../characters/character_editor.dart';
 import '../memory/memory_page.dart';
@@ -34,6 +35,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   final _cache = BlockCache();
   final _scroll = ScrollController();
   final _scaffold = GlobalKey<ScaffoldState>();
+  final _drawer = GlobalKey<SlideDrawerState>();
   bool _sidebarOpen = true;
   bool _atBottom = true;
 
@@ -160,7 +162,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         if (ff == FormFactor.desktop) {
           setState(() => _sidebarOpen = !_sidebarOpen);
         } else {
-          _scaffold.currentState?.openDrawer();
+          _drawer.currentState?.open();
         }
       },
       onNew: ch == null ? null : () => newConversation(ch),
@@ -170,24 +172,35 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       return Scaffold(
         key: _scaffold,
         body: Row(children: [
-          AnimatedSize(
-            duration: const Duration(milliseconds: 180),
-            child: _sidebarOpen ? SizedBox(width: 300, child: Sidebar(onNewConversation: newConversation)) : const SizedBox.shrink(),
+          TweenAnimationBuilder<double>(
+            tween: Tween(end: _sidebarOpen ? 1 : 0),
+            duration: const Duration(milliseconds: 360),
+            curve: Curves.easeInOutCubicEmphasized,
+            child: SizedBox(
+              width: 301,
+              child: Row(children: [
+                SizedBox(width: 300, child: Sidebar(onNewConversation: newConversation)),
+                const VerticalDivider(width: 1),
+              ]),
+            ),
+            builder: (_, v, child) => SizedBox(
+              width: 301 * v,
+              child: v == 0
+                  ? Offstage(child: child)
+                  : ClipRect(child: OverflowBox(alignment: Alignment.centerRight, minWidth: 301, maxWidth: 301, child: child)),
+            ),
           ),
-          if (_sidebarOpen) const VerticalDivider(width: 1),
           Expanded(child: Scaffold(appBar: appBar, body: body)),
         ]),
       );
     }
-    return Scaffold(
-      key: _scaffold,
-      appBar: appBar,
-      drawer: Drawer(width: math.min(320, MediaQuery.sizeOf(context).width * 0.85), child: Sidebar(onNewConversation: newConversation, inDrawer: true)),
-      // Swipe right anywhere on the chat to pull the sidebar out (it follows the finger);
-      // the default 20 px edge strip is taken by Android's back gesture.
-      drawerEdgeDragWidth: MediaQuery.sizeOf(context).width,
-      drawerScrimColor: Colors.black.withValues(alpha: 0.4),
-      body: body,
+    // Swipe right anywhere on the chat to pull the sidebar out (it follows the finger and
+    // settles with an eased curve); the screen-edge strip is taken by Android's back gesture.
+    return SlideDrawer(
+      key: _drawer,
+      width: math.min(320, MediaQuery.sizeOf(context).width * 0.85),
+      drawer: Sidebar(onNewConversation: newConversation, inDrawer: true),
+      child: Scaffold(key: _scaffold, appBar: appBar, body: body),
     );
   }
 }

@@ -282,3 +282,49 @@ void showError(BuildContext context, Object e) {
 void showInfo(BuildContext context, String msg) {
   ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(msg)));
 }
+
+/// One entry of an item's action menu.
+class MenuAction {
+  final String value;
+  final IconData icon;
+  final String label;
+  final bool danger;
+  const MenuAction(this.value, this.icon, this.label, {this.danger = false});
+}
+
+/// An item's action menu: a popup at the pointer when [at] is given (right click, desktop),
+/// otherwise a bottom sheet (long press, touch).
+Future<String?> showActions(BuildContext context, List<MenuAction> actions, {Offset? at}) {
+  final scheme = Theme.of(context).colorScheme;
+  if (at != null) {
+    return showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      items: [
+        for (final a in actions)
+          PopupMenuItem(
+            value: a.value,
+            child: ListTile(
+              dense: true,
+              leading: Icon(a.icon, color: a.danger ? scheme.error : null),
+              title: Text(a.label, style: a.danger ? TextStyle(color: scheme.error) : null),
+            ),
+          ),
+      ],
+    );
+  }
+  return showModalBottomSheet<String>(
+    context: context,
+    showDragHandle: true,
+    builder: (ctx) => SafeArea(
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        for (final a in actions)
+          ListTile(
+            leading: Icon(a.icon, color: a.danger ? scheme.error : null),
+            title: Text(a.label, style: a.danger ? TextStyle(color: scheme.error) : null),
+            onTap: () => Navigator.pop(ctx, a.value),
+          ),
+      ]),
+    ),
+  );
+}

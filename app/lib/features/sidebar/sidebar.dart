@@ -8,6 +8,7 @@ import '../../core/i18n.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/common.dart';
+import '../../widgets/slide_drawer.dart';
 import '../characters/character_editor.dart';
 import '../memory/memory_page.dart';
 import '../settings/settings_page.dart';
@@ -26,7 +27,12 @@ class _SidebarState extends ConsumerState<Sidebar> {
   String _q = '';
 
   void _close() {
-    if (widget.inDrawer || context.isWatch) Navigator.of(context).maybePop();
+    final drawer = SlideDrawer.maybeOf(context);
+    if (drawer != null) {
+      drawer.close();
+    } else if (widget.inDrawer || context.isWatch) {
+      Navigator.of(context).maybePop();
+    }
   }
 
   @override
@@ -55,7 +61,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 ref.read(selectedCharacterIdProvider.notifier).select(c.id);
                 ref.read(selectedConversationIdProvider.notifier).select(null);
               },
-              onLongPress: () => _charMenu(c),
+              onMenu: (at) => _charMenu(c, at: at),
             ),
           if (!watch)
             Padding(
@@ -103,7 +109,9 @@ class _SidebarState extends ConsumerState<Sidebar> {
                       child: Text(e.key, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
                     ),
                     for (final c in e.value)
-                      ListTile(
+                      GestureDetector(
+                        onSecondaryTapUp: (d) => _convMenu(c, at: d.globalPosition),
+                        child: ListTile(
                         dense: true,
                         visualDensity: VisualDensity.compact,
                         selected: c.id == convId,
@@ -116,7 +124,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                           _close();
                         },
                         onLongPress: () => _convMenu(c),
-                      ),
+                      )),
                   ],
                 ],
               );
@@ -209,20 +217,14 @@ class _SidebarState extends ConsumerState<Sidebar> {
     }
   }
 
-  Future<void> _charMenu(Character c) async {
-    final v = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(leading: const Icon(Icons.edit_outlined), title: Text(t('编辑', 'Edit')), onTap: () => Navigator.pop(ctx, 'edit')),
-          ListTile(leading: const Icon(Icons.copy_all_outlined), title: Text(t('复制', 'Duplicate')), onTap: () => Navigator.pop(ctx, 'dup')),
-          ListTile(leading: const Icon(Icons.arrow_back), title: Text(t('前移', 'Move earlier')), onTap: () => Navigator.pop(ctx, 'up')),
-          ListTile(leading: const Icon(Icons.arrow_forward), title: Text(t('后移', 'Move later')), onTap: () => Navigator.pop(ctx, 'down')),
-          ListTile(leading: Icon(Icons.delete_outline, color: Theme.of(ctx).colorScheme.error), title: Text(t('删除', 'Delete')), onTap: () => Navigator.pop(ctx, 'del')),
-        ]),
-      ),
-    );
+  Future<void> _charMenu(Character c, {Offset? at}) async {
+    final v = await showActions(context, [
+      MenuAction('edit', Icons.edit_outlined, t('编辑', 'Edit')),
+      MenuAction('dup', Icons.copy_all_outlined, t('复制', 'Duplicate')),
+      MenuAction('up', Icons.arrow_back, t('前移', 'Move earlier')),
+      MenuAction('down', Icons.arrow_forward, t('后移', 'Move later')),
+      MenuAction('del', Icons.delete_outline, t('删除', 'Delete'), danger: true),
+    ], at: at);
     if (!mounted || v == null) return;
     final ctl = ref.read(charactersProvider.notifier);
     try {
@@ -253,17 +255,11 @@ class _SidebarState extends ConsumerState<Sidebar> {
     }
   }
 
-  Future<void> _convMenu(Conversation c) async {
-    final v = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(leading: const Icon(Icons.drive_file_rename_outline), title: Text(t('重命名', 'Rename')), onTap: () => Navigator.pop(ctx, 'rename')),
-          ListTile(leading: Icon(Icons.delete_outline, color: Theme.of(ctx).colorScheme.error), title: Text(t('删除', 'Delete')), onTap: () => Navigator.pop(ctx, 'del')),
-        ]),
-      ),
-    );
+  Future<void> _convMenu(Conversation c, {Offset? at}) async {
+    final v = await showActions(context, [
+      MenuAction('rename', Icons.drive_file_rename_outline, t('重命名', 'Rename')),
+      MenuAction('del', Icons.delete_outline, t('删除', 'Delete'), danger: true),
+    ], at: at);
     if (!mounted || v == null) return;
     final api = ref.read(apiProvider);
     try {
@@ -295,8 +291,8 @@ class _CharChip extends StatelessWidget {
   final bool selected;
   final bool compact;
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
-  const _CharChip({required this.character, required this.selected, required this.onTap, required this.onLongPress, this.compact = false});
+  final void Function(Offset? at) onMenu;
+  const _CharChip({required this.character, required this.selected, required this.onTap, required this.onMenu, this.compact = false});
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -306,8 +302,8 @@ class _CharChip extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
-        onLongPress: onLongPress,
-        onSecondaryTap: onLongPress,
+        onLongPress: () => onMenu(null),
+        onSecondaryTapUp: (d) => onMenu(d.globalPosition),
         child: SizedBox(
           width: size + 14,
           child: Column(children: [

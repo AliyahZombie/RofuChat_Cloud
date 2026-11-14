@@ -7,6 +7,7 @@ import 'package:md_single_block_renderer/md_single_block_renderer.dart';
 import '../../core/format.dart';
 import '../../core/i18n.dart';
 import '../../models/models.dart';
+import '../../widgets/motion.dart';
 
 /// A chat list item. Messages are flattened into rows so that every markdown block is its
 /// own ListView item (md_single_block_renderer: only visible blocks get built).
@@ -319,8 +320,8 @@ class _StepsCardState extends State<StepsCard> {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final steps = widget.steps;
-    final hidden = steps.length > 2 && !_expanded ? steps.length - 1 : 0;
-    final shown = hidden > 0 ? [steps.length - 1] : List.generate(steps.length, (i) => i);
+    final folds = steps.length > 2;
+    final hidden = steps.length - 1;
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
       decoration: BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(18)),
@@ -328,13 +329,13 @@ class _StepsCardState extends State<StepsCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (steps.length > 2)
+          if (folds)
             InkWell(
               onTap: () => setState(() => _expanded = !_expanded),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                 child: Row(children: [
-                  Icon(_expanded ? Icons.expand_less : Icons.expand_more, size: 20, color: scheme.primary),
+                  TurnChevron(open: _expanded, size: 20, color: scheme.primary),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(_expanded ? t('收起步骤', 'Hide steps') : t('显示另外 $hidden 个步骤', 'Show $hidden more steps'),
@@ -343,7 +344,11 @@ class _StepsCardState extends State<StepsCard> {
                 ]),
               ),
             ),
-          for (final i in shown) _step(context, steps[i], i, widget.live && i == steps.length - 1),
+          for (var i = 0; i < steps.length; i++)
+            if (folds && i < steps.length - 1)
+              Collapsible(open: _expanded, child: _step(context, steps[i], i, false))
+            else
+              _step(context, steps[i], i, widget.live && i == steps.length - 1),
         ],
       ),
     );
@@ -378,12 +383,13 @@ class _StepsCardState extends State<StepsCard> {
                 ]),
               ),
               if (isTool && !running) Text(fmtDuration(s.durationMs), style: text.labelSmall?.copyWith(color: scheme.outline)),
-              Icon(open ? Icons.expand_less : (isTool ? Icons.chevron_right : Icons.expand_more), size: 18, color: scheme.onSurfaceVariant),
+              TurnChevron(open: open, sideways: isTool, color: scheme.onSurfaceVariant),
             ]),
           ),
         ),
-        if (open)
-          Padding(
+        Collapsible(
+          open: open,
+          child: Padding(
             padding: EdgeInsets.fromLTRB(widget.compact ? 12 : 44, 0, widget.compact ? 8 : 14, 8),
             child: isTool
                 ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -398,6 +404,7 @@ class _StepsCardState extends State<StepsCard> {
                     style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant, height: 1.4),
                   ),
           ),
+        ),
       ],
     );
   }
@@ -460,10 +467,15 @@ class _SummaryCardState extends State<SummaryCard> {
               const SizedBox(width: 8),
               Expanded(child: Text(t('上下文已压缩', 'Context compressed'), style: text.labelLarge?.copyWith(color: scheme.tertiary))),
               MiniIconButton(Icons.edit_outlined, t('编辑摘要', 'Edit summary'), widget.onEdit),
-              Icon(_open ? Icons.expand_less : Icons.expand_more, size: 18, color: scheme.onSurfaceVariant),
+              TurnChevron(open: _open, color: scheme.onSurfaceVariant),
             ]),
             const SizedBox(height: 4),
-            Text(widget.msg.content, maxLines: _open ? null : 3, overflow: _open ? null : TextOverflow.ellipsis, style: text.bodySmall?.copyWith(height: 1.4)),
+            AnimatedSize(
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topCenter,
+              child: Text(widget.msg.content, maxLines: _open ? null : 3, overflow: _open ? null : TextOverflow.ellipsis, style: text.bodySmall?.copyWith(height: 1.4)),
+            ),
           ]),
         ),
       ),
