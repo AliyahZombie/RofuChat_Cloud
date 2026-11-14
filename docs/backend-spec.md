@@ -221,7 +221,7 @@ void rofu_free_string(char* s);
 
 ### 5.3 Responses API（kind=responses）
 - `POST {base_url}/responses`，`stream: true`，`store: false`。
-- 首个 system 合并为 `instructions`，其后的 system 用 `role: developer`。user → `input_text` / `input_image`；assistant 文本 → `output_text`；工具调用 → `{type:function_call, call_id, name, arguments}`；结果 → `{type:function_call_output, call_id, output}`。
+- 上下文中唯一且位于首条的 system 转为 `instructions`；正常上下文不产生 developer 消息。user → `input_text` / `input_image`；assistant 文本 → `output_text`；工具调用 → `{type:function_call, call_id, name, arguments}`；结果 → `{type:function_call_output, call_id, output}`。
 - 工具：`{type:function, name, description, parameters}`；推理：`reasoning:{effort, summary:"auto"}`；`max_output_tokens`。
 - 事件：`response.output_text.delta`、`response.reasoning_summary_text.delta`、`response.reasoning_text.delta`、`response.output_item.done`（function_call）、`response.completed`/`response.incomplete`（usage：`input_tokens / output_tokens / input_tokens_details.cached_tokens / output_tokens_details.reasoning_tokens`）、`response.failed` / `error`。
 
@@ -358,9 +358,9 @@ void rofu_free_string(char* s);
 ## 8. 上下文管理（双模式，按角色配置）
 
 ### 8.1 上下文组装（两种模式共用）
-1. System prompt：角色卡 `system_prompt`（为空则用内置默认 RP 提示）→ description → personality → scenario → 用户 persona → 世界书命中条目 → mes_example → 长期记忆块（pinned 记忆 + 记忆工具使用说明）。全部做宏替换。
-2. 历史：按 seq 遍历 `visible=true` 的消息（跳过内容为空且无 segments 的失败 assistant）；`summary` 角色转为 `System("[Summary of the earlier conversation]\n…")`；assistant 带工具片段时还原为 “assistant(tool_calls) → tool 结果 → assistant 文本” 的正确序列；user 图片仅在模型 vision 时附带。
-3. `post_history_instructions` 作为最后一条 System。
+1. 只生成一条 System，且必须是 messages 的第一条。内容顺序：角色卡 `system_prompt`（为空则用内置默认 RP 提示）→ description → personality → scenario → 用户 persona → 世界书命中条目 → mes_example → 长期记忆块（pinned 记忆 + 记忆工具使用说明）→ 可见压缩摘要（每条以 `[Summary of the earlier conversation]\n` 开头，多条按 seq 顺序）→ `post_history_instructions`。各块以空行分隔，全部做宏替换。兼容历史中已有的可见 system 行时，将其内容按 seq 合入长期记忆块之后、摘要之前。
+2. 历史：按 seq 遍历 `visible=true` 的 user/assistant/tool 消息（跳过内容为空且无 segments 的失败 assistant）；summary/system 不再作为独立历史消息发送。assistant 带工具片段时还原为 “assistant(tool_calls) → tool 结果 → assistant 文本” 的正确序列；user 图片仅在模型 vision 时附带。
+3. 角色卡、用户设置不变且世界书命中、记忆和摘要未变时，连续两轮的 System 内容保持一致，传统模式历史仅在末尾追加；即时模式仍按 display_recent 选择 display/actual。关键词触发的世界书条目改变时，System 内容随之变化，这是预期行为。token 估算（含 context 接口）使用上述合并后的结构，供应商 usage 的优先规则不变。
 
 ### 8.2 传统模式（`context.mode = "traditional"`）
 - 每轮结束后计算上下文 tokens；≥ 阈值（`compress_threshold`，0 表示模型 `context_length` 的 75%）时触发压缩；也可手动 `POST /compress`。
@@ -371,7 +371,7 @@ void rofu_free_string(char* s);
 
 ### 8.3 即时模式（`context.mode = "instant"`）
 - 每条 assistant 回复完成后，调用 Fast model 把该回复压缩后写入 `actual`（`actual_status: pending → ok/failed`，失败写 `actual_error`），`content`（display）不变。
-- 构建上下文时：可见消息中**最后 `display_recent` 条**用 display（content/完整 segments）；更早的 assistant 消息若 `actual_status=ok` 用 actual（作为纯文本 assistant 消息，不含工具片段），否则**回退完整内容**。user 消息始终用原文。
+- 构建上下文时：可见 user/assistant/tool 历史中**最后 `display_recent` 条**用 display（content/完整 segments），已合入 System 的摘要/system 行不占此名额；更早的 assistant 消息若 `actual_status=ok` 用 actual（作为纯文本 assistant 消息，不含工具片段），否则**回退完整内容**。user 消息始终用原文。
 - 失败不弹任何东西，前端在消息上显示感叹号（据 `actual_status=failed`），点击后展示 `actual_error`，并可调用 `POST /api/messages/{id}/actual` 重试。
 - 允许用户 PATCH 手动编辑 actual。
 - 切换模式不改历史数据；从即时切回传统时 actual 被忽略。

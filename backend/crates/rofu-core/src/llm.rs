@@ -317,20 +317,29 @@ mod tests {
         let mut req = Request {
             provider: json!({"kind":"responses"}),
             model: json!({"model_id":"x","vision":false,"tool_call":false,"reasoning":false}),
-            messages: vec![
-                json!({"role":"system","content":"first"}),
-                json!({"role":"system","content":"last"}),
-                json!({"role":"user","content":"hello","images":["img"]}),
-            ],
+            messages: context::build(
+                &json!({"card":{"system_prompt":"first","post_history_instructions":"last"},"memory":{"enabled":false}}),
+                &json!({}),
+                &[
+                    json!({"role":"summary","content":"earlier"}),
+                    json!({"role":"user","content":"hello","parts":{"images":["img"]}}),
+                ],
+                &[],
+                true,
+            ),
             params: json!({"reasoning_effort":"high"}),
             tools: vec![json!({"name":"dice"})],
         };
         let b = req.body();
-        assert_eq!(b["instructions"], "first");
-        assert_eq!(b["input"][0]["role"], "developer");
+        assert_eq!(
+            b["instructions"],
+            "first\n\n[Summary of the earlier conversation]\nearlier\n\nlast"
+        );
+        assert_eq!(b["input"].as_array().unwrap().len(), 1);
+        assert_eq!(b["input"][0]["role"], "user");
         assert!(b.get("tools").is_none());
         assert!(b.get("reasoning").is_none());
-        assert_eq!(b["input"][1]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(b["input"][0]["content"].as_array().unwrap().len(), 1);
         req.provider["kind"] = json!("openai");
         assert_eq!(req.body()["stream_options"]["include_usage"], true);
     }

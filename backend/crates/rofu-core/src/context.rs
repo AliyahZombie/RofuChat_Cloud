@@ -78,21 +78,41 @@ pub fn build(
             .join("\n");
         blocks.push(format!("Long-term memory (pinned):\n{pinned}\nUse memory_search to recall information; memory_add, memory_update and memory_delete maintain durable memories."));
     }
+    // Keep every instruction in the first message, including legacy system rows.
+    // Only conversational roles participate in recent-history selection below.
+    for m in history
+        .iter()
+        .filter(|m| flag(m, "visible", true) && m["role"] == "system")
+    {
+        blocks.push(text(m, "content"));
+    }
+    for m in history
+        .iter()
+        .filter(|m| flag(m, "visible", true) && m["role"] == "summary")
+    {
+        blocks.push(format!(
+            "[Summary of the earlier conversation]\n{}",
+            text(m, "content")
+        ));
+    }
+    let post = text(c, "post_history_instructions");
+    if !post.is_empty() {
+        blocks.push(post);
+    }
     let mut out =
         vec![json!({"role":"system","content":card::macros(&blocks.join("\n\n"),&name,&username)})];
     let visible: Vec<&Value> = history
         .iter()
-        .filter(|m| flag(m, "visible", true))
+        .filter(|m| {
+            flag(m, "visible", true)
+                && matches!(m["role"].as_str(), Some("user" | "assistant" | "tool"))
+        })
         .collect();
     let instant = character["context"]["mode"] == "instant";
     let recent = number(&character["context"], "display_recent", 4).max(0) as usize;
     for (index, m) in visible.iter().enumerate() {
         let role = text(m, "role");
         let content = text(m, "content");
-        if role == "summary" {
-            out.push(json!({"role":"system","content":format!("[Summary of the earlier conversation]\n{content}")}));
-            continue;
-        }
         if role == "assistant" {
             if instant
                 && index < visible.len().saturating_sub(recent)
@@ -140,10 +160,6 @@ pub fn build(
         }
         out.push(message);
     }
-    let post = text(c, "post_history_instructions");
-    if !post.is_empty() {
-        out.push(json!({"role":"system","content":card::macros(&post,&name,&username)}));
-    }
     out
 }
 #[cfg(test)]
@@ -158,6 +174,84 @@ mod tests {
         );
     }
     #[test]
+    fn single_system_block_order_and_stable_prefix() {
+        let c = json!({"name":"Rofu","card":{
+            "system_prompt":"System {{char}}",
+            "description":"Description <BOT>",
+            "personality":"Personality",
+            "scenario":"Scenario",
+            "character_book":{"entries":[{"constant":true,"content":"World {{user}}"}]},
+            "mes_example":"Example <USER>",
+            "post_history_instructions":"Post {{CHAR}} {{USER}}"
+        }});
+        let settings = json!({"user_name":"Alice","user_persona":"Persona"});
+        let memories = vec![
+            json!({"id":"p","pinned":true,"content":"Remember Alice"}),
+            json!({"id":"u","content":"Not pinned"}),
+        ];
+        let mut history = vec![
+            json!({"role":"summary","content":"Hidden summary","visible":false}),
+            json!({"role":"summary","content":"First summary"}),
+            json!({"role":"user","content":"Hello"}),
+            json!({"role":"summary","content":"Second summary"}),
+        ];
+        let out = build(&c, &settings, &history, &memories, false);
+        let expected = "System Rofu\n\nDescription Rofu\n\nPersonality\n\nScenario\n\nUser persona: Persona\n\nWorld Alice\n\nExample Alice\n\nLong-term memory (pinned):\n[p] Remember Alice\nUse memory_search to recall information; memory_add, memory_update and memory_delete maintain durable memories.\n\n[Summary of the earlier conversation]\nFirst summary\n\n[Summary of the earlier conversation]\nSecond summary\n\nPost Rofu Alice";
+        assert_eq!(
+            out,
+            vec![
+                json!({"role":"system","content":expected}),
+                json!({"role":"user","content":"Hello"})
+            ]
+        );
+        assert_eq!(
+            estimate(&out, &[]),
+            tokens(expected) + 4 + tokens("Hello") + 4
+        );
+
+        history.push(json!({"role":"assistant","content":"Hi Alice"}));
+        history.push(json!({"role":"user","content":"Continue"}));
+        let next = build(&c, &settings, &history, &memories, false);
+        assert_eq!(&next[..out.len()], out.as_slice());
+        assert_eq!(next.len(), out.len() + 2);
+    }
+    #[test]
+    fn default_system_and_legacy_instructions() {
+        let out = build(
+            &json!({"memory":{"enabled":false}}),
+            &json!({}),
+            &[
+                json!({"role":"system","content":"Legacy instruction"}),
+                json!({"role":"system","content":"Hidden instruction","visible":false}),
+                json!({"role":"summary","content":"Earlier"}),
+                json!({"role":"user","content":"Hello"}),
+            ],
+            &[],
+            false,
+        );
+        assert_eq!(
+            out,
+            vec![
+                json!({"role":"system","content":"You are a roleplay character. Stay in character and continue the conversation naturally.\n\nLegacy instruction\n\n[Summary of the earlier conversation]\nEarlier"}),
+                json!({"role":"user","content":"Hello"}),
+            ]
+        );
+    }
+    #[test]
+    fn keyword_worldbook_changes_system_when_triggered() {
+        let c = json!({"card":{"system_prompt":"System","post_history_instructions":"Post","character_book":{"entries":[{"keys":["forest"],"content":"Forest lore"}]}},"memory":{"enabled":false}});
+        let before = build(&c, &json!({}), &[], &[], false);
+        let after = build(
+            &c,
+            &json!({}),
+            &[json!({"role":"user","content":"Forest"})],
+            &[],
+            false,
+        );
+        assert_eq!(before[0]["content"], "System\n\nPost");
+        assert_eq!(after[0]["content"], "System\n\nForest lore\n\nPost");
+    }
+    #[test]
     fn history_selection() {
         let c = json!({"name":"Rofu","context":{"mode":"instant","display_recent":1},"memory":{"enabled":false}});
         let h = vec![
@@ -168,15 +262,21 @@ mod tests {
             json!({"role":"user","content":"latest"}),
         ];
         let out = build(&c, &json!({}), &h, &[], true);
-        assert!(out[1]["content"].as_str().unwrap().contains("summary"));
-        assert_eq!(out[2]["content"], "short");
-        assert_eq!(out[3]["content"], "before");
-        assert_eq!(out[4]["role"], "tool");
-        assert_eq!(out[5]["content"], "after");
+        assert_eq!(out[0]["role"], "system");
+        assert!(
+            text(&out[0], "content").ends_with("[Summary of the earlier conversation]\nsummary")
+        );
+        assert!(out[1..]
+            .iter()
+            .all(|m| matches!(m["role"].as_str(), Some("user" | "assistant" | "tool"))));
+        assert_eq!(out[1]["content"], "short");
+        assert_eq!(out[2]["content"], "before");
+        assert_eq!(out[3]["role"], "tool");
+        assert_eq!(out[4]["content"], "after");
         let mut traditional = c.clone();
         traditional["context"]["mode"] = json!("traditional");
         assert_eq!(
-            build(&traditional, &json!({}), &h, &[], true)[2]["content"],
+            build(&traditional, &json!({}), &h, &[], true)[1]["content"],
             "display"
         );
     }

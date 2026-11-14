@@ -16,6 +16,14 @@ Operational details:
 - PNG export defaults to a generated solid-color image when the character does not have a PNG avatar. HTTP(S) avatars are fetched for PNG export (20-second timeout, 32MB limit). JSON export uses Character Card V2.
 - `POST /api/conversations/{id}/memory_scan` returns zero counts when no new messages are available. A failed scan advances the scan cursor as required by the specification.
 
+## Upstream context and token estimates
+
+Normal sends and regenerate requests build exactly one system message at the start of the upstream context. Its blocks, separated by blank lines with character/user macros expanded, are ordered as follows: card `system_prompt` (or the built-in default), description, personality, scenario, user persona, matching worldbook entries, `mes_example`, long-term memory, visible compression summaries in seq order (each prefixed with `[Summary of the earlier conversation]\n`), then `post_history_instructions`. Legacy visible system rows are merged after memory and before summaries. The remaining history contains only user/assistant/tool messages; summaries remain available as Message objects through the HTTP API.
+
+Responses providers receive the merged system text in `instructions`, with no system or developer messages in `input`. With unchanged card/settings, worldbook matches, memory and summaries, consecutive turns keep the same system text. Traditional history grows by appending messages; instant mode still selects display/actual according to `display_recent`, counting only user/assistant/tool history. Keyword-triggered worldbook matches can change the system text as the conversation changes; this is expected.
+
+Token estimates, including `GET /api/conversations/{id}/context` and SSE `context`, use the merged structure, including one system message's overhead. The existing preference for the last assistant's authoritative `usage.last_input + usage.last_output` remains unchanged.
+
 ## Message pagination
 
 `GET /api/conversations/{id}/messages` without `limit` continues to return the full array, including hidden messages and summaries. With a positive signed 64-bit `limit` (less than `9223372036854775807`), it returns the last N eligible messages in ascending seq order. Optional `before_seq` is an exclusive signed 64-bit seq cursor and is applied only with `limit`. Invalid pagination values return 400.

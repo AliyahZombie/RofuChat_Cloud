@@ -137,7 +137,7 @@ async fn retry_history(h: &Harness, mock: &MockServer) {
     for instant in [false, true] {
         for tools in [false, true] {
             let (model, mut c, _) = h.fixture(mock, "openai", "http").await;
-            c["card"] = json!({"system_prompt":"retry history system"});
+            c["card"] = json!({"system_prompt":"retry history system","post_history_instructions":"Retry as {{char}}"});
             c["context"] = json!({"mode":if instant {"instant"} else {"traditional"},"display_recent":0,"compress_threshold":999999});
             c["memory"] = json!({"enabled":tools,"auto_scan":false});
             if !tools {
@@ -161,9 +161,12 @@ async fn retry_history(h: &Harness, mock: &MockServer) {
                 json!({"title":"Retry regression"}),
             )
             .await;
+            let mut last_send = Value::Null;
             for round in 1..=3 {
+                let start = mock.state.requests.lock().await.len();
                 h.events(&cid, json!({"content":format!("history user {round}")}))
                     .await;
+                last_send = mock.state.requests.lock().await[start].clone();
             }
             let stored = h.get(&format!("/conversations/{cid}/messages")).await;
             assert_eq!(stored.as_array().unwrap().len(), 6);
@@ -179,9 +182,12 @@ async fn retry_history(h: &Harness, mock: &MockServer) {
                 .await;
             let captured = mock.state.requests.lock().await[start..].to_vec();
             let upstream = &captured[0];
+            assert_eq!(upstream, &last_send);
             let history = upstream["messages"].as_array().unwrap();
             assert_eq!(history[0]["role"], "system");
+            assert_eq!(history.iter().filter(|m| m["role"] == "system").count(), 1);
             assert!(text(&history[0], "content").contains("retry history system"));
+            assert!(text(&history[0], "content").ends_with("\n\nRetry as Rofu"));
             let users: Vec<_> = history
                 .iter()
                 .filter(|m| m["role"] == "user")
@@ -251,6 +257,121 @@ async fn retry_history(h: &Harness, mock: &MockServer) {
                 assert_eq!(raw["actual"], "compressed reply");
             }
         }
+    }
+}
+
+async fn merged_system_context(h: &Harness, mock: &MockServer) {
+    let owner = text(&h.get("/auth/me").await, "id");
+    for kind in ["openai", "responses"] {
+        let provider = h
+            .post("/providers", json!({"kind":kind,"base_url":mock.url}))
+            .await;
+        let model = h
+            .post(
+                "/models",
+                json!({"provider_id":provider["id"],"model_id":"plain","tool_call":false}),
+            )
+            .await;
+        let character = h
+            .post(
+                "/characters",
+                json!({
+                    "name":"Rofu","model_id":model["id"],
+                    "memory":{"enabled":false},
+                    "context":{"compress_threshold":999999},
+                    "card":{
+                        "system_prompt":"System {{char}}",
+                        "description":"Description",
+                        "character_book":{"entries":[{"constant":true,"content":"World lore"}]},
+                        "post_history_instructions":"Post <BOT> {{user}}"
+                    }
+                }),
+            )
+            .await;
+        let conv = h
+            .post("/conversations", json!({"character_id":character["id"]}))
+            .await;
+        let cid = text(&conv, "id");
+        h.json(
+            Method::PATCH,
+            &format!("/conversations/{cid}"),
+            json!({"title":"Merged system regression"}),
+        )
+        .await;
+        // Include summaries separated by a retained reply, as well as a hidden summary.
+        for (seq, role, content, visible) in [
+            (1000, "summary", "早先摘要", true),
+            (2000, "assistant", "Retained reply", true),
+            (3000, "summary", "Later summary", true),
+            (4000, "summary", "Hidden summary", false),
+        ] {
+            h.server
+                .state
+                .db
+                .save_message(
+                    &owner,
+                    &json!({
+                        "id":id(),"conversation_id":cid,"seq":seq,
+                        "role":role,"content":content,"visible":visible
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+        let expected_system = "System Rofu\n\nDescription\n\nWorld lore\n\n[Summary of the earlier conversation]\n早先摘要\n\n[Summary of the earlier conversation]\nLater summary\n\nPost Rofu User";
+        let stats = h.get(&format!("/conversations/{cid}/context")).await;
+        assert_eq!(stats["estimated"], true);
+        assert_eq!(
+            stats["tokens"],
+            rofu_core::context::tokens(expected_system)
+                + 4
+                + rofu_core::context::tokens("Retained reply")
+                + 4
+        );
+
+        let mut previous_history: Vec<Value> = vec![];
+        let mut last_send = Value::Null;
+        for round in 1..=2 {
+            let start = mock.state.requests.lock().await.len();
+            let events = h
+                .events(&cid, json!({"content":format!("Continue {round}")}))
+                .await;
+            assert!(!events.iter().any(|e| e["type"] == "error"), "{events:?}");
+            let captured = mock.state.requests.lock().await[start..].to_vec();
+            assert_eq!(captured.len(), 1);
+            let upstream = &captured[0];
+            let history = if kind == "responses" {
+                assert_eq!(upstream["instructions"], expected_system);
+                let input = upstream["input"].as_array().unwrap();
+                assert!(input
+                    .iter()
+                    .all(|m| matches!(m["role"].as_str(), Some("user" | "assistant"))));
+                input.clone()
+            } else {
+                let messages = upstream["messages"].as_array().unwrap();
+                assert_eq!(
+                    messages[0],
+                    json!({"role":"system","content":expected_system})
+                );
+                assert!(messages[1..]
+                    .iter()
+                    .all(|m| matches!(m["role"].as_str(), Some("user" | "assistant"))));
+                messages[1..].to_vec()
+            };
+            assert!(!upstream.to_string().contains("Hidden summary"));
+            assert_eq!(history.len(), 2 * round);
+            assert_eq!(
+                &history[..previous_history.len()],
+                previous_history.as_slice()
+            );
+            previous_history = history;
+            last_send = upstream.clone();
+        }
+        let start = mock.state.requests.lock().await.len();
+        h.events(&cid, json!({"regenerate":true,"content":"","images":[]}))
+            .await;
+        let captured = mock.state.requests.lock().await[start..].to_vec();
+        assert_eq!(captured, vec![last_send]);
     }
 }
 
@@ -769,6 +890,7 @@ async fn run_suite(database: Option<String>) {
     let mock = MockServer::start().await;
     let h = Harness::new(database).await;
     retry_history(&h, &mock).await;
+    merged_system_context(&h, &mock).await;
     swipe_contract(&h, &mock).await;
     active_prompt_history(&h, &mock).await;
     assert_eq!(h.get("/health").await["allow_register"], false);
