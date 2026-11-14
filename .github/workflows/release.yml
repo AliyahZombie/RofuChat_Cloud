@@ -1,0 +1,150 @@
+name: release
+
+# Push a tag like v0.1.0 to build every platform and publish a GitHub Release.
+# workflow_dispatch builds the same artifacts without publishing (dry run).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Tag v0.1.0 -> 0.1.0; dry runs use 0.0.0.
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.0.0' }}
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: app } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      # NDK r27c: newer NDKs reject the unversioned target triples bindgen passes for rquickjs.
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with: { ndk-version: r27c }
+      - name: Embedded backend (arm64-v8a, armeabi-v7a, x86_64)
+        env: { ANDROID_NDK_HOME: '${{ steps.ndk.outputs.ndk-path }}' }
+        run: |
+          cargo install cargo-ndk --locked
+          tool/build_native.sh android
+      - name: Release keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then echo "::error::ANDROID_KEYSTORE_BASE64 secret missing"; exit 1; fi
+            echo "::warning::No keystore secret; dry run signs with debug keys"; exit 0
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+          echo "ROFU_KEYSTORE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
+      - name: Build split APKs
+        env:
+          ROFU_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          flutter build apk --release --split-per-abi \
+            --build-name "${VERSION#v}" --build-number "${{ github.run_number }}"
+          mkdir -p ../dist
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp "build/app/outputs/flutter-apk/app-$abi-release.apk" "../dist/rofuchat-$VERSION-android-$abi.apk"
+          done
+          ls -l ../dist
+      - uses: actions/upload-artifact@v4
+        with: { name: dist-android, path: dist/* }
+
+  linux:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, arch: x64 }
+          - { runner: ubuntu-22.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    defaults: { run: { working-directory: app } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang cmake pkg-config libgtk-3-dev libsecret-1-dev
+      # flutter-action ships x64 SDKs only; a git checkout works on both arches.
+      - name: Flutter (stable, git)
+        working-directory: ${{ runner.temp }}
+        run: |
+          git clone --depth 1 -b stable https://github.com/flutter/flutter.git
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - run: flutter --version && flutter pub get
+      - name: Embedded backend + standalone server
+        run: |
+          tool/build_native.sh linux
+          (cd ../backend && cargo build -p rofu-server --release)
+      - run: flutter build linux --release --build-name "${VERSION#v}" --build-number "${{ github.run_number }}"
+      - name: Package
+        run: |
+          mkdir -p ../dist
+          B=build/linux/${{ matrix.arch }}/release/bundle
+          cp ../backend/target/release/rofu-server "$B/"
+          tar -czf "../dist/rofuchat-$VERSION-linux-${{ matrix.arch }}.tar.gz" -C "$(dirname $B)" --transform "s,^bundle,rofuchat," bundle
+          tar -czf "../dist/rofu-server-$VERSION-linux-${{ matrix.arch }}.tar.gz" -C ../backend/target/release rofu-server
+          ls -l ../dist
+      - uses: actions/upload-artifact@v4
+        with: { name: 'dist-linux-${{ matrix.arch }}', path: dist/* }
+
+  windows:
+    runs-on: windows-latest
+    defaults: { run: { working-directory: app } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Embedded backend + standalone server
+        shell: bash
+        run: |
+          tool/build_native.sh windows
+          (cd ../backend && cargo build -p rofu-server --release)
+      - shell: bash
+        run: flutter build windows --release --build-name "${VERSION#v}" --build-number "${{ github.run_number }}"
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ../dist | Out-Null
+          $rel = "build/windows/x64/runner/Release"
+          Copy-Item ../backend/target/release/rofu-server.exe $rel/
+          Compress-Archive -Path "$rel/*" -DestinationPath "../dist/rofuchat-$env:VERSION-windows-x64.zip"
+          Compress-Archive -Path ../backend/target/release/rofu-server.exe -DestinationPath "../dist/rofu-server-$env:VERSION-windows-x64.zip"
+          Get-ChildItem ../dist
+      - uses: actions/upload-artifact@v4
+        with: { name: dist-windows-x64, path: dist/* }
+
+  web:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: app } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - run: flutter build web --release --build-name "${VERSION#v}" --build-number "${{ github.run_number }}"
+      - run: mkdir -p ../dist && (cd build/web && zip -qr "../../../dist/rofuchat-$VERSION-web.zip" .)
+      - uses: actions/upload-artifact@v4
+        with: { name: dist-web, path: dist/* }
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [android, linux, windows, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'dist-*', merge-multiple: true, path: dist }
+      - run: (cd dist && sha256sum * > SHA256SUMS.txt) && ls -l dist
+      - name: Create release
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          gh release create "$VERSION" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "RofuChat $VERSION" --generate-notes \
+            ${{ contains(github.ref_name, '-') && '--prerelease' || '' }}

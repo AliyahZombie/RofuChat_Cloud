@@ -29,11 +29,25 @@ android {
         versionName = flutter.versionName
     }
 
+    // Release signing: CI sets ROFU_KEYSTORE (PKCS12 path) and ROFU_KEYSTORE_PASSWORD
+    // (store and key share it, alias "rofuchat"). Without them, release builds use debug keys.
+    val releaseKeystore = System.getenv("ROFU_KEYSTORE")?.takeIf { it.isNotBlank() }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storeType = "pkcs12"
+                storePassword = System.getenv("ROFU_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ROFU_KEY_ALIAS") ?: "rofuchat"
+                keyPassword = System.getenv("ROFU_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (releaseKeystore != null) signingConfigs.getByName("release")
+                else signingConfigs.getByName("debug")
         }
     }
 }
