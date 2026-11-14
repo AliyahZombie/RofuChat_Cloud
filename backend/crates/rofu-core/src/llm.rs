@@ -1,0 +1,318 @@
+use crate::{
+    context,
+    model::{flag, id, number, text},
+    sse::{Decoder, Think},
+};
+use anyhow::{bail, Result};
+use futures_util::StreamExt;
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use tokio::sync::mpsc::UnboundedSender;
+
+#[derive(Clone, Debug)]
+pub enum Event {
+    Text(String),
+    Reasoning(String),
+    ToolCall(Value),
+    Usage(Value),
+}
+#[derive(Clone)]
+pub struct Request {
+    pub provider: Value,
+    pub model: Value,
+    pub messages: Vec<Value>,
+    pub params: Value,
+    pub tools: Vec<Value>,
+}
+impl Request {
+    pub fn body(&self) -> Value {
+        let responses = self.provider["kind"] == "responses";
+        let mut body = json!({"model":self.model["model_id"],"stream":true});
+        if responses {
+            body["store"] = json!(false);
+            let mut input = vec![];
+            let mut first_system = true;
+            for m in &self.messages {
+                let role = text(m, "role");
+                let content = text(m, "content");
+                match role.as_str(){
+                    "system" if first_system=>{body["instructions"]=json!(content);first_system=false;},
+                    "system"=>input.push(json!({"role":"developer","content":content})),
+                    "user"=>{let mut parts=vec![json!({"type":"input_text","text":content})];if flag(&self.model,"vision",false){if let Some(images)=m["images"].as_array(){for image in images{parts.push(json!({"type":"input_image","image_url":image}));}}}input.push(json!({"role":"user","content":parts}));},
+                    "tool"=>input.push(json!({"type":"function_call_output","call_id":m["call_id"],"output":content})),
+                    "assistant"=>{if !content.is_empty(){input.push(json!({"role":"assistant","content":[{"type":"output_text","text":content}]}));}
+if let Some(calls)=m["tool_calls"].as_array(){for call in calls{input.push(json!({"type":"function_call","call_id":call["id"],"name":call["name"],"arguments":call["arguments"]}));}}},
+                    _=>{}
+                }
+            }
+            body["input"] = json!(input);
+            if flag(&self.model, "tool_call", true) && !self.tools.is_empty() {
+                body["tools"]=json!(self.tools.iter().map(|t|json!({"type":"function","name":t["name"],"description":t["description"],"parameters":t["parameters"]})).collect::<Vec<_>>());
+            }
+            let effort = text(&self.params, "reasoning_effort");
+            if flag(&self.model, "reasoning", false) && !effort.is_empty() {
+                body["reasoning"] = json!({"effort":effort,"summary":"auto"});
+            }
+            if let Some(n) = self.params["max_tokens"]
+                .as_i64()
+                .filter(|n| *n > 0)
+                .or_else(|| self.model["max_output"].as_i64().filter(|n| *n > 0))
+            {
+                body["max_output_tokens"] = json!(n);
+            }
+        } else {
+            body["stream_options"] = json!({"include_usage":true});
+            let messages=self.messages.iter().map(|m|{
+                let role=text(m,"role");let mut v=json!({"role":role,"content":m["content"]});
+                if role=="user"&&flag(&self.model,"vision",false){if let Some(images)=m["images"].as_array().filter(|a|!a.is_empty()){let mut parts=vec![json!({"type":"text","text":m["content"]})];for image in images{parts.push(json!({"type":"image_url","image_url":{"url":image}}));}v["content"]=json!(parts);}}
+                if role=="tool"{v["tool_call_id"]=m["call_id"].clone();v["name"]=m["name"].clone();}
+                if let Some(calls)=m["tool_calls"].as_array(){v["tool_calls"]=json!(calls.iter().map(|c|json!({"id":c["id"],"type":"function","function":{"name":c["name"],"arguments":c["arguments"]}})).collect::<Vec<_>>());}
+                v
+            }).collect::<Vec<_>>();
+            body["messages"] = json!(messages);
+            if flag(&self.model, "tool_call", true) && !self.tools.is_empty() {
+                body["tools"]=json!(self.tools.iter().map(|t|json!({"type":"function","function":{"name":t["name"],"description":t["description"],"parameters":t["parameters"]}})).collect::<Vec<_>>());
+            }
+            let effort = text(&self.params, "reasoning_effort");
+            if flag(&self.model, "reasoning", false) && !effort.is_empty() {
+                body["reasoning_effort"] = json!(effort);
+            }
+            if let Some(n) = self.params["max_tokens"]
+                .as_i64()
+                .filter(|n| *n > 0)
+                .or_else(|| self.model["max_output"].as_i64().filter(|n| *n > 0))
+            {
+                body["max_tokens"] = json!(n);
+            }
+        }
+        for key in ["temperature", "top_p"] {
+            if self.params[key].is_number() {
+                body[key] = self.params[key].clone();
+            }
+        }
+        body
+    }
+}
+pub fn headers(
+    mut request: reqwest::RequestBuilder,
+    provider: &Value,
+) -> Result<reqwest::RequestBuilder> {
+    let key = text(provider, "api_key");
+    if !key.is_empty() {
+        request = request.bearer_auth(key);
+    }
+    if let Some(headers) = provider["headers"].as_object() {
+        for (k, v) in headers {
+            if let Some(v) = v.as_str() {
+                request = request.header(k, v);
+            }
+        }
+    }
+    Ok(request)
+}
+struct Parser {
+    responses: bool,
+    think: Think,
+    calls: BTreeMap<i64, Value>,
+    usage: Option<Value>,
+    output: String,
+    tx: UnboundedSender<Event>,
+}
+impl Parser {
+    fn emit(&mut self, e: Event) {
+        if let Event::Text(t) = &e {
+            self.output.push_str(t);
+        }
+        let _ = self.tx.send(e);
+    }
+    fn text(&mut self, s: &str) {
+        for (reasoning, t) in self.think.push(s) {
+            self.emit(if reasoning {
+                Event::Reasoning(t)
+            } else {
+                Event::Text(t)
+            });
+        }
+    }
+    fn parse(&mut self, data: &str) -> Result<()> {
+        if data.trim() == "[DONE]" || data.trim().is_empty() {
+            return Ok(());
+        }
+        let v: Value = serde_json::from_str(data)?;
+        if let Some(e) = v.get("error").filter(|e| !e.is_null()) {
+            bail!("provider stream error: {e}");
+        }
+        if self.responses {
+            match text(&v, "type").as_str() {
+                "response.output_text.delta" => self.text(&text(&v, "delta")),
+                "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                    self.emit(Event::Reasoning(text(&v, "delta")))
+                }
+                "response.output_item.done" if v["item"]["type"] == "function_call" => {
+                    let c = &v["item"];
+                    let cid = text(c, "call_id");
+                    self.emit(Event::ToolCall(json!({"id":if cid.is_empty(){format!("call_0_{}",id())}else{cid},"name":c["name"],"arguments":c["arguments"]})));
+                }
+                "response.completed" | "response.incomplete" => {
+                    let u = &v["response"]["usage"];
+                    if u.is_object() {
+                        self.usage = Some(
+                            json!({"input":number(u,"input_tokens",0),"output":number(u,"output_tokens",0),"cached":number(&u["input_tokens_details"],"cached_tokens",0),"reasoning":number(&u["output_tokens_details"],"reasoning_tokens",0),"estimated":false}),
+                        );
+                    }
+                }
+                "response.failed" | "error" => bail!("provider response failed: {v}"),
+                _ => {}
+            }
+        } else {
+            if let Some(choices) = v["choices"].as_array() {
+                for choice in choices.iter().take(1) {
+                    let d = &choice["delta"];
+                    if let Some(s) = d["content"].as_str() {
+                        self.text(s);
+                    }
+                    if let Some(s) = d["reasoning_content"]
+                        .as_str()
+                        .or_else(|| d["reasoning"].as_str())
+                    {
+                        self.emit(Event::Reasoning(s.into()));
+                    }
+                    if let Some(calls) = d["tool_calls"].as_array() {
+                        for c in calls {
+                            let index = number(c, "index", 0);
+                            let entry = self
+                                .calls
+                                .entry(index)
+                                .or_insert_with(|| json!({"id":"","name":"","arguments":""}));
+                            for (key, source) in [
+                                ("id", &c["id"]),
+                                ("name", &c["function"]["name"]),
+                                ("arguments", &c["function"]["arguments"]),
+                            ] {
+                                if let Some(part) = source.as_str() {
+                                    let mut t = text(entry, key);
+                                    t.push_str(part);
+                                    entry[key] = json!(t);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let u = &v["usage"];
+            if u.is_object() {
+                self.usage = Some(
+                    json!({"input":number(u,"prompt_tokens",0),"output":number(u,"completion_tokens",0),"cached":u["prompt_tokens_details"]["cached_tokens"].as_i64().unwrap_or_else(||number(u,"prompt_cache_hit_tokens",0)),"reasoning":number(&u["completion_tokens_details"],"reasoning_tokens",0),"estimated":false}),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+pub async fn stream(
+    client: &reqwest::Client,
+    request: Request,
+    tx: UnboundedSender<Event>,
+) -> Result<()> {
+    let responses = request.provider["kind"] == "responses";
+    let url = format!(
+        "{}/{}",
+        text(&request.provider, "base_url").trim_end_matches('/'),
+        if responses {
+            "responses"
+        } else {
+            "chat/completions"
+        }
+    );
+    let response = headers(client.post(url), &request.provider)?
+        .json(&request.body())
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await?;
+        bail!(
+            "HTTP {status}: {}",
+            body.chars().take(800).collect::<String>()
+        );
+    }
+    let mut parser = Parser {
+        responses,
+        think: Think::default(),
+        calls: Default::default(),
+        usage: None,
+        output: String::new(),
+        tx,
+    };
+    let mut decoder = Decoder::default();
+    let mut chunks = response.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        for event in decoder.push(&chunk?) {
+            parser.parse(&event.data)?;
+        }
+    }
+    for event in decoder.finish() {
+        parser.parse(&event.data)?;
+    }
+    for (reasoning, s) in parser.think.finish() {
+        parser.emit(if reasoning {
+            Event::Reasoning(s)
+        } else {
+            Event::Text(s)
+        });
+    }
+    let calls = std::mem::take(&mut parser.calls);
+    for (index, mut c) in calls {
+        if text(&c, "id").is_empty() {
+            c["id"] = json!(format!("call_{index}_{}", id()));
+        }
+        parser.emit(Event::ToolCall(c));
+    }
+    let usage=parser.usage.take().unwrap_or_else(||json!({"input":context::estimate(&request.messages,&request.tools),"output":context::tokens(&parser.output),"cached":0,"reasoning":0,"estimated":true}));
+    parser.emit(Event::Usage(usage));
+    Ok(())
+}
+pub async fn complete(client: &reqwest::Client, request: Request) -> Result<String> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        stream(client, request, tx),
+    )
+    .await??;
+    let mut output = String::new();
+    while let Some(e) = rx.recv().await {
+        if let Event::Text(t) = e {
+            output.push_str(&t);
+        }
+    }
+    if output.is_empty() {
+        bail!("model returned no text");
+    }
+    Ok(output)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn request_shapes() {
+        let mut req = Request {
+            provider: json!({"kind":"responses"}),
+            model: json!({"model_id":"x","vision":false,"tool_call":false,"reasoning":false}),
+            messages: vec![
+                json!({"role":"system","content":"first"}),
+                json!({"role":"system","content":"last"}),
+                json!({"role":"user","content":"hello","images":["img"]}),
+            ],
+            params: json!({"reasoning_effort":"high"}),
+            tools: vec![json!({"name":"dice"})],
+        };
+        let b = req.body();
+        assert_eq!(b["instructions"], "first");
+        assert_eq!(b["input"][0]["role"], "developer");
+        assert!(b.get("tools").is_none());
+        assert!(b.get("reasoning").is_none());
+        assert_eq!(b["input"][1]["content"].as_array().unwrap().len(), 1);
+        req.provider["kind"] = json!("openai");
+        assert_eq!(req.body()["stream_options"]["include_usage"], true);
+    }
+}

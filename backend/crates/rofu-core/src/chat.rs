@@ -1,0 +1,614 @@
+use crate::{
+    api::{self, ApiError, ApiResult},
+    card, context, jstool, llm, mcp, memory,
+    model::{flag, id, normalized, now, number, text},
+    server::AppState,
+};
+use anyhow::{bail, Result};
+use axum::response::{
+    sse::{Event as SseEvent, KeepAlive},
+    IntoResponse, Response, Sse,
+};
+use futures_util::StreamExt;
+use serde_json::{json, Value};
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    time::{Duration, Instant},
+};
+use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio_util::sync::CancellationToken;
+
+type Events = UnboundedSender<Value>;
+fn emit(tx: &Events, v: Value) {
+    let _ = tx.send(v);
+}
+pub fn message(cid: &str, seq: i64, role: &str, content: &str) -> Value {
+    json!({"id":id(),"conversation_id":cid,"seq":seq,"role":role,"content":content,"actual":null,"actual_status":"none","actual_error":null,"visible":true,"parts":{"segments":[],"images":[],"error":null},"model":"","model_name":"","model_icon":"","usage":{"input":0,"output":0,"cached":0,"reasoning":0,"duration_ms":0,"ttft_ms":0,"estimated":true,"last_input":0},"created_at":now()})
+}
+pub async fn resolve(
+    s: &AppState,
+    uid: &str,
+    character: &Value,
+    fast: bool,
+) -> ApiResult<(Value, Value)> {
+    let settings = api::settings(s, uid).await?;
+    let candidates = if fast {
+        vec![
+            text(&settings, "fast_model_id"),
+            text(character, "model_id"),
+            text(&settings, "default_model_id"),
+        ]
+    } else {
+        vec![
+            text(character, "model_id"),
+            text(&settings, "default_model_id"),
+        ]
+    };
+    let mid = candidates
+        .into_iter()
+        .find(|s| !s.is_empty())
+        .ok_or_else(|| ApiError::bad("no model configured"))?;
+    let model = api::required(s, uid, "model", &mid).await?;
+    let provider = api::required(s, uid, "provider", &text(&model, "provider_id")).await?;
+    if !flag(&provider, "enabled", true) {
+        return Err(ApiError::bad("provider is disabled"));
+    }
+    Ok((model, provider))
+}
+pub async fn fast(
+    s: &AppState,
+    uid: &str,
+    character: &Value,
+    instruction: &str,
+    input: &str,
+) -> Result<String> {
+    let (model, provider) = resolve(s, uid, character, true)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    llm::complete(
+        &s.client,
+        llm::Request {
+            provider,
+            model,
+            messages: vec![
+                json!({"role":"system","content":instruction}),
+                json!({"role":"user","content":input}),
+            ],
+            params: json!({}),
+            tools: vec![],
+        },
+    )
+    .await
+}
+pub async fn create_conversation(s: &AppState, uid: &str, body: &Value) -> ApiResult<Value> {
+    let c = api::required(s, uid, "character", &text(body, "character_id")).await?;
+    let conv = json!({"id":id(),"character_id":c["id"],"title":"","created_at":now(),"updated_at":now(),"memory_scanned_seq":0});
+    let greeting = if let Some(index) = body["greeting_index"].as_u64() {
+        c["card"]["alternate_greetings"][index as usize]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    } else {
+        text(&c["card"], "first_mes")
+    };
+    // Insert conversation and greeting together so readers never observe a partial creation.
+    let settings = api::settings(s, uid).await?;
+    let mut tx = s.db.pool.begin().await?;
+    sqlx::query("INSERT INTO conversations(id,user_id,character_id,data,updated_at) VALUES ($1,$2,$3,$4,$5)").bind(text(&conv,"id")).bind(uid).bind(text(&c,"id")).bind(conv.to_string()).bind(now()).execute(&mut *tx).await?;
+    if !greeting.is_empty() {
+        let m = message(
+            &text(&conv, "id"),
+            1000,
+            "assistant",
+            &card::macros(&greeting, &text(&c, "name"), &text(&settings, "user_name")),
+        );
+        sqlx::query(
+            "INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(text(&m, "id"))
+        .bind(uid)
+        .bind(text(&conv, "id"))
+        .bind(1000_i64)
+        .bind(m.to_string())
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(conv)
+}
+pub async fn busy(s: &AppState, cid: &str) -> ApiResult<()> {
+    if s.generating.lock().await.contains_key(cid) {
+        Err(ApiError::conflict("conversation is generating"))
+    } else {
+        Ok(())
+    }
+}
+pub async fn begin(s: AppState, uid: String, cid: String, body: Value) -> ApiResult<Response> {
+    let conv = api::conversation(&s, &uid, &cid).await?;
+    let character = api::required(&s, &uid, "character", &text(&conv, "character_id")).await?;
+    let (model, provider) = resolve(&s, &uid, &character, false).await?;
+    let cancel = CancellationToken::new();
+    {
+        let mut running = s.generating.lock().await;
+        if running.contains_key(&cid) {
+            return Err(ApiError::conflict("conversation is generating"));
+        }
+        running.insert(cid.clone(), cancel.clone());
+    }
+    let prep = prepare(&s, &uid, &cid, &body).await;
+    let user = match prep {
+        Ok(user) => user,
+        Err(e) => {
+            s.generating.lock().await.remove(&cid);
+            return Err(e);
+        }
+    };
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let work = run(
+            &s, &uid, &cid, &character, &model, &provider, user, &tx, &cancel,
+        )
+        .await;
+        if let Err(e) = work {
+            tracing::warn!(error=%e,"generation failed");
+            emit(&tx, json!({"type":"error","error":e.to_string()}));
+        }
+        emit(&tx, json!({"type":"done"}));
+        s.generating.lock().await.remove(&cid);
+    });
+    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
+        .map(|v| Ok::<_, Infallible>(SseEvent::default().data(v.to_string())));
+    Ok(Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response())
+}
+async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<Value> {
+    let messages = s.db.messages(uid, cid).await?;
+    let edit = text(body, "edit_message_id");
+    let regenerate = flag(body, "regenerate", false);
+    if regenerate || !edit.is_empty() {
+        let target = if !edit.is_empty() {
+            messages
+                .iter()
+                .find(|m| text(m, "id") == edit && m["role"] == "user")
+        } else {
+            messages.iter().rev().find(|m| m["role"] == "user")
+        }
+        .ok_or_else(|| ApiError::bad("no matching user message"))?;
+        let mut target = target.clone();
+        if !edit.is_empty() {
+            target["content"] = body["content"]
+                .as_str()
+                .map(|s| json!(s))
+                .unwrap_or_else(|| json!(""));
+            if body["images"].is_array() {
+                target["parts"]["images"] = body["images"].clone();
+            }
+        }
+        let mut tx = s.db.pool.begin().await?;
+        sqlx::query("DELETE FROM messages WHERE user_id=$1 AND conversation_id=$2 AND seq>$3")
+            .bind(uid)
+            .bind(cid)
+            .bind(number(&target, "seq", 0))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE messages SET data=$1 WHERE user_id=$2 AND id=$3")
+            .bind(target.to_string())
+            .bind(uid)
+            .bind(text(&target, "id"))
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        return Ok(target);
+    }
+    if text(body, "content").trim().is_empty()
+        && body["images"].as_array().is_none_or(|a| a.is_empty())
+    {
+        return Err(ApiError::bad("content or images is required"));
+    }
+    let mut user = message(
+        cid,
+        messages
+            .iter()
+            .map(|m| number(m, "seq", 0))
+            .max()
+            .unwrap_or(0)
+            + 1000,
+        "user",
+        &text(body, "content"),
+    );
+    user["parts"]["images"] = body["images"]
+        .as_array()
+        .cloned()
+        .map(Value::Array)
+        .unwrap_or_else(|| json!([]));
+    s.db.save_message(uid, &user).await?;
+    Ok(user)
+}
+struct Toolbox {
+    definitions: Vec<Value>,
+    local: HashMap<String, Value>,
+    mcp: Vec<mcp::Connection>,
+    remote: HashMap<String, (usize, String)>,
+    memory: bool,
+}
+impl Toolbox {
+    async fn load(s: &AppState, uid: &str, c: &Value, model: &Value, tx: &Events) -> Result<Self> {
+        let mut this = Self {
+            definitions: vec![],
+            local: HashMap::new(),
+            mcp: vec![],
+            remote: HashMap::new(),
+            memory: false,
+        };
+        if !flag(model, "tool_call", true) {
+            return Ok(this);
+        }
+        if flag(&c["memory"], "enabled", true) {
+            this.memory = true;
+            this.definitions.extend(memory::definitions());
+        }
+        if let Some(ids) = c["tool_ids"].as_array() {
+            for tid in ids {
+                if let Some(t) = s.db.get(uid, "tool", tid.as_str().unwrap_or("")).await? {
+                    if !flag(&t, "enabled", true) {
+                        continue;
+                    }
+                    if t["models"]
+                        .as_array()
+                        .is_some_and(|a| !a.is_empty() && !a.contains(&model["id"]))
+                    {
+                        continue;
+                    }
+                    let name = jstool::sanitize(&text(&t, "name"));
+                    if this.definitions.iter().any(|d| d["name"] == name) {
+                        emit(
+                            tx,
+                            json!({"type":"notice","message":format!("Duplicate tool name: {name}")}),
+                        );
+                        continue;
+                    }
+                    this.definitions.push(json!({"name":name,"description":t["description"],"parameters":t["parameters"]}));
+                    this.local.insert(name, t);
+                }
+            }
+        }
+        if let Some(servers) = c["mcp"].as_array() {
+            for config in servers {
+                if !flag(config, "enabled", true) {
+                    continue;
+                }
+                match mcp::Connection::connect(s.client.clone(), config.clone()).await {
+                    Ok(conn) => {
+                        let index = this.mcp.len();
+                        for tool in &conn.tools {
+                            let name = text(tool, "name");
+                            if this.definitions.iter().any(|d| d["name"] == name) {
+                                emit(
+                                    tx,
+                                    json!({"type":"notice","message":format!("Duplicate tool name: {name}")}),
+                                );
+                                continue;
+                            }
+                            this.definitions.push(tool.clone());
+                            this.remote.insert(name, (index, text(tool, "raw_name")));
+                        }
+                        this.mcp.push(conn);
+                    }
+                    Err(e) => emit(
+                        tx,
+                        json!({"type":"notice","message":format!("MCP {} skipped: {e}",text(config,"name"))}),
+                    ),
+                }
+            }
+        }
+        Ok(this)
+    }
+    async fn execute(
+        &mut self,
+        s: &AppState,
+        uid: &str,
+        c: &Value,
+        call: &Value,
+    ) -> (String, bool) {
+        let args: Value = match serde_json::from_str(&text(call, "arguments")) {
+            Ok(a) => a,
+            Err(e) => return (format!("Invalid tool arguments: {e}"), true),
+        };
+        let name = text(call, "name");
+        if let Some(tool) = self.local.get(&name) {
+            let v = jstool::run(text(tool, "code"), args).await;
+            return (text(&v, "result"), flag(&v, "is_error", false));
+        }
+        if let Some((index, raw)) = self.remote.get(&name) {
+            return match self.mcp[*index].call(raw, args).await {
+                Ok(v) => v,
+                Err(e) => (e.to_string(), true),
+            };
+        }
+        if self.memory && memory::definitions().iter().any(|d| d["name"] == name) {
+            return match memory::tool(s, uid, c, &name, &args).await {
+                Ok(v) => (v, false),
+                Err(e) => (e.message, true),
+            };
+        }
+        (format!("Unknown tool: {name}"), true)
+    }
+}
+fn append(m: &mut Value, kind: &str, delta: &str) {
+    let segments = m["parts"]["segments"].as_array_mut().unwrap();
+    if let Some(last) = segments.last_mut().filter(|s| s["type"] == kind) {
+        let value = format!("{}{delta}", text(last, "text"));
+        last["text"] = json!(value);
+    } else {
+        segments.push(json!({"type":kind,"text":delta,"duration_ms":0}));
+    }
+    m["content"] = json!(m["parts"]["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["type"] == "text")
+        .map(|s| text(s, "text"))
+        .collect::<Vec<_>>()
+        .join("\n\n"));
+}
+fn reasoning_end(m: &mut Value, tx: &Events, start: &mut Option<Instant>) {
+    if let Some(time) = start.take() {
+        let ms = time.elapsed().as_millis() as i64;
+        if let Some(last) = m["parts"]["segments"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .filter(|s| s["type"] == "reasoning")
+        {
+            last["duration_ms"] = json!(ms);
+        }
+        emit(tx, json!({"type":"reasoning_end","duration_ms":ms}));
+    }
+}
+#[allow(clippy::too_many_arguments)]
+async fn run(
+    s: &AppState,
+    uid: &str,
+    cid: &str,
+    c: &Value,
+    model: &Value,
+    provider: &Value,
+    user: Value,
+    tx: &Events,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    let start = Instant::now();
+    let mut conv = api::conversation(s, uid, cid)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    conv["updated_at"] = json!(now());
+    s.db.save_conversation(uid, &conv).await?;
+    emit(tx, json!({"type":"user_message","message":user}));
+    let mut assistant = message(cid, number(&user, "seq", 0) + 1000, "assistant", "");
+    assistant["model"] = model["id"].clone();
+    assistant["model_name"] = model["name"].clone();
+    assistant["model_icon"] = model["icon"].clone();
+    s.db.save_message(uid, &assistant).await?;
+    emit(tx, json!({"type":"assistant_start","message":assistant}));
+    let generation=async{
+        let mut toolbox=tokio::select!{_ = cancel.cancelled()=>return Ok(()),t=Toolbox::load(s,uid,c,model,tx)=>t?};
+        let settings=api::settings(s,uid).await.map_err(|e|anyhow::anyhow!(e.message))?;let mut first_token=true;let mut reasoning=None;
+        for turn in 0..16 {
+            let history=s.db.messages(uid,cid).await?;let memories=memory::available(s,uid,c).await.map_err(|e|anyhow::anyhow!(e.message))?;
+            let messages=context::build(c,&settings,&history,&memories,flag(model,"vision",false));
+            let request=llm::Request{provider:provider.clone(),model:model.clone(),messages,params:c["params"].clone(),tools:toolbox.definitions.clone()};
+            let (events_tx,mut events_rx)=mpsc::unbounded_channel();let client=s.client.clone();
+            let mut worker=tokio::spawn(async move{llm::stream(&client,request,events_tx).await});
+            let mut flush=tokio::time::interval(Duration::from_secs(1));let mut calls=vec![];
+            loop {
+                tokio::select!{
+                    _=cancel.cancelled()=>{worker.abort();reasoning_end(&mut assistant,tx,&mut reasoning);return Ok(());},
+                    _=s.shutdown.cancelled()=>{worker.abort();return Ok(());},
+                    _=flush.tick()=>{s.db.save_message(uid,&assistant).await?;},
+                    event=events_rx.recv()=>{
+                        let Some(event)=event else{break;};
+                        match event {
+                            llm::Event::Text(delta)=>{if first_token{assistant["usage"]["ttft_ms"]=json!(start.elapsed().as_millis() as i64);first_token=false;}reasoning_end(&mut assistant,tx,&mut reasoning);append(&mut assistant,"text",&delta);emit(tx,json!({"type":"text","delta":delta}));},
+                            llm::Event::Reasoning(delta)=>{if first_token{assistant["usage"]["ttft_ms"]=json!(start.elapsed().as_millis() as i64);first_token=false;}reasoning.get_or_insert_with(Instant::now);append(&mut assistant,"reasoning",&delta);emit(tx,json!({"type":"reasoning","delta":delta}));},
+                            llm::Event::ToolCall(call)=>{reasoning_end(&mut assistant,tx,&mut reasoning);calls.push(call);},
+                            llm::Event::Usage(usage)=>{for key in ["input","output","cached","reasoning"]{assistant["usage"][key]=json!(number(&assistant["usage"],key,0)+number(&usage,key,0));}assistant["usage"]["last_input"]=usage["input"].clone();assistant["usage"]["last_output"]=usage["output"].clone();assistant["usage"]["estimated"]=json!(flag(&usage,"estimated",true)||if turn==0{false}else{flag(&assistant["usage"],"estimated",true)});},
+                        }
+                    }
+                }
+            }
+            // Receiver closure means all parsed events have been consumed.
+            (&mut worker).await??;reasoning_end(&mut assistant,tx,&mut reasoning);
+            if calls.is_empty(){return Ok(());}
+            for call in calls {
+                emit(tx,json!({"type":"tool_start","id":call["id"],"name":call["name"],"arguments":call["arguments"]}));let t=Instant::now();
+                let (result,is_error)=tokio::select!{_ = cancel.cancelled()=>return Ok(()),v=toolbox.execute(s,uid,c,&call)=>v};let result=result.chars().take(20_000).collect::<String>();let duration=t.elapsed().as_millis() as i64;
+                assistant["parts"]["segments"].as_array_mut().unwrap().push(json!({"type":"tool","id":call["id"],"name":call["name"],"arguments":call["arguments"],"result":result,"is_error":is_error,"duration_ms":duration}));
+                emit(tx,json!({"type":"tool_end","id":call["id"],"result":result,"is_error":is_error,"duration_ms":duration}));s.db.save_message(uid,&assistant).await?;
+            }
+        }
+        bail!("agent reached the 16-turn limit")
+    }.await;
+    assistant["usage"]["duration_ms"] = json!(start.elapsed().as_millis() as i64);
+    if let Err(ref e) = generation {
+        assistant["parts"]["error"] = json!(e.to_string());
+        emit(tx, json!({"type":"error","error":e.to_string()}));
+    }
+    s.db.save_message(uid, &assistant).await?;
+    conv["updated_at"] = json!(now());
+    s.db.save_conversation(uid, &conv).await?;
+    emit(tx, json!({"type":"assistant_done","message":assistant}));
+    if !cancel.is_cancelled() && generation.is_ok() {
+        if c["context"]["mode"] == "instant" {
+            emit(tx, json!({"type":"actual_pending","id":assistant["id"]}));
+            match actual(s, uid, &mut assistant, c).await {
+                Ok(()) => emit(tx, json!({"type":"actual","message":assistant})),
+                Err(e) => emit(tx, json!({"type":"notice","message":e.to_string()})),
+            }
+        } else {
+            let stat = context_info(s, uid, cid).await?;
+            if number(&stat, "tokens", 0) >= number(&stat, "threshold", i64::MAX) {
+                emit(tx, json!({"type":"compressing"}));
+                match compress(s, uid, cid, c).await {
+                    Ok(Some((summary, hidden))) => emit(
+                        tx,
+                        json!({"type":"summary","message":summary,"hidden_ids":hidden}),
+                    ),
+                    Ok(None) => {}
+                    Err(e) => emit(
+                        tx,
+                        json!({"type":"notice","message":format!("Compression failed: {e}")}),
+                    ),
+                }
+            }
+        }
+        if text(&conv, "title").is_empty() {
+            let s = s.clone();
+            let uid = uid.to_owned();
+            let c = c.clone();
+            let cid = cid.to_owned();
+            let first = text(&user, "content");
+            tokio::spawn(async move {
+                let fallback = first.chars().take(20).collect::<String>();
+                let title = fast(
+                    &s,
+                    &uid,
+                    &c,
+                    "Generate a short conversation title, without quotes, in the user's language.",
+                    &first,
+                )
+                .await
+                .unwrap_or(fallback);
+                if let Ok(Some(mut conv)) = s.db.conversation(&uid, &cid).await {
+                    if text(&conv, "title").is_empty() {
+                        conv["title"] = json!(title.trim());
+                        let _ = s.db.save_conversation(&uid, &conv).await;
+                    }
+                }
+            });
+        }
+    }
+    match context_info(s, uid, cid).await {
+        Ok(info) => {
+            let mut info = info;
+            info["type"] = json!("context");
+            emit(tx, info);
+        }
+        Err(e) => emit(tx, json!({"type":"notice","message":e.to_string()})),
+    }
+    Ok(())
+}
+pub async fn actual(s: &AppState, uid: &str, m: &mut Value, c: &Value) -> Result<()> {
+    m["actual_status"] = json!("pending");
+    m["actual_error"] = Value::Null;
+    s.db.save_message(uid, m).await?;
+    match fast(s,uid,c,"Compress this assistant reply faithfully for future conversation context. Preserve events, commitments, facts and tool results. Use the same language.",&format!("{}\n{}",text(m,"content"),m["parts"]["segments"])).await{Ok(v)=>{m["actual"]=json!(v);m["actual_status"]=json!("ok");},Err(e)=>{m["actual_status"]=json!("failed");m["actual_error"]=json!(e.to_string());}}
+    s.db.save_message(uid, m).await?;
+    Ok(())
+}
+pub async fn compress(
+    s: &AppState,
+    uid: &str,
+    cid: &str,
+    c: &Value,
+) -> Result<Option<(Value, Vec<String>)>> {
+    let visible: Vec<Value> =
+        s.db.messages(uid, cid)
+            .await?
+            .into_iter()
+            .filter(|m| flag(m, "visible", true))
+            .collect();
+    let keep = number(&c["context"], "keep_recent", 6).max(1) as usize;
+    if visible.len() <= keep {
+        return Ok(None);
+    }
+    let count = visible.len() - keep;
+    let old = &visible[..count];
+    let summary=fast(s,uid,c,"Summarize the earlier conversation in its language. Fully preserve events, decisions, commitments, relationship changes, current situation and unresolved threads. Merge previous summaries.",&serde_json::to_string(old)?).await?;
+    let m = message(
+        cid,
+        number(&visible[count], "seq", 0) - 1,
+        "summary",
+        &summary,
+    );
+    let hidden = old.iter().map(|m| text(m, "id")).collect::<Vec<_>>();
+    let mut tx = s.db.pool.begin().await?;
+    for old in old {
+        let mut old = old.clone();
+        old["visible"] = json!(false);
+        sqlx::query("UPDATE messages SET data=$1 WHERE user_id=$2 AND id=$3")
+            .bind(old.to_string())
+            .bind(uid)
+            .bind(text(&old, "id"))
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query(
+        "INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5)",
+    )
+    .bind(text(&m, "id"))
+    .bind(uid)
+    .bind(cid)
+    .bind(number(&m, "seq", 0))
+    .bind(m.to_string())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Some((m, hidden)))
+}
+pub async fn context_info(s: &AppState, uid: &str, cid: &str) -> Result<Value> {
+    let conv =
+        s.db.conversation(uid, cid)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("conversation not found"))?;
+    let c =
+        s.db.get(uid, "character", &text(&conv, "character_id"))
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("character not found"))?;
+    let settings = api::settings(s, uid)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    let history = s.db.messages(uid, cid).await?;
+    let model = resolve(s, uid, &c, false)
+        .await
+        .map(|(m, _)| m)
+        .unwrap_or_else(|_| normalized("model", &json!({})));
+    let memories = memory::available(s, uid, &c)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let tools = Toolbox::load(s, uid, &c, &model, &tx).await?;
+    let mut count = context::estimate(
+        &context::build(
+            &c,
+            &settings,
+            &history,
+            &memories,
+            flag(&model, "vision", false),
+        ),
+        &tools.definitions,
+    );
+    let mut estimated = true;
+    if let Some(last) = history
+        .last()
+        .filter(|m| m["role"] == "assistant" && m["usage"]["estimated"] == false)
+    {
+        count = number(&last["usage"], "last_input", 0)
+            + number(
+                &last["usage"],
+                "last_output",
+                number(&last["usage"], "output", 0),
+            );
+        estimated = false;
+    }
+    let max = number(&model, "context_length", 32768);
+    let threshold = number(&c["context"], "compress_threshold", 0);
+    Ok(
+        json!({"tokens":count,"max":max,"estimated":estimated,"mode":c["context"]["mode"],"threshold":if threshold>0{threshold}else{max*3/4}}),
+    )
+}

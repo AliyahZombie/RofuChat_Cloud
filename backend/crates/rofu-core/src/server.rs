@@ -18,6 +18,7 @@ pub struct Config {
     pub web_dir: Option<PathBuf>,
     pub embedded: bool,
     pub memory_scanner: bool,
+    pub http_client: Option<reqwest::Client>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -29,6 +30,7 @@ impl Default for Config {
             web_dir: None,
             embedded: false,
             memory_scanner: true,
+            http_client: None,
         }
     }
 }
@@ -49,9 +51,11 @@ impl AppState {
         }
         Ok(Self {
             db,
-            client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(20))
-                .build()?,
+            client: config.http_client.clone().map(Ok).unwrap_or_else(|| {
+                reqwest::Client::builder()
+                    .connect_timeout(std::time::Duration::from_secs(20))
+                    .build()
+            })?,
             embedded: config.embedded,
             generating: Default::default(),
             shutdown: CancellationToken::new(),
@@ -93,6 +97,9 @@ pub async fn start_server(config: Config) -> Result<RunningServer> {
     let state = AppState::new(&config).await?;
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
     let address = listener.local_addr()?;
+    if config.memory_scanner {
+        crate::memory::spawn_scanner(state.clone());
+    }
     let shutdown = state.shutdown.clone();
     let app = router(state.clone(), config.web_dir);
     let task = tokio::spawn(async move {

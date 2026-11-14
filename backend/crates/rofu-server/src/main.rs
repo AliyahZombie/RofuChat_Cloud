@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
         web_dir: a.web_dir,
         memory_scanner: !a.no_memory_scanner,
         embedded: false,
+        http_client: None,
     })
     .await?;
     tokio::signal::ctrl_c().await?;

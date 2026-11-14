@@ -260,6 +260,11 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
             return Ok(ok(s.db.save(&uid, "settings", v).await?));
         }
     }
+    if let Some(response) =
+        crate::routes::dispatch(&s, &uid, &method, &path, &parts, &body, &query).await?
+    {
+        return Ok(response);
+    }
     let kind = match parts[0] {
         "providers" => "provider",
         "models" => "model",
@@ -306,6 +311,11 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
                 });
                 if kind == "character" {
                     values.sort_by_key(|v| (number(v, "sort", 0), number(v, "created_at", 0)));
+                }
+                if kind == "memory" {
+                    if let Some(q) = query.get("q") {
+                        values = crate::memory::search(values, q, usize::MAX);
+                    }
                 }
                 for v in &mut values {
                     redact(kind, v, true);
@@ -384,6 +394,13 @@ async fn save_entity(
                 v["created_at"] = existing["created_at"].clone();
             }
         }
+    }
+    if kind == "provider" && text(&v, "icon").is_empty() {
+        v["icon"] = json!(crate::detect::icon(&format!(
+            "{} {}",
+            text(&v, "name"),
+            text(&v, "base_url")
+        )));
     }
     if kind == "character" {
         if !text(&v, "model_id").is_empty() {
