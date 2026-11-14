@@ -5,7 +5,7 @@ use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::{sync::Mutex, task::JoinHandle};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::{
-    cors::{Any, CorsLayer},
+    cors::{AllowHeaders, Any, CorsLayer},
     services::{ServeDir, ServeFile},
 };
 
@@ -77,7 +77,7 @@ pub fn router(state: AppState, web: Option<PathBuf>) -> Router {
         CorsLayer::new()
             .allow_origin(Any)
             .allow_methods(Any)
-            .allow_headers(Any),
+            .allow_headers(AllowHeaders::mirror_request()),
     )
 }
 pub struct RunningServer {

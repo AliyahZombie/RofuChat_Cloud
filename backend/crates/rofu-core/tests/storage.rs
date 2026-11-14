@@ -45,6 +45,23 @@ async fn http_auth_and_secret_masking() {
     .unwrap();
     let base = format!("http://{}/api", server.address);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let preflight = client
+        .request(reqwest::Method::OPTIONS, format!("{base}/settings"))
+        .header("origin", "https://frontend.example")
+        .header("access-control-request-method", "PUT")
+        .header(
+            "access-control-request-headers",
+            "authorization, content-type",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(preflight.status().is_success());
+    assert_eq!(preflight.headers()["access-control-allow-origin"], "*");
+    assert_eq!(
+        preflight.headers()["access-control-allow-headers"],
+        "authorization, content-type"
+    );
     let health: serde_json::Value = client
         .get(format!("{base}/health"))
         .send()

@@ -10,7 +10,8 @@
 - README、Dockerfile/.dockerignore、systemd 示例、C 头文件、API 补充文档、Linux/Android/Windows CI 已交付。
 
 ## 进行中
-- 只运行一次最终 release 构建，补验 backend-spec §12.1；开发迭代均使用 debug 构建。
+- 中断后恢复：上一轮 release 构建已停止，尚无最终产物；完成最终 release 构建，补验 backend-spec §12.1。
+- 修复浏览器 CORS 预检中的 Authorization 头许可，已补充断言；重跑 fmt、clippy 和 SQLite/PG 全套测试。
 
 ## 待办
 - 记录 release 结果，写 /workspace/work/rofu-sol/result_backend.md 并提交最终进度。Android/Windows 交叉编译按用户要求仅配置 CI，本机不验证。
