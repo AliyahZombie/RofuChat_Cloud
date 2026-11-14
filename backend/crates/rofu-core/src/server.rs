@@ -69,9 +69,8 @@ pub fn router(state: AppState, web: Option<PathBuf>) -> Router {
         .route("/api/{*path}", any(api::dispatch))
         .with_state(state);
     if let Some(dir) = web {
-        router = router.fallback_service(
-            ServeDir::new(&dir).not_found_service(ServeFile::new(dir.join("index.html"))),
-        );
+        router = router
+            .fallback_service(ServeDir::new(&dir).fallback(ServeFile::new(dir.join("index.html"))));
     }
     router.layer(
         CorsLayer::new()

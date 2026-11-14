@@ -34,17 +34,27 @@ async fn initialization_and_storage_isolation() {
 #[tokio::test]
 async fn http_auth_and_secret_masking() {
     use rofu_core::{start_server, Config};
+    let web = tempfile::tempdir().unwrap();
+    std::fs::write(web.path().join("index.html"), "<html>RofuChat SPA</html>").unwrap();
     let server = start_server(Config {
         database: "sqlite::memory:".into(),
         listen: "127.0.0.1:0".into(),
         root_password: Some("secret".into()),
         memory_scanner: false,
+        web_dir: Some(web.path().to_path_buf()),
         ..Config::default()
     })
     .await
     .unwrap();
     let base = format!("http://{}/api", server.address);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let fallback = client
+        .get(format!("http://{}/nested/frontend/route", server.address))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fallback.status(), 200);
+    assert_eq!(fallback.text().await.unwrap(), "<html>RofuChat SPA</html>");
     let preflight = client
         .request(reqwest::Method::OPTIONS, format!("{base}/settings"))
         .header("origin", "https://frontend.example")

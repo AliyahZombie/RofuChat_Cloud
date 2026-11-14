@@ -8,13 +8,16 @@
 - 测试 24 项：18 core 单测 + SQLite/PG 两个集成入口（均实际执行）+ 3 鉴权/存储 + 1 FFI；0 失败、0 ignored。两个集成入口都覆盖 OpenAI/Responses 和 MCP HTTP/SSE、JS/记忆工具、压缩/扫描/失败、断线/停止/关闭。
 - 已实际验证本地 PostgreSQL 17；测试不连接真实 LLM。
 - README、Dockerfile/.dockerignore、systemd 示例、C 头文件、API 补充文档、Linux/Android/Windows CI 已交付。
+- 阶段 4（f7381eb）：浏览器 CORS 预检显式回显 Authorization/Content-Type；回归断言通过。恢复后重新执行 fmt、clippy --all-targets -D warnings、24 项全套测试（含实际 PG）均通过。
+- 阶段 5：SPA 深层路由 fallback 返回 index.html 与 HTTP 200；回归断言通过。最终代码再次通过 fmt、clippy --all-targets -D warnings、24 项测试（实际 SQLite/PG）和 release 构建。
+- release 产物冒烟 3 项通过：启动/health/注册参数、SPA 深层路由、SIGTERM 正常退出；FFI 三个 C ABI 符号已导出，产物未链接 OpenSSL。
+- /workspace/work/rofu-sol/result_backend.md 已写入完整章节清单、测试数字、歧义处理与 CI 验证范围，状态为 done。
 
 ## 进行中
-- 中断后恢复：上一轮 release 构建已停止，尚无最终产物；完成最终 release 构建，补验 backend-spec §12.1。
-- 修复浏览器 CORS 预检中的 Authorization 头许可，已补充断言；重跑 fmt、clippy 和 SQLite/PG 全套测试。
+- 无。
 
 ## 待办
-- 记录 release 结果，写 /workspace/work/rofu-sol/result_backend.md 并提交最终进度。Android/Windows 交叉编译按用户要求仅配置 CI，本机不验证。
+- 无实现待办。Android/Windows 交叉编译按用户要求仅配置 CI，本机不验证，未 push 或触发远程 CI。
 
 ## 环境
 PATH=/workspace/tools/cargo/bin:$PATH，RUSTUP_HOME=/workspace/tools/rustup，CARGO_HOME=/workspace/tools/cargo，CARGO_TARGET_DIR=/workspace/work/rofu-sol/target，CARGO_BUILD_JOBS=2。
