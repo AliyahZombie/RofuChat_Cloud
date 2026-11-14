@@ -44,12 +44,57 @@ class ChatController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  /// Messages are fetched newest-first in pages of this size (docs/api.md, messages pagination).
+  static const pageSize = 40;
+
+  /// Older messages exist on the server that are not loaded yet.
+  bool hasMore = false;
+  bool loadingOlder = false;
+
+  /// Fetches one page: the last [limit] messages with seq < [beforeSeq]. Falls back to the
+  /// whole list on servers without pagination (they answer with a plain array).
+  Future<(List<Message>, bool)> _page({int limit = pageSize, int? beforeSeq}) async {
+    final j = await api.get('/api/conversations/$conversationId/messages', query: {
+      'limit': '$limit',
+      if (beforeSeq != null) 'before_seq': '$beforeSeq',
+    });
+    if (j is List) return (j.map((e) => Message(Map<String, dynamic>.from(e as Map))).toList(), false);
+    final m = Map<String, dynamic>.from(j as Map);
+    final list = ((m['messages'] as List?) ?? const []).map((e) => Message(Map<String, dynamic>.from(e as Map))).toList();
+    return (list, m['has_more'] == true);
+  }
+
+  Future<void> loadOlder() async {
+    if (!hasMore || loadingOlder || messages.isEmpty) return;
+    loadingOlder = true;
+    _notify();
+    try {
+      final (older, more) = await _page(beforeSeq: messages.first.seq);
+      final have = messages.map((m) => m.id).toSet();
+      messages.insertAll(0, older.where((m) => !have.contains(m.id)));
+      hasMore = more && older.isNotEmpty;
+    } catch (_) {}
+    loadingOlder = false;
+    _notify();
+  }
+
+  /// Merges the newest page into the loaded list (used while polling a generation).
+  void _mergeTail(List<Message> page) {
+    if (page.isEmpty) return;
+    final from = page.first.seq;
+    messages.removeWhere((m) => m.seq >= from);
+    messages.addAll(page);
+    messages.sort((a, b) => a.seq.compareTo(b.seq));
+  }
+
   Future<void> load() async {
     loading = true;
     _notify();
     try {
       final conv = Map<String, dynamic>.from(await api.get('/api/conversations/$conversationId') as Map);
-      messages = await api.list('/api/conversations/$conversationId/messages', Message.new);
+      final (page, more) = await _page();
+      messages = page;
+      hasMore = more;
       loadError = null;
       if (conv['generating'] == true && _sub == null) {
         generating = true;
@@ -75,7 +120,8 @@ class ChatController extends ChangeNotifier {
     _poll = Timer.periodic(const Duration(milliseconds: 1500), (_) async {
       try {
         final conv = Map<String, dynamic>.from(await api.get('/api/conversations/$conversationId') as Map);
-        messages = await api.list('/api/conversations/$conversationId/messages', Message.new);
+        final (page, _) = await _page(limit: 20);
+        _mergeTail(page);
         rev++;
         if (conv['generating'] != true) {
           _poll?.cancel();
@@ -147,8 +193,13 @@ class ChatController extends ChangeNotifier {
         messages.removeWhere((x) => x.seq > m.seq);
       }
     } else {
+      // The reply right after the last user message stays: the server adds a new swipe to it
+      // and assistant_start replaces it in place. Anything after it goes.
       final lastUser = messages.lastIndexWhere((m) => m.isUser);
-      if (lastUser >= 0) messages.removeRange(lastUser + 1, messages.length);
+      if (lastUser >= 0) {
+        final keep = lastUser + 1 < messages.length && messages[lastUser + 1].isAssistant ? lastUser + 2 : lastUser + 1;
+        messages.removeRange(keep, messages.length);
+      }
     }
     _notify();
     final body = {'content': content, 'images': images, 'regenerate': regenerate, 'edit_message_id': editMessageId};
@@ -362,6 +413,30 @@ class ChatController extends ChangeNotifier {
     _upsert(j is Map ? Message(Map<String, dynamic>.from(j)) : (m..content = content));
     rev++;
     _notify();
+  }
+
+  /// Applies a swipe response `{messages:[target, ...restored tail]}`.
+  void _applySwipe(Message target, dynamic j) {
+    final list = ((j is Map ? j['messages'] : j) as List? ?? const []).map((e) => Message(Map<String, dynamic>.from(e as Map))).toList();
+    if (list.isEmpty) return;
+    final head = list.first;
+    if (head.isUser) messages.removeWhere((m) => m.seq > head.seq);
+    for (final m in list) {
+      _upsert(m);
+    }
+    rev++;
+    _notify();
+    unawaited(refreshContext());
+  }
+
+  Future<void> swipe(Message m, int index) async {
+    if (generating || index < 0 || index >= m.swipeCount || index == m.swipeIndex) return;
+    _applySwipe(m, await api.post('/api/messages/${m.id}/swipe', {'index': index}));
+  }
+
+  Future<void> deleteSwipe(Message m) async {
+    if (generating || m.swipeCount < 2) return;
+    _applySwipe(m, await api.delete('/api/messages/${m.id}/swipes/${m.swipeIndex}'));
   }
 
   Future<void> editActual(Message m, String actual) async {

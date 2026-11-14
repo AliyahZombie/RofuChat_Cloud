@@ -1,3 +1,4 @@
+import 'dart:math';
 // Data classes mirroring the backend JSON (docs/backend-spec.md §4).
 // Each wraps the raw JSON map so unknown fields survive a GET → PUT round trip.
 
@@ -233,6 +234,9 @@ class Message extends JsonModel {
   String get modelIcon => _s(json, 'model_icon');
   Usage? get usage => json['usage'] is Map ? Usage(Map<String, dynamic>.from(json['usage'] as Map)) : null;
   int get createdAt => _i(json, 'created_at');
+  /// Active swipe (0-based) and number of swipes; a message without swipes has one.
+  int get swipeIndex => _i(json, 'swipe_index');
+  int get swipeCount => max(1, _i(json, 'swipe_count', 1));
   bool get isUser => role == 'user';
   bool get isAssistant => role == 'assistant';
   bool get isSummary => role == 'summary';

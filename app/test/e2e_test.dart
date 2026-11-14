@@ -78,6 +78,40 @@ void main() {
     expect(ctl2.context.tokens, greaterThan(0));
     expect(ctl2.context.max, greaterThan(0));
 
+    // regenerate keeps the old reply as a swipe
+    Future<void> settle(ChatController c) async {
+      for (var i = 0; i < 100 && c.generating; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
+    final firstReply = ctl.messages.last;
+    await ctl.send(regenerate: true);
+    await settle(ctl);
+    expect(ctl.messages.last.id, firstReply.id);
+    expect(ctl.messages.last.swipeCount, 2);
+    expect(ctl.messages.last.swipeIndex, 1);
+    await ctl.swipe(ctl.messages.last, 0);
+    expect(ctl.messages.last.swipeIndex, 0);
+    expect(ctl.messages.last.content, firstReply.content);
+
+    // editing a user message and resending stores a user swipe with the old tail
+    final userMsg = ctl.messages.lastWhere((m) => m.isUser);
+    await ctl.send(content: 'hello again', editMessageId: userMsg.id);
+    await settle(ctl);
+    final edited = ctl.byId(userMsg.id)!;
+    expect(edited.swipeCount, 2);
+    expect(edited.content, 'hello again');
+    expect(ctl.messages.last.id, isNot(firstReply.id));
+    await ctl.swipe(edited, 0);
+    expect(ctl.byId(userMsg.id)!.content, 'hello');
+    expect(ctl.messages.last.id, firstReply.id);
+    expect(ctl.messages.last.swipeCount, 2);
+
+    // pagination
+    final page = Map<String, dynamic>.from(await api.get('/api/conversations/${conv.id}/messages', query: {'limit': '1'}) as Map);
+    expect((page['messages'] as List).length, 1);
+    expect(page['has_more'], true);
+
     for (final path in ['/api/tools', '/api/memories', '/api/admin/users']) {
       expect(await api.get(path), isA<List>(), reason: path);
     }

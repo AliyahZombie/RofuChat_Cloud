@@ -472,9 +472,16 @@ class _MessageList extends ConsumerWidget {
       controller: scroll,
       reverse: true,
       padding: EdgeInsets.fromLTRB(hInset, 8, hInset, watch ? 64 : 8),
-      itemCount: n + 1,
+      itemCount: n + 2,
       itemBuilder: (context, i) {
         if (i == 0) return _ListTail(ctl: ctl);
+        if (i == n + 1) {
+          // Top of the (reversed) list: fetch the previous page once it scrolls into view.
+          if (ctl.hasMore && !ctl.loadingOlder) WidgetsBinding.instance.addPostFrameCallback((_) => ctl.loadOlder());
+          return ctl.hasMore
+              ? const Padding(padding: EdgeInsets.all(16), child: Center(child: SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))))
+              : const SizedBox.shrink();
+        }
         final row = rows[n - i];
         return KeyedSubtree(key: ValueKey(row.key), child: _row(context, ref, row, base, appearance, settings, models, watch));
       },
@@ -482,6 +489,19 @@ class _MessageList extends ConsumerWidget {
     if (!watch) return SelectionArea(child: list);
     return list;
   }
+
+  Widget _swipeNav(BuildContext context, Message m) => SwipeNav(
+        index: m.swipeIndex,
+        count: m.swipeCount,
+        enabled: !ctl.generating,
+        onSwipe: (i) async {
+          try {
+            await ctl.swipe(m, i);
+          } catch (e) {
+            if (context.mounted) showError(context, e);
+          }
+        },
+      );
 
   Widget _row(BuildContext context, WidgetRef ref, ChatRow row, TextStyle base, dynamic appearance, UserSettings? settings, List<ModelCfg> models, bool watch) {
     final m = row.msg;
@@ -496,6 +516,7 @@ class _MessageList extends ConsumerWidget {
           onCopy: () => copyText(context, m.content),
           onEdit: () => onEdit(m),
           onMore: (pos) => _messageMenu(context, ref, m, pos),
+          swipeNav: _swipeNav(context, m),
         );
       case AssistantHeaderRow():
         if (watch) return const SizedBox(height: 6);
@@ -535,7 +556,7 @@ class _MessageList extends ConsumerWidget {
       case FooterRow():
         return Appear(
             enabled: m.id == ctl.justFinishedId,
-            child: _AssistantFooter(ctl: ctl, msg: m, isLast: row.isLastAssistant, showTokens: appearance.showTokens && !watch, compact: watch, onMore: (pos) => _messageMenu(context, ref, m, pos)));
+            child: _AssistantFooter(ctl: ctl, msg: m, isLast: row.isLastAssistant, showTokens: appearance.showTokens && !watch, compact: watch, onEdit: () => onEdit(m), swipeNav: _swipeNav(context, m), onMore: (pos) => _messageMenu(context, ref, m, pos)));
     }
   }
 
@@ -543,7 +564,7 @@ class _MessageList extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     final items = <PopupMenuEntry<String>>[
       PopupMenuItem(value: 'copy', child: ListTile(dense: true, leading: const Icon(Icons.copy_rounded), title: Text(t('复制', 'Copy')))),
-      PopupMenuItem(value: 'edit', child: ListTile(dense: true, leading: const Icon(Icons.edit_outlined), title: Text(m.isUser ? t('编辑重发', 'Edit & resend') : t('编辑内容', 'Edit')))),
+      PopupMenuItem(value: 'edit', child: ListTile(dense: true, leading: const Icon(Icons.edit_outlined), title: Text(t('编辑', 'Edit')))),
       PopupMenuItem(
           value: 'visible',
           child: ListTile(dense: true, leading: Icon(m.visible ? Icons.visibility_off_outlined : Icons.visibility_outlined), title: Text(m.visible ? t('移出上下文', 'Exclude from context') : t('加入上下文', 'Include in context')))),
@@ -551,6 +572,8 @@ class _MessageList extends ConsumerWidget {
         PopupMenuItem(value: 'actual', child: ListTile(dense: true, leading: const Icon(Icons.compress_rounded), title: Text(t('查看/编辑压缩内容', 'View/edit compressed')))),
       if (m.isAssistant && m.usage != null && context.isWatch)
         PopupMenuItem(value: 'usage', child: ListTile(dense: true, leading: const Icon(Icons.data_usage), title: Text(t('Token 用量', 'Token usage')))),
+      if (m.swipeCount > 1 && !ctl.generating)
+        PopupMenuItem(value: 'del_swipe', child: ListTile(dense: true, leading: const Icon(Icons.layers_clear_outlined), title: Text(t('删除当前版本', 'Delete this version')))),
       PopupMenuItem(value: 'branch', child: ListTile(dense: true, leading: const Icon(Icons.call_split_rounded), title: Text(t('从这里分支', 'Branch from here')))),
       PopupMenuItem(value: 'delete', child: ListTile(dense: true, leading: Icon(Icons.delete_outline, color: scheme.error), title: Text(t('删除', 'Delete'), style: TextStyle(color: scheme.error)))),
     ];
@@ -561,12 +584,7 @@ class _MessageList extends ConsumerWidget {
         case 'copy':
           copyText(context, m.content);
         case 'edit':
-          if (m.isUser) {
-            onEdit(m);
-          } else {
-            final s = await promptText(context, t('编辑内容', 'Edit'), initial: m.content, maxLines: 16);
-            if (s != null) await ctl.editContent(m, s);
-          }
+          onEdit(m);
         case 'visible':
           await ctl.setVisible(m, !m.visible);
         case 'actual':
@@ -574,6 +592,8 @@ class _MessageList extends ConsumerWidget {
         case 'usage':
           final u = m.usage!;
           await showDialog(context: context, builder: (c) => AlertDialog(content: TokenIndicator(usage: u)));
+        case 'del_swipe':
+          await ctl.deleteSwipe(m);
         case 'branch':
           final id = await ctl.branch(m);
           if (id != null) {
@@ -686,8 +706,10 @@ class _AssistantFooter extends StatelessWidget {
   final bool isLast;
   final bool showTokens;
   final bool compact;
+  final VoidCallback onEdit;
+  final Widget swipeNav;
   final void Function(Offset) onMore;
-  const _AssistantFooter({required this.ctl, required this.msg, required this.isLast, required this.showTokens, required this.compact, required this.onMore});
+  const _AssistantFooter({required this.ctl, required this.msg, required this.isLast, required this.showTokens, required this.compact, required this.onEdit, required this.swipeNav, required this.onMore});
 
   @override
   Widget build(BuildContext context) {
@@ -733,6 +755,8 @@ class _AssistantFooter extends StatelessWidget {
               if (showTokens && usage != null) Padding(padding: const EdgeInsets.only(right: 4), child: TokenIndicator(usage: usage)),
               ActualStatusIcon(msg: msg, pending: ctl.actualPending.contains(msg.id), onTapFailed: () => showActualDialog(context, ctl, msg)),
               MiniIconButton(Icons.copy_rounded, t('复制', 'Copy'), () => copyText(context, msg.content)),
+              swipeNav,
+              if (!compact) MiniIconButton(Icons.edit_outlined, t('编辑', 'Edit'), onEdit),
               if (isLast) MiniIconButton(Icons.refresh_rounded, t('重新生成', 'Regenerate'), ctl.generating ? () {} : () => ctl.send(regenerate: true)),
               Builder(builder: (c) => MiniIconButton(Icons.more_vert, t('更多', 'More'), () => onMore(_centerOf(c)))),
             ]),
@@ -764,12 +788,45 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
   final List<String> _images = [];
   Message? _editing;
 
+  /// What the user had typed (and attached) before starting an edit; restored afterwards so
+  /// editing a message never eats an unfinished draft.
+  (String, List<String>)? _draft;
+
   void startEdit(Message m) {
     setState(() {
+      if (_editing == null) _draft = (_text.text, List<String>.from(_images));
       _editing = m;
+      _images.clear();
       _text.text = m.content;
+      _text.selection = TextSelection.collapsed(offset: _text.text.length);
     });
     _focus.requestFocus();
+  }
+
+  void _endEdit() {
+    final d = _draft;
+    _editing = null;
+    _draft = null;
+    _text.text = d?.$1 ?? '';
+    _text.selection = TextSelection.collapsed(offset: _text.text.length);
+    _images
+      ..clear()
+      ..addAll(d?.$2 ?? const []);
+  }
+
+  /// Saves the edited text in place; nothing is regenerated.
+  Future<void> _saveEditOnly() async {
+    final editing = _editing;
+    final ctl = widget.ctl;
+    if (editing == null || ctl == null) return;
+    final s = _text.text.trim();
+    if (s.isEmpty) return;
+    try {
+      await ctl.editContent(editing, s);
+      if (mounted) setState(_endEdit);
+    } catch (e) {
+      if (mounted) showError(context, e);
+    }
   }
 
   @override
@@ -783,14 +840,18 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
 
   Future<void> _submit() async {
     final s = _text.text.trim();
+    final editing = _editing;
+    if (editing != null && !editing.isUser) return _saveEditOnly(); // assistant edits only save
     if (_busy) return;
     if (s.isEmpty && _images.isEmpty) return;
     final images = List<String>.from(_images);
-    final editing = _editing;
     setState(() {
-      _text.clear();
-      _images.clear();
-      _editing = null;
+      if (editing != null) {
+        _endEdit();
+      } else {
+        _text.clear();
+        _images.clear();
+      }
     });
     if (editing != null && widget.ctl != null) {
       await widget.ctl!.send(content: s, editMessageId: editing.id);
@@ -885,7 +946,10 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
       return _WatchInput(info: info, busy: _busy, onStop: () => ctl?.stop(), onText: (s) => widget.onSend(s, const []));
     }
 
-    final sendBtn = _busy
+    final editingAssistant = _editing != null && !_editing!.isUser;
+    final sendBtn = editingAssistant
+        ? IconButton.filled(onPressed: _saveEditOnly, icon: const Icon(Icons.check_rounded), tooltip: t('保存', 'Save'))
+        : _busy
         ? IconButton.filled(onPressed: () => ctl?.stop(), icon: const Icon(Icons.stop_rounded), tooltip: t('停止', 'Stop'))
         : IconButton.filled(onPressed: _submit, icon: const Icon(Icons.arrow_upward_rounded), tooltip: t('发送', 'Send'));
 
@@ -906,11 +970,19 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
               child: Row(children: [
                 Icon(Icons.edit_outlined, size: 14, color: scheme.primary),
                 const SizedBox(width: 6),
-                Expanded(child: Text(t('编辑消息后将从这里重新生成', 'Editing: replies after this message will be regenerated'), style: Theme.of(context).textTheme.labelSmall)),
-                IconButton(iconSize: 16, onPressed: () => setState(() {
-                  _editing = null;
-                  _text.clear();
-                }), icon: const Icon(Icons.close)),
+                Expanded(
+                  child: Text(
+                    _editing!.isUser ? t('编辑消息 · 发送 = 保存并重新生成', 'Editing · Send = save & regenerate') : t('编辑回复', 'Editing reply'),
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ),
+                if (_editing!.isUser)
+                  TextButton(
+                    style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                    onPressed: _saveEditOnly,
+                    child: Text(t('仅保存', 'Save only')),
+                  ),
+                IconButton(iconSize: 16, tooltip: t('取消编辑', 'Cancel edit'), onPressed: () => setState(_endEdit), icon: const Icon(Icons.close)),
               ]),
             ),
           if (_images.isNotEmpty)

@@ -156,7 +156,8 @@ class UserBubble extends StatelessWidget {
   final VoidCallback onCopy;
   final VoidCallback onEdit;
   final void Function(Offset) onMore;
-  const UserBubble({super.key, required this.msg, required this.userName, required this.showName, required this.onCopy, required this.onEdit, required this.onMore, this.compact = false, this.maxWidthFactor = 0.85});
+  final Widget? swipeNav;
+  const UserBubble({super.key, required this.msg, required this.userName, required this.showName, required this.onCopy, required this.onEdit, required this.onMore, this.compact = false, this.maxWidthFactor = 0.85, this.swipeNav});
 
   @override
   Widget build(BuildContext context) {
@@ -202,7 +203,8 @@ class UserBubble extends StatelessWidget {
                 children: [
                   if (!msg.visible) _NotInContext(),
                   _MiniIcon(Icons.copy_rounded, t('复制', 'Copy'), onCopy),
-                  _MiniIcon(Icons.edit_outlined, t('编辑重发', 'Edit & resend'), onEdit),
+                  ?swipeNav,
+                  _MiniIcon(Icons.edit_outlined, t('编辑', 'Edit'), onEdit),
                   Builder(builder: (c) => _MiniIcon(Icons.more_vert, t('更多', 'More'), () => onMore(_center(c)))),
                 ],
               ),
@@ -502,4 +504,35 @@ class ActualStatusIcon extends StatelessWidget {
 void copyText(BuildContext context, String s) {
   Clipboard.setData(ClipboardData(text: s));
   ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(t('已复制', 'Copied')), duration: const Duration(seconds: 1)));
+}
+
+
+/// `< x/n >` switcher between a message's swipes; hidden when there is only one.
+class SwipeNav extends StatelessWidget {
+  final int index;
+  final int count;
+  final bool enabled;
+  final ValueChanged<int> onSwipe;
+  const SwipeNav({super.key, required this.index, required this.count, required this.onSwipe, this.enabled = true});
+
+  @override
+  Widget build(BuildContext context) {
+    if (count < 2) return const SizedBox.shrink();
+    final scheme = Theme.of(context).colorScheme;
+    Widget arrow(IconData icon, String tip, int to) => IconButton(
+          tooltip: tip,
+          onPressed: enabled && to >= 0 && to < count ? () => onSwipe(to) : null,
+          iconSize: 18,
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
+          color: scheme.onSurfaceVariant,
+          icon: Icon(icon),
+        );
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      arrow(Icons.chevron_left_rounded, t('上一个版本', 'Previous version'), index - 1),
+      Text('${index + 1}/$count', style: Theme.of(context).textTheme.labelMedium?.copyWith(color: scheme.onSurfaceVariant, fontFeatures: const [FontFeature.tabularFigures()])),
+      arrow(Icons.chevron_right_rounded, t('下一个版本', 'Next version'), index + 1),
+    ]);
+  }
 }
