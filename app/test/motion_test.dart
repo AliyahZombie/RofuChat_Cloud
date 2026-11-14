@@ -1,6 +1,10 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rofuchat/core/api.dart';
+import 'package:rofuchat/core/format.dart';
+import 'package:rofuchat/features/chat/chat_controller.dart';
+import 'package:rofuchat/models/models.dart';
 import 'package:rofuchat/widgets/common.dart';
 import 'package:rofuchat/widgets/motion.dart';
 import 'package:rofuchat/widgets/slide_drawer.dart';
@@ -65,5 +69,27 @@ void main() {
     await t.tap(find.text('Rename'));
     await t.pumpAndSettle();
     expect(got, 'ren');
+  });
+
+  test('draft controller: greetings as local swipes, picked index maps to greeting_index', () async {
+    final ch = Character({'id': 'c1', 'name': 'A', 'card': {'first_mes': 'hi', 'alternate_greetings': ['yo', 'hey']}});
+    final d = ChatController.draft(Api('http://127.0.0.1:9'), ch);
+    expect(d.isDraft, true);
+    expect(d.messages.single.content, 'hi');
+    expect(d.messages.single.swipeCount, 3);
+    await d.swipe(d.messages.single, 2);
+    expect(d.messages.single.content, 'hey');
+    expect(d.draftGreeting, 2);
+    expect(ch.newConversationBody(d.draftGreeting), {'character_id': 'c1', 'greeting_index': 1});
+    d.addPendingUser('first', const []);
+    expect(d.messages.last.content, 'first');
+    d.clearPending();
+    expect(d.messages.length, 1);
+  });
+
+  test('size formatting', () {
+    expect(fmtCount(1234567), '1,234,567');
+    expect(fmtBytes(512), '512 B');
+    expect(fmtBytes(estimateHistoryBytes(20000)), '70 KB');
   });
 }

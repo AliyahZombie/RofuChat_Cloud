@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/form_factor.dart';
+import '../../core/format.dart';
 import '../../core/i18n.dart';
 import '../../core/theme.dart';
 import '../../models/models.dart';
@@ -164,6 +165,7 @@ class SettingsPage extends ConsumerWidget {
       ),
       SwitchListTile(title: Text(t('紧凑布局', 'Compact layout')), value: a.compact, onChanged: (v) => setA(a.copyWith(compact: v))),
       if (!watch) SwitchListTile(title: Text(t('聊天铺满宽度（桌面）', 'Full-width chat (desktop)')), value: a.fullWidth, onChanged: (v) => setA(a.copyWith(fullWidth: v))),
+      _LoadCharsTile(value: a.loadChars, onChanged: (v) => setA(a.copyWith(loadChars: v))),
       SwitchListTile(title: Text(t('显示头像', 'Show avatars')), value: a.showAvatars, onChanged: (v) => setA(a.copyWith(showAvatars: v))),
       SwitchListTile(title: Text(t('显示 Token 用量', 'Show token usage')), value: a.showTokens, onChanged: (v) => setA(a.copyWith(showTokens: v))),
       if (!watch) SwitchListTile(title: Text(t('Enter 发送（Shift+Enter 换行）', 'Enter to send (Shift+Enter newline)')), value: a.enterToSend, onChanged: (v) => setA(a.copyWith(enterToSend: v))),
@@ -220,5 +222,36 @@ class SettingsPage extends ConsumerWidget {
     } catch (e) {
       if (context.mounted) showError(context, e);
     }
+  }
+}
+
+
+/// History loaded per page (opening a chat, then each scroll to the top), in characters.
+class _LoadCharsTile extends StatelessWidget {
+  final int value;
+  final ValueChanged<int> onChanged;
+  const _LoadCharsTile({required this.value, required this.onChanged});
+
+  static const steps = [1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000];
+
+  @override
+  Widget build(BuildContext context) {
+    var i = steps.indexWhere((s) => s >= value);
+    if (i < 0) i = steps.length - 1;
+    return ListTile(
+      title: Text(t('每次加载历史', 'History per load')),
+      subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(t('${fmtCount(value)} 字，预估约 ${fmtBytes(estimateHistoryBytes(value))}；至少加载一轮对话',
+            '${fmtCount(value)} chars, about ${fmtBytes(estimateHistoryBytes(value))}; at least one exchange')),
+        Slider(
+          value: i.toDouble(),
+          min: 0,
+          max: (steps.length - 1).toDouble(),
+          divisions: steps.length - 1,
+          label: fmtCount(steps[i]),
+          onChanged: (v) => onChanged(steps[v.round()]),
+        ),
+      ]),
+    );
   }
 }

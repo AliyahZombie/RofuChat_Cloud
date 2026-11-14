@@ -10,6 +10,8 @@ class Appearance {
   final bool showTokens;
   final bool enterToSend;
   final String language; // '' | zh | en
+  /// Characters of history fetched per page when opening a chat / scrolling up.
+  final int loadChars;
 
   const Appearance({
     this.themeMode = 'system',
@@ -21,6 +23,7 @@ class Appearance {
     this.showTokens = true,
     this.enterToSend = true,
     this.language = '',
+    this.loadChars = 20000,
   });
 
   factory Appearance.fromJson(Map<String, dynamic> j) => Appearance(
@@ -33,6 +36,7 @@ class Appearance {
         showTokens: j['show_tokens'] as bool? ?? true,
         enterToSend: j['enter_to_send'] as bool? ?? true,
         language: j['language'] as String? ?? '',
+        loadChars: (j['load_chars'] as num?)?.toInt() ?? 20000,
       );
 
   Map<String, dynamic> toJson() => {
@@ -45,9 +49,10 @@ class Appearance {
         'show_tokens': showTokens,
         'enter_to_send': enterToSend,
         'language': language,
+        'load_chars': loadChars,
       };
 
-  Appearance copyWith({String? themeMode, int? seed, double? fontScale, bool? compact, bool? fullWidth, bool? showAvatars, bool? showTokens, bool? enterToSend, String? language}) =>
+  Appearance copyWith({String? themeMode, int? seed, double? fontScale, bool? compact, bool? fullWidth, bool? showAvatars, bool? showTokens, bool? enterToSend, String? language, int? loadChars}) =>
       Appearance(
         themeMode: themeMode ?? this.themeMode,
         seed: seed ?? this.seed,
@@ -58,6 +63,7 @@ class Appearance {
         showTokens: showTokens ?? this.showTokens,
         enterToSend: enterToSend ?? this.enterToSend,
         language: language ?? this.language,
+        loadChars: loadChars ?? this.loadChars,
       );
 
   ThemeMode get mode => switch (themeMode) {

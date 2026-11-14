@@ -55,57 +55,63 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     super.dispose();
   }
 
-  ChatController? _controllerFor(String? convId) {
-    if (convId == _ctlConv) return _ctl;
+  /// The controller for the selected conversation, or a draft for [ch] when none is selected:
+  /// a new chat is not created until its first message is sent.
+  ChatController? _controllerFor(String? convId, Character? ch) {
+    final key = convId ?? (ch == null ? null : 'draft:${ch.id}');
+    if (key == _ctlConv) return _ctl;
     _ctl?.dispose();
     _cache.clear();
-    _ctlConv = convId;
-    if (convId == null) {
+    _ctlConv = key;
+    if (key == null) {
       _ctl = null;
+    } else if (convId == null) {
+      _ctl = ChatController.draft(ref.read(apiProvider), ch!);
     } else {
-      _ctl = ChatController(ref.read(apiProvider), convId)..load();
+      _ctl = ChatController(ref.read(apiProvider), convId, maxChars: ref.read(appearanceProvider).loadChars)..load();
     }
     return _ctl;
   }
 
-  Future<String?> _ensureConversation(Character ch) async {
-    final cur = ref.read(selectedConversationIdProvider);
-    if (cur != null) return cur;
-    final j = await ref.read(apiProvider).post('/api/conversations', ch.newConversationBody(0));
-    final id = (j as Map)['id'] as String;
-    ref.invalidate(conversationsProvider(ch.id));
-    ref.read(selectedConversationIdProvider.notifier).select(id);
-    return id;
+  /// First send from a draft: create the conversation with the greeting shown, load it, then
+  /// send on the new controller before anything else can touch it (no lost first message).
+  Future<void> _startConversation(Character ch, String text, List<String> images) async {
+    final draft = _ctl;
+    if (draft == null || !draft.isDraft || draft.generating) return;
+    draft.addPendingUser(text, images);
+    final api = ref.read(apiProvider);
+    final ChatController ctl;
+    try {
+      final j = await api.post('/api/conversations', ch.newConversationBody(draft.draftGreeting));
+      final id = (j as Map)['id'] as String;
+      ctl = ChatController(api, id, maxChars: ref.read(appearanceProvider).loadChars);
+      await ctl.load();
+      if (!mounted || _ctl != draft) {
+        ctl.dispose();
+        return;
+      }
+      draft.dispose();
+      _cache.clear();
+      _ctl = ctl;
+      _ctlConv = id;
+      ref.read(selectedConversationIdProvider.notifier).select(id);
+      ref.invalidate(conversationsProvider(ch.id));
+    } catch (e) {
+      draft.clearPending();
+      if (mounted) showError(context, e);
+      return;
+    }
+    await ctl.send(content: text, images: images);
+    if (mounted) ref.invalidate(conversationsProvider(ch.id));
   }
 
-  Future<void> newConversation(Character ch) async {
-    var idx = 0;
-    final greetings = ch.greetings;
-    if (greetings.length > 1) {
-      final r = await showModalBottomSheet<int>(
-        context: context,
-        showDragHandle: true,
-        builder: (c) => SafeArea(
-          child: ListView(shrinkWrap: true, children: [
-            Padding(padding: const EdgeInsets.all(12), child: Text(t('选择开场白', 'Choose a greeting'), style: Theme.of(c).textTheme.titleMedium)),
-            for (var i = 0; i < greetings.length; i++)
-              ListTile(
-                leading: CircleAvatar(radius: 14, child: Text('${i + 1}')),
-                title: Text(greetings[i], maxLines: 3, overflow: TextOverflow.ellipsis),
-                onTap: () => Navigator.pop(c, i),
-              ),
-          ]),
-        ),
-      );
-      if (r == null) return;
-      idx = r;
-    }
-    try {
-      final j = await ref.read(apiProvider).post('/api/conversations', ch.newConversationBody(idx));
-      ref.invalidate(conversationsProvider(ch.id));
-      ref.read(selectedConversationIdProvider.notifier).select((j as Map)['id'] as String);
-    } catch (e) {
-      if (mounted) showError(context, e);
+  /// "New chat" just opens a fresh draft; the greeting is picked with its swipe arrows.
+  void newConversation(Character ch) {
+    ref.read(selectedConversationIdProvider.notifier).select(null);
+    if (_ctl?.isDraft ?? false) {
+      // Already on a draft: reset it (greeting back to the first, pending text cleared).
+      _ctlConv = null;
+      setState(() {});
     }
   }
 
@@ -114,7 +120,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final ff = context.formFactor;
     final ch = ref.watch(currentCharacterProvider);
     final convId = ref.watch(selectedConversationIdProvider);
-    final ctl = _controllerFor(convId);
+    final ctl = _controllerFor(convId, ch);
     final chars = ref.watch(charactersProvider);
 
     final body = ch == null
@@ -127,7 +133,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             scroll: _scroll,
             atBottom: _atBottom,
             onNewConversation: () => newConversation(ch),
-            ensureConversation: () => _ensureConversation(ch),
+            startConversation: (text, images) => _startConversation(ch, text, images),
           );
 
     if (ff == FormFactor.watch) {
@@ -331,8 +337,8 @@ class _ChatBody extends ConsumerStatefulWidget {
   final ScrollController scroll;
   final bool atBottom;
   final VoidCallback onNewConversation;
-  final Future<String?> Function() ensureConversation;
-  const _ChatBody({super.key, required this.ctl, required this.character, required this.cache, required this.scroll, required this.atBottom, required this.onNewConversation, required this.ensureConversation});
+  final Future<void> Function(String text, List<String> images) startConversation;
+  const _ChatBody({super.key, required this.ctl, required this.character, required this.cache, required this.scroll, required this.atBottom, required this.onNewConversation, required this.startConversation});
 
   @override
   ConsumerState<_ChatBody> createState() => _ChatBodyState();
@@ -342,64 +348,23 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
   final _input = GlobalKey<ChatInputBarState>();
 
   Future<void> _send(String text, List<String> images) async {
-    var ctl = widget.ctl;
-    if (ctl == null) {
-      try {
-        await widget.ensureConversation();
-      } catch (e) {
-        if (mounted) showError(context, e);
-        return;
-      }
-      // The page rebuilds with a fresh controller for the new conversation.
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      if (!mounted) return;
-      _pendingSend = (text, images);
-      return;
-    }
+    final ctl = widget.ctl;
+    if (ctl == null) return;
+    if (ctl.isDraft) return widget.startConversation(text, images);
     await ctl.send(content: text, images: images);
     ref.invalidate(conversationsProvider(widget.character.id));
-  }
-
-  static (String, List<String>)? _pendingSend;
-
-  @override
-  void didUpdateWidget(covariant _ChatBody old) {
-    super.didUpdateWidget(old);
-    final p = _pendingSend;
-    if (p != null && widget.ctl != null) {
-      _pendingSend = null;
-      final ctl = widget.ctl!;
-      Future.microtask(() async {
-        await ctl.send(content: p.$1, images: p.$2);
-        ref.invalidate(conversationsProvider(widget.character.id));
-      });
-    }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    final p = _pendingSend;
-    if (p != null && widget.ctl != null) {
-      _pendingSend = null;
-      final ctl = widget.ctl!;
-      Future.microtask(() async {
-        await ctl.send(content: p.$1, images: p.$2);
-        ref.invalidate(conversationsProvider(widget.character.id));
-      });
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     final ctl = widget.ctl;
     final watch = context.isWatch;
-    final list = ctl == null
-        ? _EmptyChat(character: widget.character, onNew: widget.onNewConversation)
-        : ListenableBuilder(listenable: ctl, builder: (context, _) => _MessageList(ctl: ctl, character: widget.character, cache: widget.cache, scroll: widget.scroll, onEdit: (m) => _input.currentState?.startEdit(m)));
+    final list = ctl == null || (ctl.isDraft && ctl.messages.isEmpty)
+        ? _EmptyChat(character: widget.character)
+        : ListenableBuilder(listenable: ctl, builder: (context, _) => _MessageList(ctl: ctl, character: widget.character, cache: widget.cache, scroll: widget.scroll, onEdit: (m) { if (!ctl.isDraft) _input.currentState?.startEdit(m); }));
     final input = ctl == null
         ? ChatInputBar(key: _input, ctl: null, character: widget.character, onSend: _send)
-        : ListenableBuilder(listenable: ctl, builder: (context, _) => ChatInputBar(key: _input, ctl: ctl, character: widget.character, onSend: _send));
+        : ListenableBuilder(listenable: ctl, builder: (context, _) => ChatInputBar(key: _input, ctl: ctl.isDraft ? null : ctl, character: widget.character, onSend: _send));
     if (watch) {
       return Stack(children: [
         Positioned.fill(child: list),
@@ -411,7 +376,7 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
       Expanded(
         child: Stack(children: [
           Positioned.fill(child: list),
-          if (!widget.atBottom && ctl != null)
+          if (!widget.atBottom && ctl != null && !ctl.isDraft)
             Positioned(
               right: 12,
               bottom: 8,
@@ -434,8 +399,7 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
 
 class _EmptyChat extends StatelessWidget {
   final Character character;
-  final VoidCallback onNew;
-  const _EmptyChat({required this.character, required this.onNew});
+  const _EmptyChat({required this.character});
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
@@ -451,8 +415,6 @@ class _EmptyChat extends StatelessWidget {
               padding: const EdgeInsets.only(top: 8),
               child: Text(character.cardStr('creator_notes'), maxLines: 4, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: text.bodySmall),
             ),
-          const SizedBox(height: 16),
-          FilledButton.tonalIcon(onPressed: onNew, icon: const Icon(Icons.add_comment_outlined), label: Text(t('开始新对话', 'Start a new chat'))),
         ]),
       ),
     );
@@ -491,9 +453,18 @@ class _MessageList extends ConsumerWidget {
         if (i == n + 1) {
           // Top of the (reversed) list: fetch the previous page once it scrolls into view.
           if (ctl.hasMore && !ctl.loadingOlder) WidgetsBinding.instance.addPostFrameCallback((_) => ctl.loadOlder());
-          return ctl.hasMore
-              ? const Padding(padding: EdgeInsets.all(16), child: Center(child: SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))))
-              : const SizedBox.shrink();
+          final loaded = ctl.loadedChars > 0
+              ? Text(t('已加载 ${fmtCount(ctl.loadedChars)} 字 · ${fmtBytes(ctl.loadedBytes)}', 'Loaded ${fmtCount(ctl.loadedChars)} chars · ${fmtBytes(ctl.loadedBytes)}'),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.outline))
+              : null;
+          return Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(children: [
+              if (ctl.hasMore) const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+              if (ctl.hasMore && loaded != null) const SizedBox(height: 6),
+              ?loaded,
+            ]),
+          );
         }
         final row = rows[n - i];
         return KeyedSubtree(key: ValueKey(row.key), child: _row(context, ref, row, base, appearance, settings, models, watch));
@@ -574,6 +545,7 @@ class _MessageList extends ConsumerWidget {
   }
 
   Future<void> _messageMenu(BuildContext context, WidgetRef ref, Message m, Offset pos) async {
+    if (ctl.isDraft) return;
     final scheme = Theme.of(context).colorScheme;
     final items = <PopupMenuEntry<String>>[
       PopupMenuItem(value: 'copy', child: ListTile(dense: true, leading: const Icon(Icons.copy_rounded), title: Text(t('复制', 'Copy')))),
@@ -754,7 +726,7 @@ class _AssistantFooter extends StatelessWidget {
           Row(children: [
             ActualStatusIcon(msg: msg, pending: ctl.actualPending.contains(msg.id), onTapFailed: () => showActualDialog(context, ctl, msg)),
             const Spacer(),
-            Builder(builder: (c) => MiniIconButton(Icons.more_horiz, t('更多', 'More'), () => onMore(_centerOf(c)))),
+            if (ctl.isDraft) swipeNav else Builder(builder: (c) => MiniIconButton(Icons.more_horiz, t('更多', 'More'), () => onMore(_centerOf(c)))),
           ])
         else
           Padding(
@@ -769,9 +741,11 @@ class _AssistantFooter extends StatelessWidget {
               ActualStatusIcon(msg: msg, pending: ctl.actualPending.contains(msg.id), onTapFailed: () => showActualDialog(context, ctl, msg)),
               MiniIconButton(Icons.copy_rounded, t('复制', 'Copy'), () => copyText(context, msg.content)),
               swipeNav,
-              if (!compact) MiniIconButton(Icons.edit_outlined, t('编辑', 'Edit'), onEdit),
-              if (isLast) MiniIconButton(Icons.refresh_rounded, t('重新生成', 'Regenerate'), ctl.generating ? () {} : () => ctl.send(regenerate: true)),
-              Builder(builder: (c) => MiniIconButton(Icons.more_vert, t('更多', 'More'), () => onMore(_centerOf(c)))),
+              if (!ctl.isDraft) ...[
+                if (!compact) MiniIconButton(Icons.edit_outlined, t('编辑', 'Edit'), onEdit),
+                if (isLast) MiniIconButton(Icons.refresh_rounded, t('重新生成', 'Regenerate'), ctl.generating ? () {} : () => ctl.send(regenerate: true)),
+                Builder(builder: (c) => MiniIconButton(Icons.more_vert, t('更多', 'More'), () => onMore(_centerOf(c)))),
+              ],
             ]),
           ),
       ]),

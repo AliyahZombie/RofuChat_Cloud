@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -12,7 +13,68 @@ import '../../models/models.dart';
 class ChatController extends ChangeNotifier {
   final Api api;
   final String conversationId;
-  ChatController(this.api, this.conversationId);
+
+  /// History budget per page, in characters (Appearance.loadChars).
+  final int maxChars;
+  ChatController(this.api, this.conversationId, {this.maxChars = 20000});
+
+  /// A not-yet-created conversation: shows the character's greetings locally (switchable
+  /// with the swipe arrows) and is created on the first send.
+  ChatController.draft(this.api, Character character)
+      : conversationId = '',
+        maxChars = 0 {
+    loading = false;
+    final g = character.greetings;
+    if (g.isNotEmpty) {
+      messages = [
+        Message({
+          'id': 'draft-greeting',
+          'conversation_id': '',
+          'seq': 0,
+          'role': 'assistant',
+          'content': g.first,
+          'visible': true,
+          'swipe_index': 0,
+          'swipe_count': g.length,
+          'parts': {'images': <dynamic>[], 'segments': <dynamic>[]},
+          'created_at': DateTime.now().millisecondsSinceEpoch,
+        }),
+      ];
+    }
+    _greetings = g;
+  }
+
+  List<String> _greetings = const [];
+  bool get isDraft => conversationId.isEmpty;
+
+  /// The greeting picked in a draft (index into Character.greetings).
+  int get draftGreeting => messages.isNotEmpty && messages.first.id == 'draft-greeting' ? messages.first.swipeIndex : 0;
+
+  /// Shows the message being sent while a draft turns into a real conversation.
+  void addPendingUser(String content, List<String> images) {
+    messages.add(Message({
+      'id': 'local-pending',
+      'conversation_id': '',
+      'seq': messages.length,
+      'role': 'user',
+      'content': content,
+      'visible': true,
+      'parts': {'images': images, 'segments': <dynamic>[]},
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+    }));
+    generating = true;
+    _notify();
+  }
+
+  void clearPending() {
+    messages.removeWhere((m) => m.id == 'local-pending');
+    generating = false;
+    _notify();
+  }
+
+  /// Characters and bytes of history loaded so far (server-reported when available).
+  int loadedChars = 0;
+  int loadedBytes = 0;
 
   List<Message> messages = [];
   bool loading = true;
@@ -44,24 +106,34 @@ class ChatController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  /// Messages are fetched newest-first in pages of this size (docs/api.md, messages pagination).
-  static const pageSize = 40;
+  /// Messages are fetched newest-first in pages of [maxChars] characters (docs/api.md,
+  /// messages pagination); the server always returns at least one user/assistant pair.
 
   /// Older messages exist on the server that are not loaded yet.
   bool hasMore = false;
   bool loadingOlder = false;
 
-  /// Fetches one page: the last [limit] messages with seq < [beforeSeq]. Falls back to the
-  /// whole list on servers without pagination (they answer with a plain array).
-  Future<(List<Message>, bool)> _page({int limit = pageSize, int? beforeSeq}) async {
+  /// Fetches one page ending before [beforeSeq]: by character budget, or the last [limit]
+  /// messages when given. Falls back to the whole list on servers without pagination.
+  Future<(List<Message>, bool)> _page({int? limit, int? beforeSeq}) async {
     final j = await api.get('/api/conversations/$conversationId/messages', query: {
-      'limit': '$limit',
+      if (limit != null) 'limit': '$limit' else 'max_chars': '$maxChars',
       if (beforeSeq != null) 'before_seq': '$beforeSeq',
     });
-    if (j is List) return (j.map((e) => Message(Map<String, dynamic>.from(e as Map))).toList(), false);
+    if (j is List) {
+      final list = j.map((e) => Message(Map<String, dynamic>.from(e as Map))).toList();
+      if (limit == null) _count(list, null, null);
+      return (list, false);
+    }
     final m = Map<String, dynamic>.from(j as Map);
     final list = ((m['messages'] as List?) ?? const []).map((e) => Message(Map<String, dynamic>.from(e as Map))).toList();
+    if (limit == null) _count(list, (m['chars'] as num?)?.toInt(), (m['bytes'] as num?)?.toInt());
     return (list, m['has_more'] == true);
+  }
+
+  void _count(List<Message> page, int? chars, int? bytes) {
+    loadedChars += chars ?? page.fold<int>(0, (n, m) => n + m.content.length);
+    loadedBytes += bytes ?? utf8.encode(jsonEncode(page.map((m) => m.json).toList())).length;
   }
 
   Future<void> loadOlder() async {
@@ -88,7 +160,10 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> load() async {
+    if (isDraft) return;
     loading = true;
+    loadedChars = 0;
+    loadedBytes = 0;
     _notify();
     try {
       final conv = Map<String, dynamic>.from(await api.get('/api/conversations/$conversationId') as Map);
@@ -109,6 +184,7 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> refreshContext() async {
+    if (isDraft) return;
     try {
       context = ContextInfo.fromJson(Map<String, dynamic>.from(await api.get('/api/conversations/$conversationId/context') as Map));
       _notify();
@@ -431,6 +507,13 @@ class ChatController extends ChangeNotifier {
 
   Future<void> swipe(Message m, int index) async {
     if (generating || index < 0 || index >= m.swipeCount || index == m.swipeIndex) return;
+    if (isDraft) {
+      m.json['swipe_index'] = index;
+      m.content = _greetings[index];
+      rev++;
+      _notify();
+      return;
+    }
     _applySwipe(m, await api.post('/api/messages/${m.id}/swipe', {'index': index}));
   }
 

@@ -20,3 +20,17 @@ String fmtTime(int ms) {
   if (d.year == now.year) return '${d.month}/${d.day}';
   return '${d.year}/${d.month}/${d.day}';
 }
+
+/// 12345 -> "12,345".
+String fmtCount(int n) => n.toString().replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (_) => ',');
+
+/// Byte size as B / KB / MB.
+String fmtBytes(int b) {
+  if (b < 1024) return '$b B';
+  if (b < 1024 * 1024) return '${(b / 1024).toStringAsFixed(b < 10 * 1024 ? 1 : 0)} KB';
+  return '${(b / 1024 / 1024).toStringAsFixed(1)} MB';
+}
+
+/// Rough transfer size of [chars] characters of chat history: UTF-8 CJK text is ~3 bytes a
+/// character, plus ~20% JSON/metadata overhead (the server reports the real size per page).
+int estimateHistoryBytes(int chars) => (chars * 3 * 1.2).round();

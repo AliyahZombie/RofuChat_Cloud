@@ -16,7 +16,7 @@ import '../tools/tools_page.dart';
 
 /// Drawer / side panel: character switcher on top, conversation list, then navigation.
 class Sidebar extends ConsumerStatefulWidget {
-  final Future<void> Function(Character) onNewConversation;
+  final void Function(Character) onNewConversation;
   final bool inDrawer;
   const Sidebar({super.key, required this.onNewConversation, this.inDrawer = false});
   @override
@@ -151,7 +151,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 tooltip: t('新对话', 'New chat'),
                 onPressed: () async {
                   _close();
-                  await widget.onNewConversation(current);
+                  widget.onNewConversation(current);
                 },
                 icon: const Icon(Icons.add_comment_outlined),
               ),
