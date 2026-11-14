@@ -1,0 +1,11 @@
+/backend/target/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+.dart_tool/
+/app/build/
+/app/.flutter-plugins*
+/app/android/app/src/main/jniLibs/
+.idea/
+.vscode/
+*.log
