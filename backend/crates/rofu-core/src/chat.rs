@@ -71,6 +71,15 @@ pub async fn fast(
     let (model, provider) = resolve(s, uid, character, true)
         .await
         .map_err(|e| anyhow::anyhow!(e.message))?;
+    complete_short_request(s, model, provider, instruction, input).await
+}
+async fn complete_short_request(
+    s: &AppState,
+    model: Value,
+    provider: Value,
+    instruction: &str,
+    input: &str,
+) -> Result<String> {
     let request = llm::Request {
         provider,
         model,
@@ -85,6 +94,109 @@ pub async fn fast(
         _=s.shutdown.cancelled()=>bail!("server stopped"),
         result=llm::complete(&s.client,request)=>result,
     }
+}
+
+fn truncate_title(input: &str, max: usize) -> String {
+    let mut chars = input.chars();
+    let mut title: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        title.push('…');
+    }
+    title
+}
+
+fn first_title_line(input: &str) -> String {
+    input
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn fallback_title(input: &str) -> String {
+    let line = first_title_line(input);
+    if line.is_empty() {
+        "New chat".into()
+    } else {
+        truncate_title(&line, 20)
+    }
+}
+
+fn clean_title(input: &str) -> Option<String> {
+    let mut output = input.to_owned();
+    for tag in ["think", "thinking"] {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        while let Some(start) = output.find(&open) {
+            let end = output[start + open.len()..]
+                .find(&close)
+                .map_or(output.len(), |end| start + open.len() + end + close.len());
+            output.replace_range(start..end, "");
+        }
+    }
+    let line = first_title_line(&output);
+    let mut title = line.as_str();
+    loop {
+        let stripped = title.trim_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '\'' | '"'
+                        | '“'
+                        | '”'
+                        | '‘'
+                        | '’'
+                        | '《'
+                        | '》'
+                        | '〈'
+                        | '〉'
+                        | '「'
+                        | '」'
+                        | '#'
+                        | '*'
+                )
+        });
+        let stripped = if stripped
+            .get(..6)
+            .is_some_and(|s| s.eq_ignore_ascii_case("Title:"))
+        {
+            &stripped[6..]
+        } else {
+            stripped
+                .strip_prefix("标题：")
+                .or_else(|| stripped.strip_prefix("标题:"))
+                .unwrap_or(stripped)
+        };
+        if stripped == title {
+            break;
+        }
+        title = stripped;
+    }
+    (!title.is_empty()).then(|| truncate_title(title, 24))
+}
+
+async fn conversation_title(s: &AppState, uid: &str, first: &str) -> String {
+    let generated = async {
+        let settings = api::settings(s, uid).await.ok()?;
+        let mid = text(&settings, "fast_model_id");
+        if mid.is_empty() {
+            return None;
+        }
+        let model = api::required(s, uid, "model", &mid).await.ok()?;
+        let provider = api::required(s, uid, "provider", &text(&model, "provider_id")).await.ok()?;
+        if !flag(&provider, "enabled", true) {
+            return None;
+        }
+        let output = complete_short_request(
+            s, model, provider,
+            "Generate a short conversation title. Output only the title itself, at most 16 Chinese characters or 6 English words, in the user's language. No quotes or trailing punctuation.",
+            first,
+        ).await.ok()?;
+        clean_title(&output)
+    }.await;
+    generated.unwrap_or_else(|| fallback_title(first))
 }
 pub async fn fast_for_conversation(
     s: &AppState,
@@ -563,24 +675,21 @@ async fn run(
         if text(&conv, "title").is_empty() {
             let s = s.clone();
             let uid = uid.to_owned();
-            let c = c.clone();
             let cid = cid.to_owned();
-            let first = text(&user, "content");
             s.tasks.clone().spawn(async move {
-                let fallback = first.chars().take(20).collect::<String>();
-                let title = fast(
-                    &s,
-                    &uid,
-                    &c,
-                    "Generate a short conversation title, without quotes, in the user's language.",
-                    &first,
-                )
-                .await
-                .unwrap_or(fallback);
+                let Ok(history) = s.db.messages(&uid, &cid).await else {
+                    return;
+                };
+                let first = history
+                    .iter()
+                    .find(|m| m["role"] == "user")
+                    .map(|m| text(m, "content"))
+                    .unwrap_or_default();
+                let title = conversation_title(&s, &uid, &first).await;
                 let _lock = s.generating.lock().await;
                 if let Ok(Some(mut conv)) = s.db.conversation(&uid, &cid).await {
                     if text(&conv, "title").is_empty() {
-                        conv["title"] = json!(title.trim());
+                        conv["title"] = json!(title);
                         let _ = s.db.save_conversation(&uid, &conv).await;
                     }
                 }
@@ -717,4 +826,40 @@ async fn context_info_with_tools(
     Ok(
         json!({"tokens":count,"max":max,"estimated":estimated,"mode":c["context"]["mode"],"threshold":if threshold>0{threshold}else{max/4*3+(max%4)*3/4}}),
     )
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::{clean_title, fallback_title};
+
+    #[test]
+    fn fallback_uses_one_line_and_unicode_boundaries() {
+        for (input, expected) in [
+            ("\n\t  ", "New chat"),
+            ("\n  hello\t world  \nignore this", "hello world"),
+            (
+                "一二三四五六七八九十一二三四五六七八九🙂",
+                "一二三四五六七八九十一二三四五六七八九🙂",
+            ),
+            (
+                "一二三四五六七八九十一二三四五六七八九🙂多",
+                "一二三四五六七八九十一二三四五六七八九🙂…",
+            ),
+        ] {
+            assert_eq!(fallback_title(input), expected);
+        }
+    }
+
+    #[test]
+    fn cleanup_removes_blocks_and_repeated_decoration() {
+        for (input, expected) in [
+            ("<think>secret\nsecret</think>\n<thinking>more</thinking>\n # Title: **《hello\t world》**\nextra", Some("hello world")),
+            ("‘标题：〈你好🙂〉’", Some("你好🙂")),
+            ("**title: \"Short title\"**", Some("Short title")),
+            ("<think>secret</think>\nTitle: 《》", None),
+            ("<thinking>unfinished", None),
+        ] {
+            assert_eq!(clean_title(input).as_deref(), expected);
+        }
+    }
 }

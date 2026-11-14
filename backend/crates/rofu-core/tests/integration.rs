@@ -886,9 +886,271 @@ async fn active_prompt_history(h: &Harness, mock: &MockServer) {
     }
 }
 
+fn expected_page(messages: Value, has_more: bool) -> Value {
+    let chars: u64 = messages
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(rofu_core::db::message_chars)
+        .sum();
+    let bytes = serde_json::to_vec(&messages).unwrap().len();
+    json!({"messages":messages,"has_more":has_more,"chars":chars,"bytes":bytes})
+}
+
+async fn wait_title(h: &Harness, cid: &str) -> String {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let title = text(&h.get(&format!("/conversations/{cid}")).await, "title");
+            if !title.is_empty() {
+                return title;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("title task did not finish")
+}
+
+async fn title_generation(h: &Harness, mock: &MockServer) {
+    let provider = h
+        .post(
+            "/providers",
+            json!({"kind":"responses","base_url":mock.url}),
+        )
+        .await;
+    let role = h
+        .post(
+            "/models",
+            json!({"provider_id":provider["id"],"model_id":"role-title-regression"}),
+        )
+        .await;
+    let fast = h
+        .post(
+            "/models",
+            json!({"provider_id":provider["id"],"model_id":"fast-title-regression"}),
+        )
+        .await;
+    let fail = h
+        .post(
+            "/models",
+            json!({"provider_id":provider["id"],"model_id":"fail"}),
+        )
+        .await;
+    let character = h
+        .post(
+            "/characters",
+            json!({"name":"Title regression","model_id":role["id"]}),
+        )
+        .await;
+    let input = "\n \t\n  一二三四五六七八九十 甲乙丙丁戊己庚辛壬癸 子丑寅卯\nignored second line";
+    let fallback = "一二三四五六七八九十 甲乙丙丁戊己庚辛壬…";
+    let mut cases: Vec<(String, Option<String>, String, bool)> = vec![
+        ("".into(), None, fallback.into(), false),
+        ("missing-model".into(), None, fallback.into(), false),
+        (
+            text(&fast, "id"),
+            Some(String::new()),
+            fallback.into(),
+            true,
+        ),
+    ];
+    cases.extend([
+        (text(&fast, "id"), Some("<thinking>hidden\nreasoning</thinking>\n<think>more hidden</think>\n\n### **Title: 《“一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳”》**\nNever use this line".into()), "一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯…".into(), true),
+        (text(&fast, "id"), Some("\n **标题：《  hello   world  》**\nextra line".into()), "hello world".into(), true),
+        (text(&fast, "id"), Some("<thinking>only reasoning</thinking>\n**Title: 《》**".into()), fallback.into(), true),
+        (text(&fail, "id"), None, fallback.into(), true),
+    ]);
+    for (mid, output, expected, called) in cases {
+        h.json(
+            Method::PUT,
+            "/settings",
+            json!({"fast_model_id":mid,"default_model_id":role["id"]}),
+        )
+        .await;
+        *mock.state.title.lock().await = output;
+        let conv = h
+            .post("/conversations", json!({"character_id":character["id"]}))
+            .await;
+        let cid = text(&conv, "id");
+        let start = mock.state.requests.lock().await.len();
+        let events = h.events(&cid, json!({"content":input})).await;
+        assert!(!events.iter().any(|e| e["type"] == "error"), "{events:?}");
+        assert_eq!(wait_title(h, &cid).await, expected);
+        let requests = mock.state.requests.lock().await[start..].to_vec();
+        assert_eq!(requests.len(), if called { 2 } else { 1 }, "{requests:?}");
+        assert_eq!(requests[0]["model"], "role-title-regression");
+        if called {
+            assert_ne!(requests[1]["model"], "role-title-regression");
+            if mid == text(&fast, "id") {
+                assert_eq!(requests[1]["model"], "fast-title-regression");
+                let instruction = text(&requests[1], "instructions");
+                for required in [
+                    "16 Chinese characters",
+                    "6 English words",
+                    "user's language",
+                    "No quotes or trailing punctuation",
+                ] {
+                    assert!(instruction.contains(required), "{instruction}");
+                }
+            }
+        }
+    }
+    h.json(Method::PUT, "/settings", json!({})).await;
+    *mock.state.title.lock().await = None;
+    let conv = h
+        .post("/conversations", json!({"character_id":character["id"]}))
+        .await;
+    let cid = text(&conv, "id");
+    h.events(
+        &cid,
+        json!({"content":"","images":["data:image/png;base64,eA=="]}),
+    )
+    .await;
+    assert_eq!(wait_title(h, &cid).await, "New chat");
+    // An empty title on a later turn still derives from the first user message.
+    h.json(
+        Method::PATCH,
+        &format!("/conversations/{cid}"),
+        json!({"title":""}),
+    )
+    .await;
+    h.events(&cid, json!({"content":"This is the second user message"}))
+        .await;
+    assert_eq!(wait_title(h, &cid).await, "New chat");
+}
+
+async fn character_pagination(h: &Harness) {
+    let character = h
+        .post("/characters", json!({"name":"Pagination regression"}))
+        .await;
+    let conv = h
+        .post("/conversations", json!({"character_id":character["id"]}))
+        .await;
+    let cid = text(&conv, "id");
+    let uid = text(&h.get("/auth/me").await, "id");
+    for (i, (role, content)) in [
+        ("assistant", "开场"),
+        ("user", "一"),
+        ("assistant", "答"),
+        ("user", "二"),
+        ("assistant", "答"),
+        ("user", "你🙂"),
+        ("assistant", "答复"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut m = rofu_core::chat::message(&cid, (i as i64 + 1) * 1000, role, content);
+        if i == 6 {
+            m["parts"]["segments"] = json!([
+                {"type":"text","text":"答复"},
+                {"type":"reasoning","text":"想🙂"},
+                {"type":"tool","name":"ignored tool name","arguments":"{\"问\":\"🙂\"}","result":"结果🙂"}
+            ]);
+            m["actual"] = json!("ignored actual ".repeat(100));
+            m["parts"]["images"] = json!(["ignored image".repeat(100)]);
+            let active = m.clone();
+            let mut inactive = active.clone();
+            inactive["content"] = json!("ignored inactive swipe".repeat(100));
+            m["swipes"] = json!([inactive, active]);
+            m["swipe_index"] = json!(1);
+        }
+        if i == 2 {
+            m["visible"] = json!(false);
+        }
+        h.server.state.db.save_message(&uid, &m).await.unwrap();
+    }
+    let all = h.get(&format!("/conversations/{cid}/messages")).await;
+    assert!(all.is_array());
+    assert_eq!(
+        h.get(&format!("/conversations/{cid}/messages?before_seq=0"))
+            .await,
+        all
+    );
+    for (query, start, chars, more) in [
+        ("max_chars=0", 5, 18, true),
+        ("max_chars=1", 5, 18, true),
+        ("max_chars=17", 5, 18, true),
+        ("max_chars=18", 5, 18, true),
+        ("max_chars=20", 3, 20, true),
+        ("max_chars=100", 0, 24, false),
+        ("max_chars=1&limit=1", 6, 16, true),
+        ("max_chars=1&limit=3", 5, 18, true),
+        ("max_chars=100&limit=3", 4, 19, true),
+        ("limit=1", 6, 16, true),
+    ] {
+        let page = h
+            .get(&format!("/conversations/{cid}/messages?{query}"))
+            .await;
+        assert_eq!(
+            page["messages"],
+            json!(&all.as_array().unwrap()[start..]),
+            "{query}"
+        );
+        assert_eq!(page["chars"], chars, "{query}");
+        assert_eq!(
+            page["bytes"],
+            serde_json::to_vec(&page["messages"]).unwrap().len()
+        );
+        assert_eq!(page["has_more"], more);
+        assert!(page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m.get("swipes").is_none()));
+    }
+    let mut before = None;
+    let mut combined = Vec::new();
+    loop {
+        let cursor = before.map_or(String::new(), |seq: i64| format!("&before_seq={seq}"));
+        let page = h
+            .get(&format!(
+                "/conversations/{cid}/messages?max_chars=1{cursor}"
+            ))
+            .await;
+        let messages = page["messages"].as_array().unwrap();
+        assert!(!messages.is_empty());
+        before = messages[0]["seq"].as_i64();
+        combined.splice(0..0, messages.iter().cloned());
+        if page["has_more"] == false {
+            break;
+        }
+    }
+    assert_eq!(json!(combined), all);
+    assert_eq!(
+        h.get(&format!(
+            "/conversations/{cid}/messages?max_chars=1&before_seq=0"
+        ))
+        .await,
+        json!({"messages":[],"has_more":false,"chars":0,"bytes":2})
+    );
+    for query in [
+        "max_chars=-1",
+        "max_chars=no",
+        "max_chars=1.5",
+        "max_chars=18446744073709551616",
+        "max_chars=1&before_seq=no",
+        "max_chars=1&limit=0",
+    ] {
+        assert_eq!(
+            h.request(
+                Method::GET,
+                &format!("/conversations/{cid}/messages?{query}"),
+                json!({})
+            )
+            .await
+            .status(),
+            400,
+            "{query}"
+        );
+    }
+}
+
 async fn run_suite(database: Option<String>) {
     let mock = MockServer::start().await;
     let h = Harness::new(database).await;
+    title_generation(&h, &mock).await;
+    character_pagination(&h).await;
     retry_history(&h, &mock).await;
     merged_system_context(&h, &mock).await;
     swipe_contract(&h, &mock).await;
@@ -970,28 +1232,25 @@ async fn run_suite(database: Option<String>) {
         let page = h
             .get(&format!("/conversations/{cid}/messages?limit=2"))
             .await;
-        assert_eq!(
-            page,
-            json!({"messages":[stored[1],stored[2]],"has_more":true})
-        );
+        assert_eq!(page, expected_page(json!([stored[1], stored[2]]), true));
         let page = h
             .get(&format!(
                 "/conversations/{cid}/messages?limit=2&before_seq={}",
                 stored[1]["seq"]
             ))
             .await;
-        assert_eq!(page, json!({"messages":[stored[0]],"has_more":false}));
+        assert_eq!(page, expected_page(json!([stored[0]]), false));
         assert_eq!(
             h.get(&format!(
                 "/conversations/{cid}/messages?limit=10&before_seq=0"
             ))
             .await,
-            json!({"messages":[],"has_more":false})
+            expected_page(json!([]), false)
         );
         assert_eq!(
             h.get(&format!("/conversations/{cid}/messages?limit=3"))
                 .await,
-            json!({"messages":stored,"has_more":false})
+            expected_page(stored.clone(), false)
         );
         for query in [
             "limit=0",

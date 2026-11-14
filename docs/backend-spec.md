@@ -157,7 +157,7 @@ void rofu_free_string(char* s);
 见第 9 节执行规则。
 
 ### 4.5 Conversation
-`{id, character_id, title, created_at, updated_at, memory_scanned_seq}`。创建时若角色有 `first_mes`（或指定 `greeting_index` 选 alternate_greetings），插入一条 assistant 消息作为开场白（宏替换后）。`title` 初始为空串，第一轮回复后用 Fast model 自动生成（失败则取用户首条消息前 20 字）。
+`{id, character_id, title, created_at, updated_at, memory_scanned_seq}`。创建时若角色有 `first_mes`（或指定 `greeting_index` 选 alternate_greetings），插入一条 assistant 消息作为开场白（宏替换后）。`title` 初始为空串，第一轮回复后仅在用户明确配置且能解析 Fast model 时自动生成；否则使用用户首条消息的回退标题，清洗及截断规则见 §5.4。
 
 ### 4.6 Message
 ```json
@@ -226,7 +226,9 @@ void rofu_free_string(char* s);
 - 事件：`response.output_text.delta`、`response.reasoning_summary_text.delta`、`response.reasoning_text.delta`、`response.output_item.done`（function_call）、`response.completed`/`response.incomplete`（usage：`input_tokens / output_tokens / input_tokens_details.cached_tokens / output_tokens_details.reasoning_tokens`）、`response.failed` / `error`。
 
 ### 5.4 Fast model
-用户设置 `fast_model_id`，用于：标题生成、传统模式压缩、即时模式压缩、记忆扫描。未配置时回退到当前角色模型，再回退默认模型；都没有则对应功能报错（即时模式标记 failed）。
+用户设置 `fast_model_id`，用于：标题生成、传统模式压缩、即时模式压缩、记忆扫描。标题只使用明确配置且可解析的 fast 模型，绝不回退到角色或默认模型；未配置、解析失败、调用失败或清洗后为空时，使用用户第一条消息的第一条非空行，折叠空白后取前 20 个 Unicode 字符，截断时加 `…`，纯图片等空文本使用 `New chat`。fast 标题指令要求只输出标题本身、≤ 16 个汉字 / 6 个英文词、无引号和结尾标点、使用用户的语言；输出去掉 `<think>…</think>` / `<thinking>…</thinking>` 块，取第一条非空行，去掉首尾引号、书名号、`#`、`*` 及 `Title:` / `标题：` 前缀并折叠空白，超过 24 个 Unicode 字符则取前 24 个并加 `…`。
+
+传统模式压缩、即时模式压缩、记忆扫描的规则不变：未配置 fast 模型时回退到当前角色模型，再回退默认模型；都没有则对应功能报错（即时模式标记 failed）。
 
 ### 5.5 Token 计数
 - 优先使用供应商 usage。
@@ -299,7 +301,7 @@ void rofu_free_string(char* s);
 |---|---|---|
 | POST | `/api/conversations` | `{character_id, greeting_index?}` → Conversation（含开场白） |
 | GET/PATCH/DELETE | `/api/conversations/{id}` | PATCH `{title}` |
-| GET | `/api/conversations/{id}/messages` | 无 limit 返回全部消息数组；`?limit=N&before_seq=S` 返回 `{messages,has_more}`，seq<S 的最后 N 条按 seq 升序；`generating` 与 `message_count` 放在 GET Conversation 中。消息只输出激活内容与 swipe_index/swipe_count，详见 docs/api.md |
+| GET | `/api/conversations/{id}/messages` | 无 limit/max_chars 返回全部消息数组；`?limit=N&max_chars=C&before_seq=S`（各项可选）返回 `{messages,has_more,chars,bytes}`，从 seq<S（不传则最新）向前取，按 seq 升序返回。max_chars 累计激活 content 及 reasoning text、tool arguments/result 的 Unicode 字符；至少取到 user/assistant 各一条或会话开头，但 limit 始终是硬上限。bytes 为公开 messages 数组的 JSON UTF-8 字节数。`generating` 与 `message_count` 放在 GET Conversation 中。消息只输出激活内容与 swipe_index/swipe_count，详见 docs/api.md |
 | GET | `/api/conversations/{id}/context` | 见 5.5 |
 | POST | `/api/conversations/{id}/chat` | **SSE 流**，见 6.9 |
 | POST | `/api/conversations/{id}/stop` | 停止当前生成（已生成部分保存） |

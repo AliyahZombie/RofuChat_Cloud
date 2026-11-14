@@ -216,18 +216,35 @@ pub async fn dispatch(
             if parts.len() == 3 {
                 match (method.as_str(), parts[2]) {
                     ("GET", "messages") => {
-                        if let Some(limit) = q.get("limit") {
-                            let limit = limit.parse::<i64>().ok().filter(|n| *n > 0 && *n < i64::MAX)
-                                .ok_or_else(|| ApiError::bad("limit must be a positive integer less than 9223372036854775807"))?;
+                        if q.contains_key("limit") || q.contains_key("max_chars") {
+                            let limit = q.get("limit").map(|value| {
+                                value.parse::<i64>().ok().filter(|n| *n > 0 && *n < i64::MAX)
+                                    .ok_or_else(|| ApiError::bad("limit must be a positive integer less than 9223372036854775807"))
+                            }).transpose()?;
+                            let max_chars = q
+                                .get("max_chars")
+                                .map(|value| {
+                                    value.parse::<u64>().map_err(|_| {
+                                        ApiError::bad(
+                                            "max_chars must be an unsigned 64-bit integer",
+                                        )
+                                    })
+                                })
+                                .transpose()?;
                             let before = q
                                 .get("before_seq")
                                 .map(|v| v.parse::<i64>())
                                 .transpose()
                                 .map_err(|_| ApiError::bad("before_seq must be an integer"))?;
-                            let (messages, has_more) =
-                                s.db.messages_page(uid, cid, limit, before).await?;
+                            let (messages, has_more, chars) =
+                                s.db.messages_page(uid, cid, limit, before, max_chars)
+                                    .await?;
+                            let messages = messages.iter().map(swipes::public).collect::<Vec<_>>();
+                            let bytes = serde_json::to_vec(&messages)
+                                .map_err(anyhow::Error::from)?
+                                .len();
                             return Ok(Some(ok(
-                                json!({"messages":messages.iter().map(swipes::public).collect::<Vec<_>>(),"has_more":has_more}),
+                                json!({"messages":messages,"has_more":has_more,"chars":chars,"bytes":bytes}),
                             )));
                         }
                         return Ok(Some(ok(json!(s

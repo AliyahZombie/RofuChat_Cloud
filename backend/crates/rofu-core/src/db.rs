@@ -1,7 +1,26 @@
 use crate::model::{id, now, text};
 use anyhow::{bail, Result};
+use futures_util::TryStreamExt;
 use serde_json::{json, Value};
 use sqlx::{any::AnyPoolOptions, AnyPool, Row};
+
+/// Active content already contains text segments; count only additional segment text.
+pub fn message_chars(message: &Value) -> u64 {
+    let mut chars = text(message, "content").chars().count() as u64;
+    if let Some(segments) = message["parts"]["segments"].as_array() {
+        for segment in segments {
+            let fields: &[&str] = match segment["type"].as_str() {
+                Some("reasoning") => &["text"],
+                Some("tool") => &["arguments", "result"],
+                _ => &[],
+            };
+            for field in fields {
+                chars += text(segment, field).chars().count() as u64;
+            }
+        }
+    }
+    chars
+}
 
 #[derive(Clone)]
 pub struct Db {
@@ -194,25 +213,43 @@ impl Db {
         &self,
         uid: &str,
         cid: &str,
-        limit: i64,
+        limit: Option<i64>,
         before: Option<i64>,
-    ) -> Result<(Vec<Value>, bool)> {
-        // Fetch one extra row to determine has_more without loading the full history.
-        let rows: Vec<String> = if let Some(before) = before {
+        max_chars: Option<u64>,
+    ) -> Result<(Vec<Value>, bool, u64)> {
+        // Stream newest first, keeping only this page and one lookahead row.
+        let fetch_limit = limit.map_or(i64::MAX, |n| n + 1);
+        let query = if let Some(before) = before {
             sqlx::query_scalar("SELECT data FROM messages WHERE user_id=$1 AND conversation_id=$2 AND seq<$3 ORDER BY seq DESC,id DESC LIMIT $4")
-                .bind(uid).bind(cid).bind(before).bind(limit + 1).fetch_all(&self.pool).await?
+                .bind(uid).bind(cid).bind(before).bind(fetch_limit)
         } else {
             sqlx::query_scalar("SELECT data FROM messages WHERE user_id=$1 AND conversation_id=$2 ORDER BY seq DESC,id DESC LIMIT $3")
-                .bind(uid).bind(cid).bind(limit + 1).fetch_all(&self.pool).await?
+                .bind(uid).bind(cid).bind(fetch_limit)
         };
-        let has_more = rows.len() as i64 > limit;
-        let mut messages = rows
-            .into_iter()
-            .take(limit as usize)
-            .map(|s| serde_json::from_str(&s))
-            .collect::<serde_json::Result<Vec<Value>>>()?;
+        let mut rows = query.fetch(&self.pool);
+        let mut messages = Vec::new();
+        let mut chars = 0u64;
+        let (mut has_user, mut has_assistant) = (false, false);
+        let mut has_more = false;
+        while let Some(row) = rows.try_next().await? {
+            let row: String = row;
+            let message: Value = serde_json::from_str(&row)?;
+            let next_chars = message_chars(&message);
+            if limit.is_some_and(|n| messages.len() as i64 >= n)
+                || (has_user
+                    && has_assistant
+                    && max_chars.is_some_and(|n| chars.saturating_add(next_chars) > n))
+            {
+                has_more = true;
+                break;
+            }
+            has_user |= message["role"] == "user";
+            has_assistant |= message["role"] == "assistant";
+            chars += next_chars;
+            messages.push(message);
+        }
         messages.reverse();
-        Ok((messages, has_more))
+        Ok((messages, has_more, chars))
     }
     pub async fn message(&self, uid: &str, mid: &str) -> Result<Option<Value>> {
         let s: Option<String> =

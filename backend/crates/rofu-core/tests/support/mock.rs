@@ -17,6 +17,7 @@ use tokio::{
 pub struct Mock {
     pub requests: Arc<Mutex<Vec<Value>>>,
     pub scan: Arc<Mutex<Value>>,
+    pub title: Arc<Mutex<Option<String>>>,
     legacy: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Event>>>>,
 }
 pub struct MockServer {
@@ -60,7 +61,12 @@ async fn llm(State(state): State<Mock>, Json(body): Json<Value>) -> Response {
             "{\"add\":[],\"update\":[],\"delete\":[]}".into()
         }
     } else if instructions.starts_with("Generate a short") {
-        "Mock title".into()
+        state
+            .title
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_else(|| "Mock title".into())
     } else if instructions.starts_with("Compress this") {
         "compressed reply".into()
     } else if instructions.starts_with("Summarize") {

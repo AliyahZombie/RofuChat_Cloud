@@ -24,18 +24,30 @@ Responses providers receive the merged system text in `instructions`, with no sy
 
 Token estimates, including `GET /api/conversations/{id}/context` and SSE `context`, use the merged structure, including one system message's overhead. The existing preference for the last assistant's authoritative `usage.last_input + usage.last_output` remains unchanged.
 
+## Conversation titles
+
+After the first reply, an empty conversation title uses only an explicitly configured, resolvable `fast_model_id`. It never falls back to a character/default model for titles. The instruction requests only a title in the user's language, at most 16 Chinese characters or 6 English words, without quotes or trailing punctuation. Output removes `<think>…</think>` / `<thinking>…</thinking>` blocks, selects the first non-empty line, strips surrounding quotes/book-title marks/`#`/`*` and `Title:` / `标题：` prefixes, collapses whitespace, then truncates to 24 Unicode scalar values plus `…` if necessary.
+
+Missing/unresolvable/disabled fast models, failed calls, or empty cleaned output use the first user message's first non-empty line with collapsed whitespace, truncated to 20 Unicode scalar values plus `…` when needed. Empty text (including image-only messages) uses `New chat`. Compression and memory scanning retain their existing fast-model fallback rules. Title saving remains asynchronous and preserves a title set by the user.
+
 ## Message pagination
 
-`GET /api/conversations/{id}/messages` without `limit` continues to return the full array, including hidden messages and summaries. With a positive signed 64-bit `limit` (less than `9223372036854775807`), it returns the last N eligible messages in ascending seq order. Optional `before_seq` is an exclusive signed 64-bit seq cursor and is applied only with `limit`. Invalid pagination values return 400.
+`GET /api/conversations/{id}/messages` without either `limit` or `max_chars` continues to return the full array, including hidden messages and summaries; a standalone `before_seq` remains ignored for compatibility. Supplying either bound returns a page object with `messages`, `has_more`, `chars` and `bytes`. `limit` is a positive signed 64-bit integer less than `9223372036854775807`; `max_chars` is an unsigned 64-bit integer (including zero). Optional `before_seq` is an exclusive signed 64-bit seq cursor. Invalid pagination values return 400.
+
+Messages are selected newest first, strictly before `before_seq` when supplied, and returned in ascending seq order. `max_chars` counts Unicode scalar values (Rust `chars()`) in each message's active `content`, plus `parts.segments` entries of type `reasoning` (`text`) or `tool` (`arguments` and `result`, both stored strings). Text segments are already represented in `content` and are not counted again. Images, metadata, `actual`, inactive swipes and archived branch tails do not contribute. Hidden messages and summaries remain eligible and their content counts normally.
+
+Before adding a message that would exceed `max_chars`, selection stops only if the page already contains at least one user and one assistant message. Until then it keeps walking backward, even beyond the budget, or until the conversation starts. Messages/swipes are never split. Both bounds may be supplied: `limit` always remains a hard upper bound, so `limit=1&max_chars=1` may return just one assistant message. With `limit` alone, selection behavior is unchanged.
+
+`chars` reports the selected page's total using the above counting rules, even when only `limit` is supplied. `bytes` is the UTF-8 byte length of the compact JSON serialization of the public `messages` array, including its brackets, punctuation, escaping and message metadata, but excluding the outer response object. It is not the HTTP body's size or compressed transfer size. An empty page has `chars:0`, `bytes:2`, and `has_more:false`.
 
 Request: `GET /api/conversations/c1/messages?limit=2&before_seq=4000`
 
 Response (Message objects abbreviated):
 ```json
-{"messages":[{"id":"u1","seq":2000,"role":"user","content":"Hi"},{"id":"a1","seq":3000,"role":"assistant","content":"Hello"}],"has_more":true}
+{"messages":[{"id":"u1","seq":2000,"role":"user","content":"Hi"},{"id":"a1","seq":3000,"role":"assistant","content":"Hello"}],"has_more":true,"chars":7,"bytes":113}
 ```
 
-`has_more` indicates that older eligible messages exist. Use the first returned message's seq as the next `before_seq`; an empty page has `has_more:false`. Pagination is performed in SQL with descending seq and LIMIT, then the page is reversed. `GET /api/conversations/{id}` additionally returns `message_count` for all currently stored messages, alongside `generating`:
+`bytes:113` above describes exactly the abbreviated array shown; real Message objects contain additional fields and therefore more bytes. `has_more` indicates that older eligible messages exist. Use the first returned message's seq as the next `before_seq` (for example `?max_chars=20000&before_seq=2000`). Pagination streams SQL rows in descending seq order, retains the page plus one lookahead row, then reverses the page. `GET /api/conversations/{id}` additionally returns `message_count` for all currently stored messages, alongside `generating`:
 
 ```json
 {"id":"c1","character_id":"char1","title":"Chat","created_at":0,"updated_at":0,"memory_scanned_seq":0,"generating":false,"message_count":3}
