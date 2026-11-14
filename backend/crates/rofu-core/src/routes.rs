@@ -10,6 +10,8 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     Json,
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::{collections::HashMap, time::Instant};
 fn ok(v: Value) -> Response {
@@ -23,6 +25,34 @@ fn binary(bytes: Vec<u8>, mime: &str) -> ApiResult<Response> {
         .header(header::CONTENT_TYPE, mime)
         .body(Body::from(bytes))
         .map_err(|e| ApiError::bad(e.to_string()))
+}
+async fn export_png(s: &AppState, mut c: Value) -> ApiResult<Vec<u8>> {
+    let avatar = text(&c, "avatar");
+    if avatar.starts_with("https://") || avatar.starts_with("http://") {
+        let response = s
+            .client
+            .get(&avatar)
+            .timeout(std::time::Duration::from_secs(20))
+            .send()
+            .await
+            .map_err(|e| ApiError::bad(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(ApiError::bad(format!("avatar HTTP {}", response.status())));
+        }
+        let mut stream = response.bytes_stream();
+        let mut bytes = vec![];
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| ApiError::bad(e.to_string()))?;
+            if bytes.len() + chunk.len() > 32 * 1024 * 1024 {
+                return Err(ApiError::bad("avatar exceeds 32MB"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            c["avatar"] = json!(format!("data:image/png;base64,{}", STANDARD.encode(bytes)));
+        }
+    }
+    card::export_png(&c).map_err(|e| ApiError::bad(e.to_string()))
 }
 #[allow(clippy::too_many_arguments)]
 pub async fn dispatch(
@@ -108,10 +138,7 @@ pub async fn dispatch(
         if parts[2] == "export" {
             return Ok(Some(
                 if q.get("format").map(String::as_str).unwrap_or("json") == "png" {
-                    binary(
-                        card::export_png(&c).map_err(|e| ApiError::bad(e.to_string()))?,
-                        "image/png",
-                    )?
+                    binary(export_png(s, c.clone()).await?, "image/png")?
                 } else {
                     ok(card::export_json(&c))
                 },
@@ -166,6 +193,8 @@ pub async fn dispatch(
                     return Ok(Some(ok(conv)));
                 }
                 if method == Method::PATCH {
+                    let _lock = s.generating.lock().await;
+                    conv = api::conversation(s, uid, cid).await?;
                     if !body["title"].is_string() {
                         return Err(ApiError::bad("title must be a string"));
                     }
@@ -174,7 +203,10 @@ pub async fn dispatch(
                     return Ok(Some(ok(conv)));
                 }
                 if method == Method::DELETE {
-                    chat::busy(s, cid).await?;
+                    let lock = s.generating.lock().await;
+                    if lock.contains_key(cid) {
+                        return Err(ApiError::conflict("conversation is generating"));
+                    }
                     s.db.delete_conversation(uid, cid).await?;
                     return Ok(Some(empty()));
                 }
@@ -235,7 +267,10 @@ pub async fn dispatch(
                 .ok_or_else(ApiError::not_found)?;
         let cid = text(&m, "conversation_id");
         if parts.len() == 2 && matches!(*method, Method::PATCH | Method::DELETE) {
-            chat::busy(s, &cid).await?;
+            let lock = s.generating.lock().await;
+            if lock.contains_key(&cid) {
+                return Err(ApiError::conflict("conversation is generating"));
+            }
             if method == Method::DELETE {
                 sqlx::query("DELETE FROM messages WHERE user_id=$1 AND id=$2")
                     .bind(uid)
@@ -286,6 +321,7 @@ pub async fn dispatch(
                 return result.map(Some);
             }
             if parts[2] == "branch" {
+                let _lock = s.generating.lock().await;
                 let mut conv = api::conversation(s, uid, &cid).await?;
                 conv["id"] = json!(id());
                 conv["created_at"] = json!(now());

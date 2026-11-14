@@ -14,10 +14,19 @@ impl Decoder {
     pub fn push(&mut self, chunk: &[u8]) -> Vec<Event> {
         self.pending.extend_from_slice(chunk);
         let mut out = vec![];
-        while let Some(end) = self.pending.iter().position(|b| *b == b'\n') {
-            let line: Vec<u8> = self.pending.drain(..=end).collect();
-            let line = String::from_utf8_lossy(&line[..line.len() - 1]);
-            let line = line.strip_suffix('\r').unwrap_or(&line);
+        while let Some(end) = self.pending.iter().position(|b| *b == b'\n' || *b == b'\r') {
+            let cr = self.pending[end] == b'\r';
+            if cr && end + 1 == self.pending.len() {
+                break;
+            }
+            let terminator = if cr && self.pending.get(end + 1) == Some(&b'\n') {
+                2
+            } else {
+                1
+            };
+            let line = String::from_utf8_lossy(&self.pending[..end]).into_owned();
+            self.pending.drain(..end + terminator);
+            let line = line.strip_prefix('\u{feff}').unwrap_or(&line);
             if line.is_empty() {
                 if let Some(e) = self.flush() {
                     out.push(e);
@@ -111,6 +120,26 @@ impl Think {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cr_lf_and_eof() {
+        for wire in ["data: one\r\rdata: two\r", "\u{feff}data: one\ndata: two"] {
+            let mut d = Decoder::default();
+            let mut events = vec![];
+            for byte in wire.as_bytes() {
+                events.extend(d.push(&[*byte]));
+            }
+            events.extend(d.finish());
+            assert!(!events.is_empty());
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|e| e.data.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "one\ntwo"
+            );
+        }
+    }
     #[test]
     fn chunks() {
         let wire = "event: text\r\ndata: 你好\r\ndata: two\r\n\r\n:ping\n\ndata: end\n\n";

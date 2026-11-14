@@ -2,7 +2,7 @@ use rofu_core::{start_server, Config, RunningServer};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
-    ffi::{CStr, CString},
+    ffi::CStr,
     os::raw::c_char,
     sync::{Mutex, OnceLock},
 };
@@ -78,7 +78,16 @@ pub unsafe extern "C" fn rofu_start(config_json: *const c_char) -> *mut c_char {
         Ok(Err(e)) => json!({"ok":false,"error":e}),
         Err(_) => json!({"ok":false,"error":"backend panic"}),
     };
-    CString::new(result.to_string()).unwrap().into_raw()
+    let bytes = result.to_string().into_bytes();
+    let ptr = unsafe { libc::malloc(bytes.len() + 1) }.cast::<c_char>();
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), ptr, bytes.len());
+        *ptr.add(bytes.len()) = 0;
+    }
+    ptr
 }
 #[no_mangle]
 pub extern "C" fn rofu_stop() -> i32 {
@@ -107,15 +116,21 @@ pub extern "C" fn rofu_stop() -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn rofu_free_string(s: *mut c_char) {
     if !s.is_null() {
-        drop(unsafe { CString::from_raw(s) });
+        unsafe { libc::free(s.cast()) };
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
     #[test]
     fn start_health_stop() {
+        let bad = unsafe { rofu_start(std::ptr::null()) };
+        let error: serde_json::Value =
+            serde_json::from_str(unsafe { CStr::from_ptr(bad) }.to_str().unwrap()).unwrap();
+        unsafe { rofu_free_string(bad) };
+        assert_eq!(error["ok"], false);
         let dir = tempfile::tempdir().unwrap();
         let config =
             CString::new(json!({"data_dir":dir.path(),"root_password":"test-secret"}).to_string())
@@ -141,5 +156,13 @@ mod tests {
         unsafe { rofu_free_string(again) };
         assert_eq!(repeated["port"], value["port"]);
         assert_eq!(rofu_stop(), 0);
+        let restarted = unsafe { rofu_start(config.as_ptr()) };
+        let restarted_value: serde_json::Value =
+            serde_json::from_str(unsafe { CStr::from_ptr(restarted) }.to_str().unwrap()).unwrap();
+        unsafe { rofu_free_string(restarted) };
+        assert_eq!(restarted_value["ok"], true);
+        assert_eq!(rofu_stop(), 0);
+        assert_eq!(rofu_stop(), 0);
+        unsafe { rofu_free_string(std::ptr::null_mut()) };
     }
 }

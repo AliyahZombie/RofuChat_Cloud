@@ -82,7 +82,11 @@ pub fn import(body: &Value) -> Result<Value> {
     ))
 }
 pub fn export_json(character: &Value) -> Value {
-    json!({"spec":"chara_card_v2","spec_version":"2.0","data":parse_card(&character["card"])})
+    let mut data = parse_card(&character["card"]);
+    if text(&data, "name").is_empty() {
+        data["name"] = json!(text(character, "name"));
+    }
+    json!({"spec":"chara_card_v2","spec_version":"2.0","data":data})
 }
 pub fn avatar(character: &Value) -> Result<(Vec<u8>, String)> {
     let data = text(character, "avatar");
@@ -244,5 +248,37 @@ mod tests {
             worldbook(&c, &[json!({"content":"FOREST","visible":true})]),
             vec!["b", "a"]
         );
+    }
+    #[test]
+    fn ccv3_itxt_takes_priority_and_preserves_extensions() {
+        let mut bytes = vec![];
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .add_text_chunk(
+                    "chara".into(),
+                    STANDARD.encode(json!({"name":"V1"}).to_string()),
+                )
+                .unwrap();
+            encoder
+                .add_itxt_chunk(
+                    "ccv3".into(),
+                    STANDARD.encode(
+                        json!({"spec":"chara_card_v3","data":{"name":"V3","assets":["asset"]}})
+                            .to_string(),
+                    ),
+                )
+                .unwrap();
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[1, 2, 3, 255])
+                .unwrap();
+        }
+        let character = import(&json!({"png_base64":STANDARD.encode(bytes)})).unwrap();
+        assert_eq!(character["name"], "V3");
+        assert_eq!(character["card"]["extensions"]["assets"], json!(["asset"]));
     }
 }

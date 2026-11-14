@@ -13,5 +13,5 @@ Operational details:
 
 - Mutations of messages, manual compression and memory scanning can return 409 while the conversation is generating. Stop the turn first before retrying.
 - `greeting_index` is a zero-based index into `alternate_greetings`; omit it to use `first_mes`.
-- PNG export defaults to a generated solid-color image when the character does not have a PNG data URL avatar. JSON export uses Character Card V2.
+- PNG export defaults to a generated solid-color image when the character does not have a PNG avatar. HTTP(S) avatars are fetched for PNG export (20-second timeout, 32MB limit). JSON export uses Character Card V2.
 - `POST /api/conversations/{id}/memory_scan` returns zero counts when no new messages are available. A failed scan advances the scan cursor as required by the specification.

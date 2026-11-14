@@ -107,3 +107,218 @@ async fn http_auth_and_secret_masking() {
     assert_eq!(p["api_key"], p2["api_key"]);
     server.stop().await.unwrap();
 }
+
+#[tokio::test]
+async fn authentication_lifecycle_and_admin_controls() {
+    use rofu_core::{start_server, Config};
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = Config {
+        database: format!("sqlite://{}/auth.db", dir.path().display()),
+        listen: "127.0.0.1:0".into(),
+        root_password: Some("initial".into()),
+        memory_scanner: false,
+        ..Config::default()
+    };
+    let server = start_server(cfg.clone()).await.unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let base = format!("http://{}/api", server.address);
+    let login = |username: &str, password: &str| {
+        client
+            .post(format!("{base}/auth/login"))
+            .json(&json!({"username":username,"password":password}))
+    };
+    let root: serde_json::Value = login("root", "initial")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rt = root["token"].as_str().unwrap();
+    assert_eq!(
+        client
+            .put(format!("{base}/admin/config"))
+            .bearer_auth(rt)
+            .json(&json!({"allow_register":true}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let registered: serde_json::Value = client
+        .post(format!("{base}/auth/register"))
+        .json(&json!({"username":"alice","password":"first"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let first = registered["token"].as_str().unwrap();
+    let another: serde_json::Value = login("alice", "first")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let second = another["token"].as_str().unwrap();
+    assert_eq!(
+        client
+            .get(format!("{base}/admin/users"))
+            .bearer_auth(first)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/auth/me?token={first}"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        client
+            .post(format!("{base}/auth/password"))
+            .bearer_auth(first)
+            .json(&json!({"old_password":"wrong","new_password":"second"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        client
+            .post(format!("{base}/auth/password"))
+            .bearer_auth(first)
+            .json(&json!({"old_password":"first","new_password":"second"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/auth/me"))
+            .bearer_auth(second)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/auth/me"))
+            .bearer_auth(first)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(login("alice", "first").send().await.unwrap().status(), 401);
+    assert_eq!(login("alice", "second").send().await.unwrap().status(), 200);
+    assert_eq!(
+        client
+            .delete(format!(
+                "{base}/admin/users/{}",
+                root["user"]["id"].as_str().unwrap()
+            ))
+            .bearer_auth(rt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let uid = registered["user"]["id"].as_str().unwrap();
+    assert_eq!(
+        client
+            .post(format!("{base}/admin/users/{uid}/password"))
+            .bearer_auth(rt)
+            .json(&json!({"password":"third"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/auth/me"))
+            .bearer_auth(first)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let latest: serde_json::Value = login("alice", "third")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = latest["token"].as_str().unwrap();
+    assert_eq!(
+        client
+            .post(format!("{base}/auth/logout"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/auth/me"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        client
+            .delete(format!("{base}/admin/users/{uid}"))
+            .bearer_auth(rt)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    server.stop().await.unwrap();
+    let server = start_server(Config {
+        root_password: Some("reset".into()),
+        ..cfg
+    })
+    .await
+    .unwrap();
+    assert!(server.state.db.registration().await.unwrap());
+    assert!(auth::login(
+        &server.state.db,
+        &json!({"username":"root","password":"initial"})
+    )
+    .await
+    .is_err());
+    assert!(auth::login(
+        &server.state.db,
+        &json!({"username":"root","password":"reset"})
+    )
+    .await
+    .is_ok());
+    server.stop().await.unwrap();
+}

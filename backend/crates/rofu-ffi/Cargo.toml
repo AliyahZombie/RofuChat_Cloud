@@ -13,6 +13,8 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+libc = "0.2"
+
 [dev-dependencies]
 reqwest.workspace = true
 tempfile = "3"

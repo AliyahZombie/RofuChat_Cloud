@@ -66,22 +66,43 @@ pub async fn fast(
     let (model, provider) = resolve(s, uid, character, true)
         .await
         .map_err(|e| anyhow::anyhow!(e.message))?;
-    llm::complete(
-        &s.client,
-        llm::Request {
-            provider,
-            model,
-            messages: vec![
-                json!({"role":"system","content":instruction}),
-                json!({"role":"user","content":input}),
-            ],
-            params: json!({}),
-            tools: vec![],
-        },
-    )
-    .await
+    let request = llm::Request {
+        provider,
+        model,
+        messages: vec![
+            json!({"role":"system","content":instruction}),
+            json!({"role":"user","content":input}),
+        ],
+        params: json!({}),
+        tools: vec![],
+    };
+    tokio::select! {
+        _=s.shutdown.cancelled()=>bail!("server stopped"),
+        result=llm::complete(&s.client,request)=>result,
+    }
+}
+pub async fn fast_for_conversation(
+    s: &AppState,
+    uid: &str,
+    character: &Value,
+    cid: &str,
+    instruction: &str,
+    input: &str,
+) -> Result<String> {
+    let cancel = s
+        .generating
+        .lock()
+        .await
+        .get(cid)
+        .cloned()
+        .unwrap_or_default();
+    tokio::select! {
+        _=cancel.cancelled()=>bail!("generation stopped"),
+        result=fast(s,uid,character,instruction,input)=>result,
+    }
 }
 pub async fn create_conversation(s: &AppState, uid: &str, body: &Value) -> ApiResult<Value> {
+    let _lock = s.generating.lock().await;
     let c = api::required(s, uid, "character", &text(body, "character_id")).await?;
     let conv = json!({"id":id(),"character_id":c["id"],"title":"","created_at":now(),"updated_at":now(),"memory_scanned_seq":0});
     let greeting = if let Some(index) = body["greeting_index"].as_u64() {
@@ -125,17 +146,19 @@ pub async fn busy(s: &AppState, cid: &str) -> ApiResult<()> {
     }
 }
 pub async fn begin(s: AppState, uid: String, cid: String, body: Value) -> ApiResult<Response> {
+    if s.shutdown.is_cancelled() {
+        return Err(ApiError::conflict("server is stopping"));
+    }
+    let mut running = s.generating.lock().await;
+    if running.contains_key(&cid) {
+        return Err(ApiError::conflict("conversation is generating"));
+    }
     let conv = api::conversation(&s, &uid, &cid).await?;
     let character = api::required(&s, &uid, "character", &text(&conv, "character_id")).await?;
     let (model, provider) = resolve(&s, &uid, &character, false).await?;
     let cancel = CancellationToken::new();
-    {
-        let mut running = s.generating.lock().await;
-        if running.contains_key(&cid) {
-            return Err(ApiError::conflict("conversation is generating"));
-        }
-        running.insert(cid.clone(), cancel.clone());
-    }
+    running.insert(cid.clone(), cancel.clone());
+    drop(running);
     let prep = prepare(&s, &uid, &cid, &body).await;
     let user = match prep {
         Ok(user) => user,
@@ -145,7 +168,7 @@ pub async fn begin(s: AppState, uid: String, cid: String, body: Value) -> ApiRes
         }
     };
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
+    s.tasks.clone().spawn(async move {
         let work = run(
             &s, &uid, &cid, &character, &model, &provider, user, &tx, &cancel,
         )
@@ -154,8 +177,8 @@ pub async fn begin(s: AppState, uid: String, cid: String, body: Value) -> ApiRes
             tracing::warn!(error=%e,"generation failed");
             emit(&tx, json!({"type":"error","error":e.to_string()}));
         }
-        emit(&tx, json!({"type":"done"}));
         s.generating.lock().await.remove(&cid);
+        emit(&tx, json!({"type":"done"}));
     });
     let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
         .map(|v| Ok::<_, Infallible>(SseEvent::default().data(v.to_string())));
@@ -396,15 +419,18 @@ async fn run(
     assistant["model_icon"] = model["icon"].clone();
     s.db.save_message(uid, &assistant).await?;
     emit(tx, json!({"type":"assistant_start","message":assistant}));
+    let mut tool_definitions = vec![];
+    let mut reasoning = None;
     let generation=async{
         let mut toolbox=tokio::select!{_ = cancel.cancelled()=>return Ok(()),t=Toolbox::load(s,uid,c,model,tx)=>t?};
-        let settings=api::settings(s,uid).await.map_err(|e|anyhow::anyhow!(e.message))?;let mut first_token=true;let mut reasoning=None;
+        tool_definitions=toolbox.definitions.clone();
+        let settings=api::settings(s,uid).await.map_err(|e|anyhow::anyhow!(e.message))?;let mut first_token=true;
         for turn in 0..16 {
             let history=s.db.messages(uid,cid).await?;let memories=memory::available(s,uid,c).await.map_err(|e|anyhow::anyhow!(e.message))?;
             let messages=context::build(c,&settings,&history,&memories,flag(model,"vision",false));
             let request=llm::Request{provider:provider.clone(),model:model.clone(),messages,params:c["params"].clone(),tools:toolbox.definitions.clone()};
             let (events_tx,mut events_rx)=mpsc::unbounded_channel();let client=s.client.clone();
-            let mut worker=tokio::spawn(async move{llm::stream(&client,request,events_tx).await});
+            let mut worker=tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move{llm::stream(&client,request,events_tx).await}));
             let mut flush=tokio::time::interval(Duration::from_secs(1));let mut calls=vec![];
             loop {
                 tokio::select!{
@@ -434,14 +460,21 @@ async fn run(
         }
         bail!("agent reached the 16-turn limit")
     }.await;
+    reasoning_end(&mut assistant, tx, &mut reasoning);
     assistant["usage"]["duration_ms"] = json!(start.elapsed().as_millis() as i64);
     if let Err(ref e) = generation {
         assistant["parts"]["error"] = json!(e.to_string());
         emit(tx, json!({"type":"error","error":e.to_string()}));
     }
     s.db.save_message(uid, &assistant).await?;
-    conv["updated_at"] = json!(now());
-    s.db.save_conversation(uid, &conv).await?;
+    {
+        let _lock = s.generating.lock().await;
+        conv = api::conversation(s, uid, cid)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.message))?;
+        conv["updated_at"] = json!(now());
+        s.db.save_conversation(uid, &conv).await?;
+    }
     emit(tx, json!({"type":"assistant_done","message":assistant}));
     if !cancel.is_cancelled() && generation.is_ok() {
         if c["context"]["mode"] == "instant" {
@@ -451,7 +484,7 @@ async fn run(
                 Err(e) => emit(tx, json!({"type":"notice","message":e.to_string()})),
             }
         } else {
-            let stat = context_info(s, uid, cid).await?;
+            let stat = context_info_with_tools(s, uid, cid, Some(&tool_definitions)).await?;
             if number(&stat, "tokens", 0) >= number(&stat, "threshold", i64::MAX) {
                 emit(tx, json!({"type":"compressing"}));
                 match compress(s, uid, cid, c).await {
@@ -473,7 +506,7 @@ async fn run(
             let c = c.clone();
             let cid = cid.to_owned();
             let first = text(&user, "content");
-            tokio::spawn(async move {
+            s.tasks.clone().spawn(async move {
                 let fallback = first.chars().take(20).collect::<String>();
                 let title = fast(
                     &s,
@@ -484,6 +517,7 @@ async fn run(
                 )
                 .await
                 .unwrap_or(fallback);
+                let _lock = s.generating.lock().await;
                 if let Ok(Some(mut conv)) = s.db.conversation(&uid, &cid).await {
                     if text(&conv, "title").is_empty() {
                         conv["title"] = json!(title.trim());
@@ -493,7 +527,7 @@ async fn run(
             });
         }
     }
-    match context_info(s, uid, cid).await {
+    match context_info_with_tools(s, uid, cid, Some(&tool_definitions)).await {
         Ok(info) => {
             let mut info = info;
             info["type"] = json!("context");
@@ -507,7 +541,7 @@ pub async fn actual(s: &AppState, uid: &str, m: &mut Value, c: &Value) -> Result
     m["actual_status"] = json!("pending");
     m["actual_error"] = Value::Null;
     s.db.save_message(uid, m).await?;
-    match fast(s,uid,c,"Compress this assistant reply faithfully for future conversation context. Preserve events, commitments, facts and tool results. Use the same language.",&format!("{}\n{}",text(m,"content"),m["parts"]["segments"])).await{Ok(v)=>{m["actual"]=json!(v);m["actual_status"]=json!("ok");},Err(e)=>{m["actual_status"]=json!("failed");m["actual_error"]=json!(e.to_string());}}
+    match fast_for_conversation(s,uid,c,&text(m,"conversation_id"),"Compress this assistant reply faithfully for future conversation context. Preserve events, commitments, facts and tool results. Use the same language.",&format!("{}\n{}",text(m,"content"),m["parts"]["segments"])).await{Ok(v)=>{m["actual"]=json!(v);m["actual_status"]=json!("ok");},Err(e)=>{m["actual_status"]=json!("failed");m["actual_error"]=json!(e.to_string());}}
     s.db.save_message(uid, m).await?;
     Ok(())
 }
@@ -529,7 +563,7 @@ pub async fn compress(
     }
     let count = visible.len() - keep;
     let old = &visible[..count];
-    let summary=fast(s,uid,c,"Summarize the earlier conversation in its language. Fully preserve events, decisions, commitments, relationship changes, current situation and unresolved threads. Merge previous summaries.",&serde_json::to_string(old)?).await?;
+    let summary=fast_for_conversation(s,uid,c,cid,"Summarize the earlier conversation in its language. Fully preserve events, decisions, commitments, relationship changes, current situation and unresolved threads. Merge previous summaries.",&serde_json::to_string(old)?).await?;
     let m = message(
         cid,
         number(&visible[count], "seq", 0) - 1,
@@ -562,6 +596,14 @@ pub async fn compress(
     Ok(Some((m, hidden)))
 }
 pub async fn context_info(s: &AppState, uid: &str, cid: &str) -> Result<Value> {
+    context_info_with_tools(s, uid, cid, None).await
+}
+async fn context_info_with_tools(
+    s: &AppState,
+    uid: &str,
+    cid: &str,
+    definitions: Option<&[Value]>,
+) -> Result<Value> {
     let conv =
         s.db.conversation(uid, cid)
             .await?
@@ -582,7 +624,11 @@ pub async fn context_info(s: &AppState, uid: &str, cid: &str) -> Result<Value> {
         .await
         .map_err(|e| anyhow::anyhow!(e.message))?;
     let (tx, _rx) = mpsc::unbounded_channel();
-    let tools = Toolbox::load(s, uid, &c, &model, &tx).await?;
+    let tools = if let Some(definitions) = definitions {
+        definitions.to_vec()
+    } else {
+        Toolbox::load(s, uid, &c, &model, &tx).await?.definitions
+    };
     let mut count = context::estimate(
         &context::build(
             &c,
@@ -591,7 +637,7 @@ pub async fn context_info(s: &AppState, uid: &str, cid: &str) -> Result<Value> {
             &memories,
             flag(&model, "vision", false),
         ),
-        &tools.definitions,
+        &tools,
     );
     let mut estimated = true;
     if let Some(last) = history
@@ -606,9 +652,9 @@ pub async fn context_info(s: &AppState, uid: &str, cid: &str) -> Result<Value> {
             );
         estimated = false;
     }
-    let max = number(&model, "context_length", 32768);
+    let max = number(&model, "context_length", 32768).max(1);
     let threshold = number(&c["context"], "compress_threshold", 0);
     Ok(
-        json!({"tokens":count,"max":max,"estimated":estimated,"mode":c["context"]["mode"],"threshold":if threshold>0{threshold}else{max*3/4}}),
+        json!({"tokens":count,"max":max,"estimated":estimated,"mode":c["context"]["mode"],"threshold":if threshold>0{threshold}else{max/4*3+(max%4)*3/4}}),
     )
 }

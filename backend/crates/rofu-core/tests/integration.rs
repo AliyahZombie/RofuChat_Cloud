@@ -1,4 +1,5 @@
 mod support;
+use futures_util::StreamExt;
 use reqwest::{Client, Method};
 use rofu_core::{
     model::{id, text},
@@ -218,6 +219,35 @@ async fn run_suite(database: Option<String>) {
             .await;
         assert_eq!(memories.as_array().unwrap().len(), 1);
         assert_eq!(memories[0]["source"], "agent");
+        let stats = h.get(&format!("/conversations/{cid}/context")).await;
+        assert_eq!(stats["tokens"], 120);
+        assert_eq!(stats["estimated"], false);
+        let imported = h
+            .post(
+                "/characters/import",
+                json!({"json":{"spec":"chara_card_v3","data":{"name":"Imported","assets":["x"]}}}),
+            )
+            .await;
+        let mut remote_avatar = imported.clone();
+        remote_avatar["avatar"] = json!(format!("{}/avatar", mock.url));
+        h.json(
+            Method::PUT,
+            &format!("/characters/{}", text(&imported, "id")),
+            remote_avatar,
+        )
+        .await;
+        let response = h
+            .request(
+                Method::GET,
+                &format!("/characters/{}/export?format=png", text(&imported, "id")),
+                json!({}),
+            )
+            .await;
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["content-type"], "image/png");
+        let exported = rofu_core::card::png_card(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(exported["data"]["name"], "Imported");
+        assert_eq!(exported["data"]["extensions"]["assets"], json!(["x"]));
         // Manual compression places the summary immediately before the retained tail.
         let mut cc = c.clone();
         cc["context"] = json!({"mode":"traditional","keep_recent":1,"compress_threshold":1});
@@ -263,6 +293,29 @@ async fn run_suite(database: Option<String>) {
             json!({"fast_model_id":fail["id"]}),
         )
         .await;
+        let mut current = h.get(&format!("/characters/{}", text(&c, "id"))).await;
+        current["context"]["keep_recent"] = json!(1);
+        h.json(
+            Method::PUT,
+            &format!("/characters/{}", text(&c, "id")),
+            current,
+        )
+        .await;
+        let snapshot = h.get(&format!("/conversations/{cid}/messages")).await;
+        assert_eq!(
+            h.request(
+                Method::POST,
+                &format!("/conversations/{cid}/compress"),
+                json!({})
+            )
+            .await
+            .status(),
+            500
+        );
+        assert_eq!(
+            h.get(&format!("/conversations/{cid}/messages")).await,
+            snapshot
+        );
         let ev = h.events(&cid, json!({"content":"instant failure"})).await;
         let actual = &ev.iter().find(|e| e["type"] == "actual").unwrap()["message"];
         assert_eq!(actual["actual_status"], "failed");
@@ -308,6 +361,36 @@ async fn run_suite(database: Option<String>) {
             .unwrap()
             .iter()
             .any(|m| m["source"] == "scan"));
+        h.events(&cid, json!({"content":"new messages for failing scan"}))
+            .await;
+        h.json(
+            Method::PUT,
+            "/settings",
+            json!({"fast_model_id":fail["id"]}),
+        )
+        .await;
+        assert_eq!(
+            h.request(
+                Method::POST,
+                &format!("/conversations/{cid}/memory_scan"),
+                json!({})
+            )
+            .await
+            .status(),
+            500
+        );
+        let scanned = h.get(&format!("/conversations/{cid}")).await;
+        let messages = h.get(&format!("/conversations/{cid}/messages")).await;
+        assert_eq!(
+            scanned["memory_scanned_seq"],
+            messages.as_array().unwrap().last().unwrap()["seq"]
+        );
+        assert_eq!(
+            h.post(&format!("/conversations/{cid}/memory_scan"), json!({}))
+                .await,
+            json!({"added":0,"updated":0,"deleted":0})
+        );
+        h.json(Method::PUT, "/settings", json!({})).await;
         let branch = h
             .post(
                 &format!("/messages/{}/branch", text(&retried, "id")),
@@ -370,6 +453,32 @@ async fn run_suite(database: Option<String>) {
     tokio::time::sleep(Duration::from_millis(1250)).await;
     let partial = h.get(&format!("/conversations/{cid}/messages")).await;
     assert!(!text(&partial[1], "content").is_empty());
+    assert_eq!(
+        h.request(Method::DELETE, &format!("/conversations/{cid}"), json!({}))
+            .await
+            .status(),
+        409
+    );
+    assert_eq!(
+        h.request(
+            Method::DELETE,
+            &format!("/characters/{}", text(&c, "id")),
+            json!({})
+        )
+        .await
+        .status(),
+        409
+    );
+    assert_eq!(
+        h.request(
+            Method::PATCH,
+            &format!("/messages/{}", text(&partial[0], "id")),
+            json!({"visible":false})
+        )
+        .await
+        .status(),
+        409
+    );
     drop(stream);
     h.post(&format!("/conversations/{cid}/stop"), json!({}))
         .await;
@@ -417,7 +526,88 @@ async fn run_suite(database: Option<String>) {
     let edited = h.get(&format!("/conversations/{cid}/messages")).await;
     assert_eq!(edited.as_array().unwrap().len(), 2);
     assert_eq!(edited[0]["content"], "edited");
-    h.server.stop().await.unwrap();
+    // Provider failures keep partial assistant content and surface an error event.
+    for model_id in ["stream-error", "fail", "no-usage"] {
+        let mut model = m.clone();
+        model["model_id"] = json!(model_id);
+        h.json(Method::PUT, &format!("/models/{}", text(&m, "id")), model)
+            .await;
+        let ev = h.events(&cid, json!({"content":"check errors"})).await;
+        let done = &ev.iter().find(|e| e["type"] == "assistant_done").unwrap()["message"];
+        if model_id == "no-usage" {
+            assert_eq!(done["usage"]["estimated"], true);
+            assert!(done["usage"]["input"].as_i64().unwrap() > 0);
+            assert!(done["usage"]["output"].as_i64().unwrap() > 0);
+        } else {
+            assert!(ev.iter().any(|e| e["type"] == "error"));
+            assert!(!text(&done["parts"], "error").is_empty());
+            if model_id == "stream-error" {
+                assert_eq!(done["content"], "partial");
+            }
+        }
+        assert_eq!(ev.last().unwrap()["type"], "done");
+    }
+    // Stop while the fast model is compressing, rather than while the visible reply streams.
+    let fast = h
+        .post("/models", json!({"provider_id":p["id"],"model_id":"slow"}))
+        .await;
+    h.json(
+        Method::PUT,
+        "/settings",
+        json!({"fast_model_id":fast["id"]}),
+    )
+    .await;
+    let mut cc = c.clone();
+    cc["context"] = json!({"mode":"instant"});
+    h.json(Method::PUT, &format!("/characters/{}", text(&c, "id")), cc)
+        .await;
+    let response = h
+        .request(
+            Method::POST,
+            &format!("/conversations/{cid}/chat"),
+            json!({"content":"stop compression"}),
+        )
+        .await;
+    let mut bytes = response.bytes_stream();
+    let mut decoder = Decoder::default();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let chunk = bytes.next().await.unwrap().unwrap();
+            let events = decoder.push(&chunk);
+            if events.iter().any(|e| {
+                serde_json::from_str::<Value>(&e.data).unwrap()["type"] == "actual_pending"
+            }) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    h.post(&format!("/conversations/{cid}/stop"), json!({}))
+        .await;
+    h.idle(&cid).await;
+    drop(bytes);
+    let messages = h.get(&format!("/conversations/{cid}/messages")).await;
+    let last = messages.as_array().unwrap().last().unwrap();
+    assert_eq!(last["actual_status"], "failed");
+    assert!(text(last, "actual_error").contains("stopped"));
+    // Graceful shutdown cancels a live stream and drains tracked title/scanner/agent tasks.
+    let mut model = m.clone();
+    model["model_id"] = json!("slow");
+    h.json(Method::PUT, &format!("/models/{}", text(&m, "id")), model)
+        .await;
+    let response = h
+        .request(
+            Method::POST,
+            &format!("/conversations/{cid}/chat"),
+            json!({"content":"shutdown"}),
+        )
+        .await;
+    drop(response);
+    tokio::time::timeout(Duration::from_secs(3), h.server.stop())
+        .await
+        .unwrap()
+        .unwrap();
 }
 #[tokio::test]
 async fn sqlite_contract_and_agent_suite() {

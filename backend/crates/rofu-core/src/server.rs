@@ -3,7 +3,7 @@ use anyhow::Result;
 use axum::{routing::any, Router};
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::{sync::Mutex, task::JoinHandle};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::{
     cors::{Any, CorsLayer},
     services::{ServeDir, ServeFile},
@@ -41,6 +41,7 @@ pub struct AppState {
     pub embedded: bool,
     pub generating: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pub shutdown: CancellationToken,
+    pub tasks: TaskTracker,
 }
 impl AppState {
     pub async fn new(config: &Config) -> Result<Self> {
@@ -59,6 +60,7 @@ impl AppState {
             embedded: config.embedded,
             generating: Default::default(),
             shutdown: CancellationToken::new(),
+            tasks: TaskTracker::new(),
         })
     }
 }
@@ -90,6 +92,9 @@ impl RunningServer {
             token.cancel();
         }
         self.task.await??;
+        self.state.tasks.close();
+        self.state.tasks.wait().await;
+        self.state.db.pool.close().await;
         Ok(())
     }
 }

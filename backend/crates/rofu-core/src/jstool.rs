@@ -43,7 +43,9 @@ fn execute(code: &str, args: &Value, limit: Duration) -> Value {
             let http=Function::new(ctx.clone(),move|method:String,url:String,body:String,headers:String|->String{
                 let result=(||->anyhow::Result<Value>{
                     let remaining=limit.saturating_sub(start.elapsed());if remaining.is_zero(){anyhow::bail!("execution timed out");}
-                    let client=reqwest::blocking::Client::builder().timeout(remaining.min(Duration::from_secs(15))).build()?;
+                    let mut builder=reqwest::blocking::Client::builder().timeout(remaining.min(Duration::from_secs(15)));
+                    if url::Url::parse(&url).ok().and_then(|u|u.host_str().map(str::to_owned)).is_some_and(|host|host.eq_ignore_ascii_case("localhost")||host.parse::<std::net::IpAddr>().is_ok_and(|ip|ip.is_loopback())) {builder=builder.no_proxy();}
+                    let client=builder.build()?;
                     let mut request=client.request(reqwest::Method::from_bytes(method.as_bytes())?,url);
                     if !body.is_empty(){request=request.body(body);}
                     let headers:Value=serde_json::from_str(&headers)?;if let Some(h)=headers.as_object(){for (k,v) in h{if let Some(v)=v.as_str(){request=request.header(k,v);}}}
@@ -117,5 +119,36 @@ mod tests {
         );
         assert_eq!(v["is_error"], true);
         assert!(v["result"].as_str().unwrap().contains("timed out"));
+    }
+    #[tokio::test]
+    async fn http_host_and_runtime_isolation() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new().route(
+                    "/",
+                    axum::routing::post(
+                        |headers: axum::http::HeaderMap, body: String| async move {
+                            assert_eq!(headers["x-test"], "yes");
+                            (axum::http::StatusCode::CREATED, body)
+                        },
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        // Local tests must not depend on proxy environment settings.
+        let value=run(format!("function main(){{ globalThis.leaked=42; return http('POST','http://{addr}/','hello',{{'x-test':'yes'}}); }}"),json!({})).await;
+        task.abort();
+        assert_eq!(value["is_error"], false, "{value}");
+        let result: Value = serde_json::from_str(value["result"].as_str().unwrap()).unwrap();
+        assert_eq!(result, json!({"status":201,"body":"hello"}));
+        assert_eq!(
+            run("function main(){return typeof leaked;}".into(), json!({})).await["result"],
+            "undefined"
+        );
     }
 }

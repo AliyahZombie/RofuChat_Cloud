@@ -184,7 +184,7 @@ pub async fn scan(s: &AppState, uid: &str, cid: &str) -> ApiResult<Value> {
     memories.sort_by_key(|m| std::cmp::Reverse(m["updated_at"].as_i64().unwrap_or(0)));
     memories.truncate(100);
     let result=async {
-        let output=crate::chat::fast(s,uid,&c,"Extract durable memories from the new conversation. Return only JSON: {\"add\":[{\"content\":\"...\",\"tags\":[],\"global\":false}],\"update\":[{\"id\":\"...\",\"content\":\"...\"}],\"delete\":[\"id\"]}. Do not delete pinned memories.",&json!({"messages":messages,"memories":memories}).to_string()).await?;
+        let output=crate::chat::fast_for_conversation(s,uid,&c,cid,"Extract durable memories from the new conversation. Return only JSON: {\"add\":[{\"content\":\"...\",\"tags\":[],\"global\":false}],\"update\":[{\"id\":\"...\",\"content\":\"...\"}],\"delete\":[\"id\"]}. Do not delete pinned memories.",&json!({"messages":messages,"memories":memories}).to_string()).await?;
         let trimmed=output.trim();let trimmed=if trimmed.starts_with("```"){let start=trimmed.find('\n').map(|p|p+1).unwrap_or(3);trimmed[start..].trim_end().strip_suffix("```").unwrap_or(&trimmed[start..]).trim()}else{trimmed};
         let delta:Value=serde_json::from_str(trimmed)?;if !delta.is_object(){anyhow::bail!("memory scan must return a JSON object");}
         let mut added=0;let mut updated=0;let mut deleted=0;
@@ -212,7 +212,7 @@ if flag(a,"global",false)&&!flag(&c["memory"],"share_global",true){continue;}let
     }
 }
 pub fn spawn_scanner(s: AppState) {
-    tokio::spawn(async move {
+    s.tasks.clone().spawn(async move {
         let mut timer = tokio::time::interval(std::time::Duration::from_secs(120));
         timer.tick().await;
         loop {
@@ -235,7 +235,7 @@ pub fn spawn_scanner(s: AppState) {
                     if s.shutdown.is_cancelled() {
                         return;
                     }
-                    if conv["updated_at"].as_i64().unwrap_or(0) > now() - idle {
+                    if conv["updated_at"].as_i64().unwrap_or(0) > now().saturating_sub(idle) {
                         continue;
                     }
                     let cid = text(&conv, "id");

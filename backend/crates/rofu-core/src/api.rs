@@ -62,6 +62,11 @@ impl From<anyhow::Error> for ApiError {
 }
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
+        if e.as_database_error()
+            .is_some_and(|e| e.is_unique_violation())
+        {
+            return Self::conflict("resource already exists");
+        }
         anyhow::Error::from(e).into()
     }
 }
@@ -232,6 +237,12 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
                 if row.get::<i64, _>("is_root") != 0 {
                     return Err(ApiError::forbidden("cannot delete root"));
                 }
+                let running = s.generating.lock().await;
+                for conv in s.db.conversations(target).await? {
+                    if running.contains_key(&text(&conv, "id")) {
+                        return Err(ApiError::conflict("user has a generating conversation"));
+                    }
+                }
                 let mut tx = s.db.pool.begin().await?;
                 for table in ["sessions", "entities", "conversations", "messages"] {
                     sqlx::query(&format!("DELETE FROM {table} WHERE user_id=$1"))
@@ -256,7 +267,15 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
         }
         if method == Method::PUT {
             let mut v = normalized("settings", &body);
-            v["id"] = json!(text(&old, "id"));
+            v["id"] = json!(if text(&old, "id").is_empty() {
+                uid.clone()
+            } else {
+                text(&old, "id")
+            });
+            v["created_at"] = old
+                .get("created_at")
+                .cloned()
+                .unwrap_or_else(|| json!(crate::model::now()));
             return Ok(ok(s.db.save(&uid, "settings", v).await?));
         }
     }
@@ -344,6 +363,18 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
                 return Ok(ok(save_entity(&s, &uid, kind, &body, Some(v)).await?));
             }
             if method == Method::DELETE {
+                let running = s.generating.lock().await;
+                if kind == "character" {
+                    for conv in s.db.conversations(&uid).await? {
+                        if text(&conv, "character_id") == eid
+                            && running.contains_key(&text(&conv, "id"))
+                        {
+                            return Err(ApiError::conflict(
+                                "character has a generating conversation",
+                            ));
+                        }
+                    }
+                }
                 s.db.delete(&uid, kind, eid).await?;
                 return Ok(empty());
             }

@@ -120,10 +120,29 @@ struct Parser {
 }
 impl Parser {
     fn emit(&mut self, e: Event) {
-        if let Event::Text(t) = &e {
+        if let Event::Text(t) | Event::Reasoning(t) = &e {
             self.output.push_str(t);
         }
         let _ = self.tx.send(e);
+    }
+    fn finish_usage(&mut self, request: &Request) -> Value {
+        let mut usage = self
+            .usage
+            .take()
+            .unwrap_or_else(|| json!({"cached":0,"reasoning":0,"estimated":true}));
+        for (key, estimate) in [
+            (
+                "input",
+                context::estimate(&request.messages, &request.tools),
+            ),
+            ("output", context::tokens(&self.output)),
+        ] {
+            if !usage[key].is_i64() {
+                usage[key] = json!(estimate);
+                usage["estimated"] = json!(true);
+            }
+        }
+        usage
     }
     fn text(&mut self, s: &str) {
         for (reasoning, t) in self.think.push(s) {
@@ -157,7 +176,7 @@ impl Parser {
                     let u = &v["response"]["usage"];
                     if u.is_object() {
                         self.usage = Some(
-                            json!({"input":number(u,"input_tokens",0),"output":number(u,"output_tokens",0),"cached":number(&u["input_tokens_details"],"cached_tokens",0),"reasoning":number(&u["output_tokens_details"],"reasoning_tokens",0),"estimated":false}),
+                            json!({"input":u["input_tokens"],"output":u["output_tokens"],"cached":number(&u["input_tokens_details"],"cached_tokens",0),"reasoning":number(&u["output_tokens_details"],"reasoning_tokens",0),"estimated":!u["input_tokens_details"]["cached_tokens"].is_i64()}),
                         );
                     }
                 }
@@ -202,7 +221,7 @@ impl Parser {
             let u = &v["usage"];
             if u.is_object() {
                 self.usage = Some(
-                    json!({"input":number(u,"prompt_tokens",0),"output":number(u,"completion_tokens",0),"cached":u["prompt_tokens_details"]["cached_tokens"].as_i64().unwrap_or_else(||number(u,"prompt_cache_hit_tokens",0)),"reasoning":number(&u["completion_tokens_details"],"reasoning_tokens",0),"estimated":false}),
+                    json!({"input":u["prompt_tokens"],"output":u["completion_tokens"],"cached":u["prompt_tokens_details"]["cached_tokens"].as_i64().unwrap_or_else(||number(u,"prompt_cache_hit_tokens",0)),"reasoning":number(&u["completion_tokens_details"],"reasoning_tokens",0),"estimated":!(u["prompt_tokens_details"]["cached_tokens"].is_i64()||u["prompt_cache_hit_tokens"].is_i64())}),
                 );
             }
         }
@@ -268,7 +287,7 @@ pub async fn stream(
         }
         parser.emit(Event::ToolCall(c));
     }
-    let usage=parser.usage.take().unwrap_or_else(||json!({"input":context::estimate(&request.messages,&request.tools),"output":context::tokens(&parser.output),"cached":0,"reasoning":0,"estimated":true}));
+    let usage = parser.finish_usage(&request);
     parser.emit(Event::Usage(usage));
     Ok(())
 }
@@ -314,5 +333,53 @@ mod tests {
         assert_eq!(b["input"][1]["content"].as_array().unwrap().len(), 1);
         req.provider["kind"] = json!("openai");
         assert_eq!(req.body()["stream_options"]["include_usage"], true);
+    }
+    #[test]
+    fn responses_incomplete_and_failed_and_cache_alias() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut p = Parser {
+            responses: true,
+            think: Think::default(),
+            calls: Default::default(),
+            usage: None,
+            output: String::new(),
+            tx,
+        };
+        p.parse(&json!({"type":"response.incomplete","response":{"usage":{"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":2}}}}).to_string()).unwrap();
+        assert_eq!(p.usage.as_ref().unwrap()["cached"], 4);
+        assert!(p
+            .parse(&json!({"type":"response.failed","response":{"error":"failed"}}).to_string())
+            .is_err());
+        p.responses = false;
+        p.parse(&json!({"usage":{"prompt_tokens":30,"completion_tokens":8,"prompt_cache_hit_tokens":9}}).to_string()).unwrap();
+        assert_eq!(p.usage.as_ref().unwrap()["cached"], 9);
+        assert!(p
+            .parse(&json!({"error":{"message":"bad"}}).to_string())
+            .is_err());
+    }
+    #[test]
+    fn partial_usage_falls_back_per_field() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut p = Parser {
+            responses: false,
+            think: Think::default(),
+            calls: Default::default(),
+            usage: None,
+            output: String::new(),
+            tx,
+        };
+        p.parse(&json!({"usage":{"completion_tokens":7}}).to_string())
+            .unwrap();
+        let req = Request {
+            provider: json!({}),
+            model: json!({}),
+            messages: vec![json!({"role":"user","content":"hello"})],
+            params: json!({}),
+            tools: vec![],
+        };
+        let usage = p.finish_usage(&req);
+        assert_eq!(usage["input"], 6);
+        assert_eq!(usage["output"], 7);
+        assert_eq!(usage["estimated"], true);
     }
 }

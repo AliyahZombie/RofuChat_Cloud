@@ -30,7 +30,11 @@ pub fn estimate(messages: &[Value], tools: &[Value]) -> i64 {
             n
         })
         .sum::<i64>()
-        + tokens(&serde_json::to_string(tools).unwrap_or_default())
+        + if tools.is_empty() {
+            0
+        } else {
+            tokens(&serde_json::to_string(tools).unwrap_or_default())
+        }
 }
 pub fn build(
     character: &Value,
@@ -150,7 +154,7 @@ mod tests {
         assert_eq!(tokens("你好abcd"), 3);
         assert_eq!(
             estimate(&[json!({"content":"abcd","images":["x"]})], &[]),
-            806
+            805
         );
     }
     #[test]

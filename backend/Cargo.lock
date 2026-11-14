@@ -1571,6 +1571,7 @@ dependencies = [
 name = "rofu-ffi"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "reqwest",
  "rofu-core",
  "serde",
@@ -2257,6 +2258,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

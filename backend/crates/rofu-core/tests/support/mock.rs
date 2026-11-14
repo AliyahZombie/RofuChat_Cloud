@@ -32,7 +32,7 @@ impl Drop for MockServer {
 impl MockServer {
     pub async fn start() -> Self {
         let state = Mock::default();
-        let app=Router::new().route("/models",get(||async{Json(json!({"data":[{"id":"mock-tool","context_length":10000,"supported_parameters":["tools","reasoning"]}]}))})).route("/chat/completions",post(llm)).route("/responses",post(llm)).route("/mcp",post(mcp_http)).route("/legacy",get(legacy)).route("/mcp/message",post(legacy_post)).with_state(state.clone());
+        let app=Router::new().route("/models",get(||async{Json(json!({"data":[{"id":"mock-tool","context_length":10000,"supported_parameters":["tools","reasoning"]}]}))})).route("/chat/completions",post(llm)).route("/responses",post(llm)).route("/avatar",get(||async{ ([("Content-Type","image/png")], rofu_core::card::export_png(&json!({"card":{"name":"Avatar"}})).unwrap()) })).route("/mcp",post(mcp_http)).route("/legacy",get(legacy)).route("/mcp/message",post(legacy_post)).with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move {
@@ -129,8 +129,17 @@ async fn llm(State(state): State<Mock>, Json(body): Json<Value>) -> Response {
         }
         chunks.push(json!({"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens_details":{"reasoning_tokens":5}}}));
     }
+    if body["model"] == "stream-error" {
+        chunks = vec![
+            json!({"choices":[{"delta":{"content":"partial"}}]}),
+            json!({"error":{"message":"mock stream failure"}}),
+        ];
+    }
+    if body["model"] == "no-usage" {
+        chunks.retain(|c| c.get("usage").is_none());
+    }
     let delay = if body["model"] == "slow" { 30 } else { 1 };
-    // Split every UTF-8 byte into its own body chunk to exercise incremental parsing.
+    // Split SSE fields into small body chunks to exercise incremental parsing.
     let wire = chunks
         .iter()
         .map(|v| format!("data: {v}\r\n\r\n"))
