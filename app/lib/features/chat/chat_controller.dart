@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:collection';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -27,6 +29,9 @@ class ChatController extends ChangeNotifier {
 
   /// Id of the assistant message currently streaming.
   String? streamingId;
+
+  /// The assistant message that finished most recently in this session (its footer fades in).
+  String? justFinishedId;
 
   /// Bumped on every streaming delta; widgets use it to throttle markdown re-parsing.
   int rev = 0;
@@ -149,8 +154,15 @@ class ChatController extends ChangeNotifier {
     final body = {'content': content, 'images': images, 'regenerate': regenerate, 'edit_message_id': editMessageId};
     final completer = Completer<void>();
     _sub = api.sse('/api/conversations/$conversationId/chat', body).listen(
-      (ev) => _handle(ev, tempId),
-      onError: (Object e) {
+      (ev) {
+        final type = ev['type'];
+        if (type == 'text' || type == 'reasoning') {
+          _push(_Delta(type as String, ev['delta'] as String? ?? ''));
+        } else {
+          _push(() => _handle(ev, tempId));
+        }
+      },
+      onError: (Object e) => _push(() {
         if (tempId != null && e is ApiException && e.status != 200) messages.removeWhere((m) => m.id == tempId);
         _sub = null;
         if (streamingId != null) {
@@ -162,8 +174,8 @@ class ChatController extends ChangeNotifier {
         }
         _notify();
         if (!completer.isCompleted) completer.complete();
-      },
-      onDone: () {
+      }),
+      onDone: () => _push(() {
         _sub = null;
         if (_poll == null) {
           generating = false;
@@ -171,25 +183,66 @@ class ChatController extends ChangeNotifier {
         }
         _notify();
         if (!completer.isCompleted) completer.complete();
-      },
+      }),
       cancelOnError: true,
     );
     return completer.future;
   }
 
-  int _lastNotify = 0;
-  void _throttledNotify() {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastNotify > 40) {
-      _lastNotify = now;
-      _notify();
-    } else {
-      Future.delayed(const Duration(milliseconds: 45), () {
-        if (DateTime.now().millisecondsSinceEpoch - _lastNotify >= 40) {
-          _lastNotify = DateTime.now().millisecondsSinceEpoch;
-          _notify();
+  // ------------------------------------------------------------ smooth streaming
+  //
+  // Network deltas arrive in bursts. Instead of painting each burst as it lands, text is
+  // queued and revealed a few characters per frame (~30 fps), fast enough that any backlog
+  // drains within ~0.25 s. Other events wait in the same queue so ordering is preserved.
+
+  final _pending = ListQueue<Object>();
+  Timer? _ticker;
+
+  void _push(Object item) {
+    _pending.add(item);
+    _ticker ??= Timer.periodic(const Duration(milliseconds: 33), (_) => _tick());
+  }
+
+  void _tick() {
+    if (_disposed) {
+      _ticker?.cancel();
+      _ticker = null;
+      return;
+    }
+    var backlog = 0;
+    for (final p in _pending) {
+      if (p is _Delta) backlog += p.text.length;
+    }
+    var budget = max(1, (backlog / 8).ceil());
+    var changed = false;
+    while (_pending.isNotEmpty) {
+      final head = _pending.first;
+      if (head is _Delta) {
+        if (budget <= 0) break;
+        var take = min(budget, head.text.length);
+        // never split a surrogate pair (emoji)
+        if (take < head.text.length && take > 0) {
+          final cu = head.text.codeUnitAt(take - 1);
+          if (cu >= 0xD800 && cu <= 0xDBFF) take++;
         }
-      });
+        _appendSeg(head.type, head.text.substring(0, take));
+        head.text = head.text.substring(take);
+        budget -= take;
+        changed = true;
+        if (head.text.isEmpty) _pending.removeFirst();
+      } else {
+        _pending.removeFirst();
+        (head as void Function())();
+        changed = true;
+      }
+    }
+    if (_pending.isEmpty) {
+      _ticker?.cancel();
+      _ticker = null;
+    }
+    if (changed) {
+      rev++;
+      _notify();
     }
   }
 
@@ -205,14 +258,8 @@ class ChatController extends ChangeNotifier {
         _upsert(m);
       case 'text':
         _appendSeg('text', ev['delta'] as String? ?? '');
-        rev++;
-        _throttledNotify();
-        return;
       case 'reasoning':
         _appendSeg('reasoning', ev['delta'] as String? ?? '');
-        rev++;
-        _throttledNotify();
-        return;
       case 'reasoning_end':
         final m = _streaming;
         if (m != null) {
@@ -246,6 +293,7 @@ class ChatController extends ChangeNotifier {
       case 'assistant_done':
         final m = msg();
         _upsert(m);
+        justFinishedId = m.id;
         streamingId = null;
       case 'actual_pending':
         actualPending.add(ev['id'] as String? ?? '');
@@ -356,8 +404,15 @@ class ChatController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _ticker?.cancel();
     _sub?.cancel();
     _poll?.cancel();
     super.dispose();
   }
+}
+
+class _Delta {
+  final String type;
+  String text;
+  _Delta(this.type, this.text);
 }

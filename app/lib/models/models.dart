@@ -9,8 +9,11 @@ String _s(Json j, String k, [String d = '']) => (j[k] as String?) ?? d;
 int _i(Json j, String k, [int d = 0]) => (j[k] as num?)?.toInt() ?? d;
 bool _b(Json j, String k, [bool d = false]) => (j[k] as bool?) ?? d;
 List<String> _ls(Json j, String k) => ((j[k] as List?) ?? const []).map((e) => e.toString()).toList();
+/// The nested map at [k], attached to [j] so edits to it stick. Returns the same instance on
+/// every call (a fresh copy each time would detach maps the UI already holds).
 Json _m(Json j, String k) {
   final v = j[k];
+  if (v is Map<String, dynamic>) return v;
   if (v is Map) {
     final m = Map<String, dynamic>.from(v);
     j[k] = m;

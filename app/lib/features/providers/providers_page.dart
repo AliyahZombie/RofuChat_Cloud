@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/i18n.dart';
+import '../../core/model_catalog.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/common.dart';
@@ -97,6 +98,12 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
     try {
       final r = await ref.read(apiProvider).post('/api/providers/${p.id}/remote_models');
       final remote = ((r as List?) ?? const []).map((e) => ModelCfg(Map<String, dynamic>.from(e as Map))).toList();
+      final catalog = await _catalog();
+      if (catalog != null) {
+        for (final m in remote) {
+          catalog.apply(m);
+        }
+      }
       if (!mounted) return;
       final existing = (ref.read(modelsProvider).value ?? const <ModelCfg>[]).where((m) => m.providerId == p.id).map((m) => m.modelId).toSet();
       final chosen = await showModalBottomSheet<List<ModelCfg>>(
@@ -126,6 +133,7 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
     try {
       final j = await ref.read(apiProvider).post('/api/models/detect', {'model_id': id.trim()});
       final m = ModelCfg(Map<String, dynamic>.from(j as Map))..providerId = p.id;
+      (await _catalog())?.apply(m);
       if (!mounted) return;
       await Navigator.of(context).push(MaterialPageRoute(builder: (_) => ModelEditorPage(model: m)));
     } catch (e) {
@@ -133,21 +141,59 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
     }
   }
 
-  Future<void> _testProvider() async {
+  /// models.dev metadata; null (silently) when it cannot be downloaded and nothing is cached.
+  Future<ModelCatalog?> _catalog({bool force = false}) async {
+    try {
+      return await ModelCatalog.load(ref.read(storeProvider), force: force);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Re-reads context length, max output, capabilities and icon of this provider's models from models.dev.
+  Future<void> _syncCatalog() async {
+    final models = (ref.read(modelsProvider).value ?? const <ModelCfg>[]).where((m) => m.providerId == p.id).toList();
+    setState(() => _busy = true);
+    try {
+      final catalog = await ModelCatalog.load(ref.read(storeProvider), force: true);
+      final changed = <ModelCfg>[];
+      for (final m in models) {
+        final copy = ModelCfg(jsonDecode(jsonEncode(m.json)) as Map<String, dynamic>);
+        if (catalog.apply(copy)) changed.add(copy);
+      }
+      for (final m in changed) {
+        await ref.read(apiProvider).put('/api/models/${m.id}', m.toJson());
+      }
+      await ref.read(modelsProvider.notifier).refresh();
+      if (mounted) {
+        showInfo(context, t('已从 models.dev 更新 ${changed.length}/${models.length} 个模型', 'Updated ${changed.length}/${models.length} models from models.dev'));
+      }
+    } catch (e) {
+      if (mounted) showError(context, e);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _testProvider([ModelCfg? pick]) async {
     final models = (ref.read(modelsProvider).value ?? const <ModelCfg>[]).where((m) => m.providerId == p.id).toList();
     if (models.isEmpty) {
       showError(context, t('先添加一个模型', 'Add a model first'));
       return;
     }
+    final model = pick ?? models.first;
     setState(() {
       _busy = true;
       _test = null;
     });
     try {
-      final r = await ref.read(apiProvider).post('/api/providers/${p.id}/test', {'model_id': models.first.id}) as Map;
-      _test = r['ok'] == true ? t('成功 · ${r['latency_ms']}ms · ${r['reply']}', 'OK · ${r['latency_ms']}ms · ${r['reply']}') : '${t('失败', 'Failed')}: ${r['error']}';
+      // The backend expects the upstream model name, not our config id.
+      final r = await ref.read(apiProvider).post('/api/providers/${p.id}/test', {'model_id': model.modelId}) as Map;
+      _test = r['ok'] == true
+          ? t('${model.name} 成功 · ${r['latency_ms']}ms · ${r['reply']}', '${model.name} OK · ${r['latency_ms']}ms · ${r['reply']}')
+          : '${model.name} ${t('失败', 'failed')}: ${r['error']}';
     } catch (e) {
-      _test = '${t('失败', 'Failed')}: $e';
+      _test = '${model.name} ${t('失败', 'failed')}: $e';
     }
     if (mounted) setState(() => _busy = false);
   }
@@ -199,7 +245,29 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
         if (_test != null) Padding(padding: const EdgeInsets.symmetric(vertical: 6), child: Text(_test!, style: Theme.of(context).textTheme.bodySmall)),
         Row(children: [
           Expanded(child: Text(t('模型（${models.length}）', 'Models (${models.length})'), style: Theme.of(context).textTheme.titleMedium)),
-          TextButton.icon(onPressed: _busy ? null : _testProvider, icon: const Icon(Icons.network_check), label: Text(t('测试', 'Test'))),
+          IconButton(
+            tooltip: t('从 models.dev 更新模型信息', 'Update model info from models.dev'),
+            onPressed: _busy || models.isEmpty ? null : _syncCatalog,
+            icon: const Icon(Icons.auto_fix_high_outlined),
+          ),
+          if (models.length > 1)
+            PopupMenuButton<ModelCfg>(
+              enabled: !_busy,
+              tooltip: t('选择模型测试', 'Pick a model to test'),
+              onSelected: _testProvider,
+              itemBuilder: (_) => [for (final m in models) PopupMenuItem(value: m, child: Text(m.name))],
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.network_check, size: 18, color: Theme.of(context).colorScheme.primary),
+                  const SizedBox(width: 6),
+                  Text(t('测试', 'Test'), style: TextStyle(color: Theme.of(context).colorScheme.primary)),
+                  Icon(Icons.arrow_drop_down, color: Theme.of(context).colorScheme.primary),
+                ]),
+              ),
+            )
+          else
+            TextButton.icon(onPressed: _busy ? null : () => _testProvider(), icon: const Icon(Icons.network_check), label: Text(t('测试', 'Test'))),
         ]),
         Wrap(spacing: 8, children: [
           FilledButton.tonalIcon(onPressed: _busy ? null : _fetchModels, icon: const Icon(Icons.cloud_download_outlined), label: Text(t('获取模型列表', 'Fetch models'))),
@@ -308,12 +376,32 @@ class _ModelEditorPageState extends ConsumerState<ModelEditorPage> {
     }
   }
 
+  Future<void> _fromCatalog() async {
+    try {
+      final catalog = await ModelCatalog.load(ref.read(storeProvider));
+      m.modelId = _id.text.trim();
+      if (!catalog.apply(m, overwriteIcon: true)) {
+        if (mounted) showInfo(context, t('models.dev 里没有找到这个模型', 'Not found on models.dev'));
+        return;
+      }
+      setState(() {
+        _ctx.text = '${m.contextLength}';
+        _out.text = '${m.maxOutput}';
+      });
+    } catch (e) {
+      if (mounted) showError(context, e);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(m.id.isEmpty ? t('添加模型', 'Add model') : m.name),
-        actions: [Padding(padding: const EdgeInsets.only(right: 8), child: FilledButton(onPressed: _save, child: Text(t('保存', 'Save'))))],
+        actions: [
+          IconButton(tooltip: t('从 models.dev 填充', 'Fill from models.dev'), onPressed: _fromCatalog, icon: const Icon(Icons.auto_fix_high_outlined)),
+          Padding(padding: const EdgeInsets.only(right: 8), child: FilledButton(onPressed: _save, child: Text(t('保存', 'Save')))),
+        ],
       ),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         TextField(controller: _id, decoration: InputDecoration(labelText: t('模型 ID（发送给 API）', 'Model ID (sent to the API)'))),

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
@@ -13,6 +14,7 @@ import '../../core/i18n.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/common.dart';
+import '../../widgets/motion.dart';
 import '../characters/character_editor.dart';
 import '../memory/memory_page.dart';
 import '../sidebar/sidebar.dart';
@@ -180,7 +182,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     return Scaffold(
       key: _scaffold,
       appBar: appBar,
-      drawer: Drawer(width: 320, child: Sidebar(onNewConversation: newConversation, inDrawer: true)),
+      drawer: Drawer(width: math.min(320, MediaQuery.sizeOf(context).width * 0.85), child: Sidebar(onNewConversation: newConversation, inDrawer: true)),
+      // Swipe right anywhere on the chat to pull the sidebar out (it follows the finger);
+      // the default 20 px edge strip is taken by Android's back gesture.
+      drawerEdgeDragWidth: MediaQuery.sizeOf(context).width,
+      drawerScrimColor: Colors.black.withValues(alpha: 0.4),
       body: body,
     );
   }
@@ -506,17 +512,18 @@ class _MessageList extends ConsumerWidget {
           ]),
         );
       case StepsRow():
-        return StepsCard(steps: row.steps, live: row.live, compact: watch);
+        return Appear(enabled: row.live, child: StepsCard(steps: row.steps, live: row.live, compact: watch));
       case BlockRow():
-        return Opacity(
-          opacity: m.visible ? 1 : 0.5,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 1),
-            child: MarkdownSingleBlockRenderer(row.block, baseTextStyle: base),
+        return Appear(
+          enabled: m.id == ctl.streamingId,
+          child: Opacity(
+            opacity: m.visible ? 1 : 0.5,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 1),
+              child: MarkdownSingleBlockRenderer(row.block, baseTextStyle: base),
+            ),
           ),
         );
-      case TypingRow():
-        return const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Align(alignment: Alignment.centerLeft, child: _TypingDots()));
       case SummaryRow():
         return SummaryCard(
           msg: m,
@@ -526,7 +533,9 @@ class _MessageList extends ConsumerWidget {
           },
         );
       case FooterRow():
-        return _AssistantFooter(ctl: ctl, msg: m, isLast: row.isLastAssistant, showTokens: appearance.showTokens && !watch, compact: watch, onMore: (pos) => _messageMenu(context, ref, m, pos));
+        return Appear(
+            enabled: m.id == ctl.justFinishedId,
+            child: _AssistantFooter(ctl: ctl, msg: m, isLast: row.isLastAssistant, showTokens: appearance.showTokens && !watch, compact: watch, onMore: (pos) => _messageMenu(context, ref, m, pos)));
     }
   }
 
@@ -622,19 +631,51 @@ Future<void> showActualDialog(BuildContext context, ChatController ctl, Message 
   );
 }
 
+/// Bottom of the list: while a reply is being generated, a morphing loading shape with what
+/// is happening right now (rikkahub style). Fades in and out.
 class _ListTail extends StatelessWidget {
   final ChatController ctl;
   const _ListTail({required this.ctl});
+
+  String? _status() {
+    if (ctl.compressing) return t('正在压缩上下文…', 'Compressing context…');
+    final m = ctl.streamingId == null ? null : ctl.byId(ctl.streamingId!);
+    final segs = m?.segments ?? const <Segment>[];
+    if (segs.isEmpty) return null;
+    final last = segs.last;
+    if (last.type == 'tool' && last.result == null) return t('正在调用 ${last.name}…', 'Calling ${last.name}…');
+    if (last.type == 'reasoning') return t('思考中…', 'Thinking…');
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (!ctl.compressing) return const SizedBox(height: 4);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
-        const SizedBox(width: 8),
-        Text(t('正在压缩上下文…', 'Compressing context…'), style: Theme.of(context).textTheme.labelSmall),
-      ]),
+    final busy = ctl.generating || ctl.compressing;
+    final status = busy ? _status() : null;
+    final watch = context.isWatch;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, a) => FadeTransition(opacity: a, child: SizeTransition(sizeFactor: a, axisAlignment: -1, child: child)),
+      child: !busy
+          ? const SizedBox(key: ValueKey('idle'), height: 4, width: double.infinity)
+          : Padding(
+              key: const ValueKey('busy'),
+              padding: const EdgeInsets.fromLTRB(0, 10, 0, 8),
+              child: Row(mainAxisAlignment: watch ? MainAxisAlignment.center : MainAxisAlignment.start, children: [
+                LoadingBlob(size: watch ? 22 : 30),
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 200),
+                  child: status == null
+                      ? const SizedBox.shrink()
+                      : Padding(
+                          padding: const EdgeInsets.only(left: 10),
+                          child: Text(status, style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                        ),
+                ),
+              ]),
+            ),
     );
   }
 }
@@ -706,38 +747,6 @@ class _AssistantFooter extends StatelessWidget {
   }
 }
 
-class _TypingDots extends StatefulWidget {
-  const _TypingDots();
-  @override
-  State<_TypingDots> createState() => _TypingDotsState();
-}
-
-class _TypingDotsState extends State<_TypingDots> with SingleTickerProviderStateMixin {
-  late final AnimationController _a = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))..repeat();
-  @override
-  void dispose() {
-    _a.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = Theme.of(context).colorScheme.onSurfaceVariant;
-    return AnimatedBuilder(
-      animation: _a,
-      builder: (_, _) => Row(mainAxisSize: MainAxisSize.min, children: [
-        for (var i = 0; i < 3; i++)
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 2),
-            width: 7,
-            height: 7,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: c.withValues(alpha: 0.3 + 0.7 * (((_a.value * 3) - i) % 3 < 1 ? 1 : 0))),
-          ),
-      ]),
-    );
-  }
-}
-
 // ---------------------------------------------------------------------------- input bar
 
 class ChatInputBar extends ConsumerStatefulWidget {
@@ -803,6 +812,17 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
     setState(() => _images.add('data:image/$mime;base64,${base64Encode(bytes)}'));
   }
 
+  Future<void> _setContextMode(ChatController ctl, String mode) async {
+    final ch = Character(jsonDecode(jsonEncode(widget.character.json)) as Map<String, dynamic>);
+    ch.context['mode'] = mode;
+    try {
+      await ref.read(charactersProvider.notifier).save(ch);
+      await ctl.refreshContext();
+    } catch (e) {
+      if (mounted) showError(context, e);
+    }
+  }
+
   void _contextCard(ChatController ctl) {
     final c = ctl.context;
     showModalBottomSheet(
@@ -817,8 +837,19 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
               const SizedBox(width: 12),
               Text('${c.estimated ? '~' : ''}${fmtTokens(c.tokens)} / ${fmtTokens(c.max)}  (${(c.ratio * 100).toStringAsFixed(0)}%)', style: Theme.of(ctx).textTheme.titleMedium),
             ]),
+            const SizedBox(height: 12),
+            SegmentedButton<String>(
+              segments: [
+                ButtonSegment(value: 'traditional', label: Text(t('传统压缩', 'Traditional')), icon: const Icon(Icons.compress_rounded)),
+                ButtonSegment(value: 'instant', label: Text(t('即时压缩', 'Instant')), icon: const Icon(Icons.bolt_rounded)),
+              ],
+              selected: {c.mode == 'instant' ? 'instant' : 'traditional'},
+              onSelectionChanged: (v) async {
+                Navigator.pop(ctx);
+                await _setContextMode(ctl, v.first);
+              },
+            ),
             const SizedBox(height: 8),
-            Text('${t('模式', 'Mode')}: ${c.mode == 'instant' ? t('即时压缩', 'Instant') : t('传统压缩', 'Traditional')}'),
             if (c.mode == 'traditional' && c.threshold > 0) Text('${t('压缩阈值', 'Threshold')}: ${fmtTokens(c.threshold)}'),
             const SizedBox(height: 12),
             if (c.mode == 'traditional')

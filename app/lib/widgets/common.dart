@@ -164,8 +164,6 @@ class ContextRing extends StatelessWidget {
                 ratio: r,
                 color: color,
                 track: scheme.outlineVariant.withValues(alpha: 0.5),
-                marker: info.mode == 'traditional' && info.max > 0 && info.threshold > 0 ? (info.threshold / info.max).clamp(0.0, 1.0) : null,
-                markerColor: scheme.onSurfaceVariant,
                 stroke: stroke,
               ),
             ),
@@ -180,10 +178,8 @@ class _RingPainter extends CustomPainter {
   final double ratio;
   final Color color;
   final Color track;
-  final double? marker;
-  final Color markerColor;
   final double stroke;
-  _RingPainter({required this.ratio, required this.color, required this.track, required this.marker, required this.markerColor, required this.stroke});
+  _RingPainter({required this.ratio, required this.color, required this.track, required this.stroke});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -197,19 +193,10 @@ class _RingPainter extends CustomPainter {
     if (ratio > 0) {
       canvas.drawArc(Rect.fromCircle(center: c, radius: radius), -math.pi / 2, 2 * math.pi * ratio.clamp(0.02, 1.0), false, p..color = color);
     }
-    final m = marker;
-    if (m != null) {
-      final a = -math.pi / 2 + 2 * math.pi * m;
-      final inner = c + Offset(math.cos(a), math.sin(a)) * (radius - stroke);
-      final outer = c + Offset(math.cos(a), math.sin(a)) * (radius + stroke);
-      canvas.drawLine(inner, outer, Paint()
-        ..color = markerColor
-        ..strokeWidth = 1.5);
-    }
   }
 
   @override
-  bool shouldRepaint(covariant _RingPainter o) => o.ratio != ratio || o.color != color || o.marker != marker;
+  bool shouldRepaint(covariant _RingPainter o) => o.ratio != ratio || o.color != color || o.track != track;
 }
 
 /// "↑1.2k ↓350 ⚡800 · 5.3s"
@@ -290,4 +277,8 @@ Future<String?> promptText(BuildContext context, String title, {String initial =
 
 void showError(BuildContext context, Object e) {
   ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('$e')));
+}
+
+void showInfo(BuildContext context, String msg) {
+  ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(msg)));
 }

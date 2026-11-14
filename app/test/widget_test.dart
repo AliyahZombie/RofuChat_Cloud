@@ -5,6 +5,7 @@ import 'package:rofuchat/core/form_factor.dart';
 import 'package:rofuchat/features/chat/message_rows.dart';
 import 'package:rofuchat/models/models.dart';
 import 'package:rofuchat/widgets/common.dart';
+import 'package:rofuchat/widgets/motion.dart';
 
 List<Message> sampleMessages() => [
       Message({
@@ -49,8 +50,8 @@ Widget harness(List<ChatRow> rows) => MaterialApp(
                       if (r.msg.usage != null) TokenIndicator(usage: r.msg.usage!),
                       ActualStatusIcon(msg: r.msg, pending: false, onTapFailed: () {}),
                     ]),
-                  TypingRow() => const SizedBox(height: 8),
                 },
+              const Appear(child: Text('appear')),
               const ContextRing(info: ContextInfo(tokens: 12000, max: 128000, threshold: 96000)),
             ],
           ),
@@ -68,11 +69,11 @@ void main() {
     expect(rows.whereType<FooterRow>().single.isLastAssistant, isTrue);
   });
 
-  test('streaming assistant has no footer and a typing row when empty', () {
+  test('streaming assistant has no footer (loading indicator lives in the list tail)', () {
     final m = Message({'id': 'a', 'seq': 1, 'role': 'assistant', 'content': '', 'parts': {'segments': []}});
     final rows = buildRows([m], BlockCache(), streamingId: 'a');
     expect(rows.whereType<FooterRow>(), isEmpty);
-    expect(rows.whereType<TypingRow>().length, 1);
+    expect(rows.where((r) => r is! AssistantHeaderRow), isEmpty);
   });
 
   for (final size in const [Size(360, 800), Size(1280, 800), Size(192, 192), Size(384, 384), Size(454, 454)]) {
@@ -91,4 +92,10 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+
+  testWidgets('loading blob paints', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: Center(child: LoadingBlob())));
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byType(LoadingBlob), findsOneWidget);
+  });
 }

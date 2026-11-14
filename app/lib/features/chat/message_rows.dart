@@ -60,12 +60,6 @@ class SummaryRow extends ChatRow {
   String get key => 'sum:${msg.id}';
 }
 
-class TypingRow extends ChatRow {
-  const TypingRow(super.msg);
-  @override
-  String get key => 't:${msg.id}';
-}
-
 /// Caches parsed markdown blocks per (message, segment, text).
 class BlockCache {
   final _cache = <String, (int, List<Block>)>{};
@@ -115,7 +109,7 @@ List<ChatRow> buildRows(List<Message> messages, BlockCache cache, {String? strea
             rows.add(StepsRow(m, steps, stepIndex++, false));
             steps = [];
           }
-          final blocks = cache.get(m.id, si, s.text);
+          final blocks = cache.get(m.id, si, live && si == segs.length - 1 ? closeStreamingMarkdown(s.text) : s.text);
           for (var i = 0; i < blocks.length; i++) {
             rows.add(BlockRow(m, blocks[i], si, i));
           }
@@ -124,11 +118,31 @@ List<ChatRow> buildRows(List<Message> messages, BlockCache cache, {String? strea
         }
       }
       if (steps.isNotEmpty) rows.add(StepsRow(m, steps, stepIndex, live));
-      if (live && segs.isEmpty) rows.add(TypingRow(m));
       if (!live) rows.add(FooterRow(m, m.id == lastAssistant));
     }
   }
   return rows;
+}
+
+/// While a reply streams, its tail can stop inside unfinished syntax (an open code fence,
+/// `**bold`, an inline code span). Close it so the half-written text renders as what it will
+/// become instead of flickering between raw markers and formatting.
+String closeStreamingMarkdown(String text) {
+  var out = text;
+  final fences = RegExp(r'^\s*(```|~~~)', multiLine: true).allMatches(out).length;
+  if (fences.isOdd) return '$out\n```';
+  // Only look at the last paragraph: inline markers never span blocks.
+  final cut = out.lastIndexOf('\n\n');
+  final para = cut < 0 ? out : out.substring(cut + 2);
+  final noCode = para.replaceAll(RegExp(r'`[^`]*`'), '');
+  if ('`'.allMatches(noCode).length.isOdd) return '$out`';
+  if ('**'.allMatches(noCode).length.isOdd) {
+    out = out.endsWith('*') && !out.endsWith('**') ? out.substring(0, out.length - 1) : out;
+    return '$out**';
+  }
+  // a lone trailing marker that would otherwise show as a bullet or emphasis start
+  if (RegExp(r'(^|\n)\s*[*#>-]\s*$').hasMatch(out)) return out.substring(0, out.lastIndexOf(RegExp(r'[*#>-]')));
+  return out;
 }
 
 // ------------------------------------------------------------------ widgets
