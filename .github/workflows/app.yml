@@ -32,12 +32,18 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       - uses: subosito/flutter-action@v2
         with: { channel: stable, cache: true }
+      # NDK r27c: newer NDKs reject the unversioned target triples bindgen passes for rquickjs.
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
       - name: Build embedded backend (Android)
         if: hashFiles('backend/Cargo.toml') != ''
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: |
           rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
           cargo install cargo-ndk --locked
-          export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
           tool/build_native.sh android
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4

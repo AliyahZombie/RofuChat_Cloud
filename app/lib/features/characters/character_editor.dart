@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/form_factor.dart';
+import '../../core/builtin_tools.dart';
 import '../../core/i18n.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
@@ -29,6 +30,11 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
   void initState() {
     super.initState();
     c = widget.character == null ? Character.blank() : Character(jsonDecode(jsonEncode(widget.character!.json)) as Map<String, dynamic>);
+    if (widget.character == null) {
+      // New characters get the built-in tools (e.g. the dice roller) switched on.
+      final tools = ref.read(toolsProvider).value ?? const <LocalTool>[];
+      c.toolIds = [for (final tool in tools) if (builtinToolNames.contains(tool.name) && tool.enabled) tool.id];
+    }
   }
 
   void _touch(VoidCallback f) => setState(() {

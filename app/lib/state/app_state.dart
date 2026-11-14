@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import '../core/api.dart';
 import '../core/backend_ffi.dart';
 import '../core/i18n.dart';
+import '../core/builtin_tools.dart';
 import '../core/storage.dart';
 import '../core/theme.dart';
 import '../models/models.dart';
@@ -345,6 +346,43 @@ class ToolsCtl extends ListCtl<LocalTool> {
   String get path => '/api/tools';
   @override
   LocalTool make(Json j) => LocalTool(j);
+
+  @override
+  Future<List<LocalTool>> build() async {
+    final list = await super.build();
+    try {
+      final added = await _addBuiltins(list, onlyFirstTime: true);
+      if (added) return await ref.read(apiProvider).list(path, make);
+    } catch (_) {}
+    return list;
+  }
+
+  String _seedKey() {
+    final app = ref.read(appProvider);
+    return 'builtin_tools_seeded.${app.active?.id ?? ''}.${app.user?.id ?? ''}';
+  }
+
+  /// Creates built-in tools that are missing. With [onlyFirstTime], each one is created at most
+  /// once per connection and user, so a tool the user deleted stays deleted.
+  Future<bool> _addBuiltins(List<LocalTool> list, {required bool onlyFirstTime}) async {
+    final store = ref.read(storeProvider);
+    final seeded = Set<String>.from((store.getJson(_seedKey())['names'] as List?) ?? const []);
+    final have = {for (final t in list) t.name};
+    final toAdd = [for (final b in builtinTools) if (!have.contains(b.name) && !(onlyFirstTime && seeded.contains(b.name))) b];
+    // Mark first, so two concurrent loads cannot both create the tool.
+    await store.setJson(_seedKey(), {'names': {...seeded, ...builtinToolNames}.toList()});
+    for (final b in toAdd) {
+      await ref.read(apiProvider).post(path, await b.toToolJson());
+    }
+    final added = toAdd.isNotEmpty;
+    return added;
+  }
+
+  /// Re-adds any built-in tool the user deleted.
+  Future<void> restoreBuiltins() async {
+    await _addBuiltins(state.value ?? const [], onlyFirstTime: false);
+    await refresh();
+  }
 }
 
 final charactersProvider = AsyncNotifierProvider<CharactersCtl, List<Character>>(CharactersCtl.new);

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/builtin_tools.dart';
 import '../../core/format.dart';
 import '../../core/i18n.dart';
 import '../../models/models.dart';
@@ -15,7 +16,12 @@ class ToolsPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final tools = ref.watch(toolsProvider);
     return Scaffold(
-      appBar: AppBar(title: Text(t('本地工具', 'Local tools'))),
+      appBar: AppBar(title: Text(t('本地工具', 'Local tools')), actions: [
+        PopupMenuButton<String>(
+          onSelected: (_) => ref.read(toolsProvider.notifier).restoreBuiltins(),
+          itemBuilder: (_) => [PopupMenuItem(value: 'restore', child: Text(t('恢复内置工具', 'Restore built-in tools')))],
+        ),
+      ]),
       floatingActionButton: FloatingActionButton(
         onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ToolEditorPage(tool: LocalTool.blank()))),
         child: const Icon(Icons.add),
@@ -33,7 +39,7 @@ class ToolsPage extends ConsumerWidget {
             : ListView(children: [
                 for (final tool in list)
                   ListTile(
-                    leading: Icon(Icons.code_rounded, color: tool.enabled ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.outline),
+                    leading: Icon(builtinToolNames.contains(tool.name) ? Icons.casino_outlined : Icons.code_rounded, color: tool.enabled ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.outline),
                     title: Text(tool.name),
                     subtitle: Text(tool.description, maxLines: 1, overflow: TextOverflow.ellipsis),
                     trailing: Switch(
