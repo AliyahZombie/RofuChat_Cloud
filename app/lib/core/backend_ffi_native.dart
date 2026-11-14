@@ -39,7 +39,7 @@ class EmbeddedBackend {
         free(out);
         return s;
       } finally {
-        calloc.free(arg);
+        malloc.free(arg);
       }
     });
     final j = jsonDecode(res) as Map;
