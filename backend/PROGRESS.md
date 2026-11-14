@@ -33,7 +33,7 @@ JuiceFS 曾在 mmap 链接和重用测试二进制时 SIGBUS。已将要求的 t
 - 阶段 2 验证：cargo fmt --all、cargo clippy --all-targets -- -D warnings、cargo test 全部通过；26 项 = 20 core 单测 + 2 集成入口 + 3 storage/auth + 1 FFI，0 failed / 0 ignored。两个集成入口均实际执行（SQLite、PostgreSQL 17）。
 - 每库集成场景扩展：4 种三轮重试上下文；分页边界/参数；旧消息懒初始化；开场白选择/宏/400；同 id 重试与后缀删除；user 双向恢复/嵌套 user 分支及尾部原始数据；active/inactive 删除；PATCH 后续不变；branch 原始存储无版本历史；失败/停止保留新旧版本；生成中 409；冲突注入验证事务整体回滚；压缩和记忆扫描 prompt 无 swipes/tail/未激活内容。
 - C 项结论：后端无问题（所述重试请求和覆盖配置下未复现）。旧实现与新实现均保留 system、前三条 user、前两轮 assistant；即时模式按规则使用历史 actual，工具段按协议恢复；空 assistant、被重试旧 display/actual 均不进入首个生成请求。
-- 收尾：阶段 2 提交后检查提交路径与共享索引，写结果 /workspace/work/rofu-sol/result_swipes.md；不 push。
+- 收尾已完成：实现提交 29041d7、9cde049；提交路径检查通过，前端四个暂存文件保留且未进入后端提交；结果已写 /workspace/work/rofu-sol/result_swipes.md（STATUS: done）。无未完成项，未 push。
 - 每阶段 fmt/clippy/test 全过后提交，不 push。最终报告 /workspace/work/rofu-sol/result_swipes.md。
 
 - 当前环境已安装/启动 PostgreSQL 17，测试 URL：postgresql:///postgres?host=/var/run/postgresql（本机 peer 身份验证，无口令）；target 原符号链接目标丢失，已重建 /var/tmp/rofu-target 并完成 debug 编译。
