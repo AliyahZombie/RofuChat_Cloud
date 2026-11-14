@@ -16,3 +16,5 @@ pub mod mcp;
 pub mod memory;
 mod routes;
 pub mod sse;
+
+mod swipes;

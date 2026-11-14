@@ -3,6 +3,7 @@ use crate::{
     card, chat, detect, jstool, llm, mcp, memory,
     model::{id, now, number, text},
     server::AppState,
+    swipes,
 };
 use axum::{
     body::Body,
@@ -225,9 +226,17 @@ pub async fn dispatch(
                                 .map_err(|_| ApiError::bad("before_seq must be an integer"))?;
                             let (messages, has_more) =
                                 s.db.messages_page(uid, cid, limit, before).await?;
-                            return Ok(Some(ok(json!({"messages":messages,"has_more":has_more}))));
+                            return Ok(Some(ok(
+                                json!({"messages":messages.iter().map(swipes::public).collect::<Vec<_>>(),"has_more":has_more}),
+                            )));
                         }
-                        return Ok(Some(ok(json!(s.db.messages(uid, cid).await?))));
+                        return Ok(Some(ok(json!(s
+                            .db
+                            .messages(uid, cid)
+                            .await?
+                            .iter()
+                            .map(swipes::public)
+                            .collect::<Vec<_>>()))));
                     }
                     ("GET", "context") => {
                         return Ok(Some(ok(chat::context_info(s, uid, cid).await?)))
@@ -259,7 +268,9 @@ pub async fn dispatch(
                             {
                                 Ok(c) => chat::compress(s, uid, cid, &c)
                                     .await
-                                    .map(|v| v.map(|(m, _)| ok(m)).unwrap_or_else(empty))
+                                    .map(|v| {
+                                        v.map(|(m, _)| ok(swipes::public(&m))).unwrap_or_else(empty)
+                                    })
                                     .map_err(Into::into),
                                 Err(e) => Err(e),
                             }
@@ -279,6 +290,26 @@ pub async fn dispatch(
                 .await?
                 .ok_or_else(ApiError::not_found)?;
         let cid = text(&m, "conversation_id");
+        if parts.len() == 2 && method == Method::GET {
+            return Ok(Some(ok(swipes::public(&m))));
+        }
+        if parts.len() == 3 && parts[2] == "swipe" && method == Method::POST {
+            let index = body["index"]
+                .as_u64()
+                .and_then(|i| usize::try_from(i).ok())
+                .ok_or_else(|| ApiError::bad("index must be a non-negative integer"))?;
+            return Ok(Some(ok(
+                swipes::change(s, uid, mid, &cid, index, false).await?
+            )));
+        }
+        if parts.len() == 4 && parts[2] == "swipes" && method == Method::DELETE {
+            let index = parts[3]
+                .parse::<usize>()
+                .map_err(|_| ApiError::bad("index must be a non-negative integer"))?;
+            return Ok(Some(ok(
+                swipes::change(s, uid, mid, &cid, index, true).await?
+            )));
+        }
         if parts.len() == 2 && matches!(*method, Method::PATCH | Method::DELETE) {
             let lock = s.generating.lock().await;
             if lock.contains_key(&cid) {
@@ -292,6 +323,10 @@ pub async fn dispatch(
                     .await?;
                 return Ok(Some(empty()));
             }
+            m =
+                s.db.message(uid, mid)
+                    .await?
+                    .ok_or_else(ApiError::not_found)?;
             for key in ["content", "visible", "actual"] {
                 if let Some(v) = body.get(key) {
                     if key == "visible" && !v.is_boolean() || key != "visible" && !v.is_string() {
@@ -301,14 +336,14 @@ pub async fn dispatch(
                 }
             }
             if body.get("content").is_some() && m["role"] == "assistant" {
-                m["parts"]["segments"] = json!([{"type":"text","text":m["content"]}]);
+                swipes::edit_text(&mut m);
             }
             if body.get("actual").is_some() {
                 m["actual_status"] = json!("ok");
                 m["actual_error"] = Value::Null;
             }
             s.db.save_message(uid, &m).await?;
-            return Ok(Some(ok(m)));
+            return Ok(Some(ok(swipes::public(&m))));
         }
         if parts.len() == 3 && method == Method::POST {
             if parts[2] == "actual" {
@@ -326,8 +361,12 @@ pub async fn dispatch(
                     let conv = api::conversation(s, uid, &cid).await?;
                     let c =
                         api::required(s, uid, "character", &text(&conv, "character_id")).await?;
+                    m =
+                        s.db.message(uid, mid)
+                            .await?
+                            .ok_or_else(ApiError::not_found)?;
                     chat::actual(s, uid, &mut m, &c).await?;
-                    Ok::<_, ApiError>(ok(m))
+                    Ok::<_, ApiError>(ok(swipes::public(&m)))
                 }
                 .await;
                 s.generating.lock().await.remove(&cid);
@@ -347,6 +386,7 @@ pub async fn dispatch(
                     .into_iter()
                     .filter(|msg| number(msg, "seq", 0) <= number(&m, "seq", 0))
                 {
+                    copy = swipes::active_only(&copy);
                     copy["id"] = json!(id());
                     copy["conversation_id"] = conv["id"].clone();
                     sqlx::query("INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5)").bind(text(&copy,"id")).bind(uid).bind(text(&conv,"id")).bind(number(&copy,"seq",0)).bind(copy.to_string()).execute(&mut *tx).await?;

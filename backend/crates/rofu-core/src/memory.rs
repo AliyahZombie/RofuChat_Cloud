@@ -177,6 +177,7 @@ pub async fn scan(s: &AppState, uid: &str, cid: &str) -> ApiResult<Value> {
         messages.drain(..messages.len() - 60);
     }
     for m in &mut messages {
+        *m = crate::swipes::active_only(m);
         m["content"] = json!(text(m, "content").chars().take(3000).collect::<String>());
         m.as_object_mut().unwrap().remove("parts");
     }

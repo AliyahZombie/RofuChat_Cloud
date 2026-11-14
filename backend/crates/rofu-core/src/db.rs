@@ -224,6 +224,9 @@ impl Db {
         s.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
     }
     pub async fn save_message(&self, uid: &str, v: &Value) -> Result<()> {
+        let mut v = v.clone();
+        crate::swipes::sync(&mut v);
+        let v = &v;
         sqlx::query("INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET data=excluded.data,seq=excluded.seq WHERE messages.user_id=excluded.user_id")
             .bind(text(v,"id")).bind(uid).bind(text(v,"conversation_id")).bind(v["seq"].as_i64().unwrap_or(0)).bind(v.to_string()).execute(&self.pool).await?;
         Ok(())

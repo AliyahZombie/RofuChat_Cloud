@@ -3,6 +3,7 @@ use crate::{
     card, context, jstool, llm, mcp, memory,
     model::{flag, id, normalized, now, number, text},
     server::AppState,
+    swipes,
 };
 use anyhow::{bail, Result};
 use axum::response::{
@@ -21,6 +22,10 @@ use tokio_util::sync::CancellationToken;
 
 type Events = UnboundedSender<Value>;
 fn emit(tx: &Events, v: Value) {
+    let mut v = v;
+    if v["message"].is_object() && v["message"]["role"].is_string() {
+        v["message"] = swipes::public(&v["message"]);
+    }
     let _ = tx.send(v);
 }
 pub fn message(cid: &str, seq: i64, role: &str, content: &str) -> Value {
@@ -118,12 +123,36 @@ pub async fn create_conversation(s: &AppState, uid: &str, body: &Value) -> ApiRe
     let mut tx = s.db.pool.begin().await?;
     sqlx::query("INSERT INTO conversations(id,user_id,character_id,data,updated_at) VALUES ($1,$2,$3,$4,$5)").bind(text(&conv,"id")).bind(uid).bind(text(&c,"id")).bind(conv.to_string()).bind(now()).execute(&mut *tx).await?;
     if !greeting.is_empty() {
-        let m = message(
+        let mut m = message(
             &text(&conv, "id"),
             1000,
             "assistant",
             &card::macros(&greeting, &text(&c, "name"), &text(&settings, "user_name")),
         );
+        let mut greetings = vec![text(&c["card"], "first_mes")];
+        greetings.extend(
+            c["card"]["alternate_greetings"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|g| g.as_str().unwrap_or_default().to_owned()),
+        );
+        m["swipes"] = json!(greetings
+            .iter()
+            .map(|g| {
+                let mut version = m.clone();
+                version["content"] = json!(card::macros(
+                    g,
+                    &text(&c, "name"),
+                    &text(&settings, "user_name")
+                ));
+                swipes::snapshot(&version)
+            })
+            .collect::<Vec<_>>());
+        let selected = body["greeting_index"]
+            .as_u64()
+            .map_or(0, |i| i as usize + 1);
+        swipes::activate(&mut m, selected);
         sqlx::query(
             "INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5)",
         )
@@ -190,7 +219,11 @@ pub async fn begin(s: AppState, uid: String, cid: String, body: Value) -> ApiRes
         )
         .into_response())
 }
-async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<Value> {
+struct Prepared {
+    user: Value,
+    assistant: Option<Value>,
+}
+async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<Prepared> {
     let messages = s.db.messages(uid, cid).await?;
     let edit = text(body, "edit_message_id");
     let regenerate = flag(body, "regenerate", false);
@@ -204,30 +237,51 @@ async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<
         }
         .ok_or_else(|| ApiError::bad("no matching user message"))?;
         let mut target = target.clone();
-        if !edit.is_empty() {
-            target["content"] = body["content"]
-                .as_str()
-                .map(|s| json!(s))
-                .unwrap_or_else(|| json!(""));
-            if body["images"].is_array() {
-                target["parts"]["images"] = body["images"].clone();
-            }
-        }
         let mut tx = s.db.pool.begin().await?;
+        let mut assistant = None;
+        let cutoff = if !edit.is_empty() {
+            swipes::archive_tail(&mut tx, uid, &mut target).await?;
+            let mut fresh = message(
+                cid,
+                number(&target, "seq", 0),
+                "user",
+                &text(body, "content"),
+            );
+            fresh["parts"]["images"] = body["images"]
+                .as_array()
+                .cloned()
+                .map(Value::Array)
+                .unwrap_or_else(|| json!([]));
+            swipes::append(&mut target, &fresh);
+            number(&target, "seq", 0)
+        } else {
+            if let Some(old) = messages
+                .iter()
+                .find(|m| number(m, "seq", 0) > number(&target, "seq", 0))
+                .filter(|m| m["role"] == "assistant")
+            {
+                let mut versioned = old.clone();
+                let fresh = message(cid, number(old, "seq", 0), "assistant", "");
+                swipes::append(&mut versioned, &fresh);
+                swipes::store(&mut tx, uid, &versioned).await?;
+                assistant = Some(versioned);
+            }
+            assistant
+                .as_ref()
+                .map_or(number(&target, "seq", 0), |m| number(m, "seq", 0))
+        };
         sqlx::query("DELETE FROM messages WHERE user_id=$1 AND conversation_id=$2 AND seq>$3")
             .bind(uid)
             .bind(cid)
-            .bind(number(&target, "seq", 0))
+            .bind(cutoff)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("UPDATE messages SET data=$1 WHERE user_id=$2 AND id=$3")
-            .bind(target.to_string())
-            .bind(uid)
-            .bind(text(&target, "id"))
-            .execute(&mut *tx)
-            .await?;
+        swipes::store(&mut tx, uid, &target).await?;
         tx.commit().await?;
-        return Ok(target);
+        return Ok(Prepared {
+            user: target,
+            assistant,
+        });
     }
     if text(body, "content").trim().is_empty()
         && body["images"].as_array().is_none_or(|a| a.is_empty())
@@ -251,7 +305,10 @@ async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<
         .map(Value::Array)
         .unwrap_or_else(|| json!([]));
     s.db.save_message(uid, &user).await?;
-    Ok(user)
+    Ok(Prepared {
+        user,
+        assistant: None,
+    })
 }
 struct Toolbox {
     definitions: Vec<Value>,
@@ -402,7 +459,7 @@ async fn run(
     c: &Value,
     model: &Value,
     provider: &Value,
-    user: Value,
+    prepared: Prepared,
     tx: &Events,
     cancel: &CancellationToken,
 ) -> Result<()> {
@@ -412,8 +469,11 @@ async fn run(
         .map_err(|e| anyhow::anyhow!(e.message))?;
     conv["updated_at"] = json!(now());
     s.db.save_conversation(uid, &conv).await?;
+    let user = prepared.user;
     emit(tx, json!({"type":"user_message","message":user}));
-    let mut assistant = message(cid, number(&user, "seq", 0) + 1000, "assistant", "");
+    let mut assistant = prepared
+        .assistant
+        .unwrap_or_else(|| message(cid, number(&user, "seq", 0) + 1000, "assistant", ""));
     assistant["model"] = model["id"].clone();
     assistant["model_name"] = model["name"].clone();
     assistant["model_icon"] = model["icon"].clone();
@@ -563,7 +623,7 @@ pub async fn compress(
     }
     let count = visible.len() - keep;
     let old = &visible[..count];
-    let summary=fast_for_conversation(s,uid,c,cid,"Summarize the earlier conversation in its language. Fully preserve events, decisions, commitments, relationship changes, current situation and unresolved threads. Merge previous summaries.",&serde_json::to_string(old)?).await?;
+    let summary=fast_for_conversation(s,uid,c,cid,"Summarize the earlier conversation in its language. Fully preserve events, decisions, commitments, relationship changes, current situation and unresolved threads. Merge previous summaries.",&serde_json::to_string(&old.iter().map(swipes::active_only).collect::<Vec<_>>())?).await?;
     let m = message(
         cid,
         number(&visible[count], "seq", 0) - 1,

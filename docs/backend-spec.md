@@ -299,15 +299,17 @@ void rofu_free_string(char* s);
 |---|---|---|
 | POST | `/api/conversations` | `{character_id, greeting_index?}` → Conversation（含开场白） |
 | GET/PATCH/DELETE | `/api/conversations/{id}` | PATCH `{title}` |
-| GET | `/api/conversations/{id}/messages` | 全部消息（按 seq，包括 visible=false 的和 summary 卡），附 `generating: bool` 字段请放在 `GET /api/conversations/{id}` 返回中 |
+| GET | `/api/conversations/{id}/messages` | 无 limit 返回全部消息数组；`?limit=N&before_seq=S` 返回 `{messages,has_more}`，seq<S 的最后 N 条按 seq 升序；`generating` 与 `message_count` 放在 GET Conversation 中。消息只输出激活内容与 swipe_index/swipe_count，详见 docs/api.md |
 | GET | `/api/conversations/{id}/context` | 见 5.5 |
 | POST | `/api/conversations/{id}/chat` | **SSE 流**，见 6.9 |
 | POST | `/api/conversations/{id}/stop` | 停止当前生成（已生成部分保存） |
 | POST | `/api/conversations/{id}/compress` | 立即执行一次传统压缩，返回生成的 summary Message（无可压缩时 204） |
-| PATCH | `/api/messages/{id}` | `{content?, visible?, actual?}`；改 actual 时 status 设为 ok |
+| GET/PATCH | `/api/messages/{id}` | PATCH `{content?, visible?, actual?}`；只改激活版本，保留非 text 段；改 actual 时 status 设为 ok |
+| POST | `/api/messages/{id}/swipe` | `{index}` 切换版本，user 事务归档/恢复后续消息；返回 `{messages:[...]}` |
+| DELETE | `/api/messages/{id}/swipes/{index}` | 删除版本（至少保留一个），删除激活项时切到相邻项；返回 `{messages:[...]}` |
 | DELETE | `/api/messages/{id}` | |
 | POST | `/api/messages/{id}/actual` | 重新生成该消息 actual（即时模式失败重试），返回 Message |
-| POST | `/api/messages/{id}/branch` | 从该消息（含）复制一份新会话，返回 Conversation |
+| POST | `/api/messages/{id}/branch` | 从该消息（含）复制激活内容到新会话，去掉 swipes/tail，返回 Conversation |
 
 ### 6.9 聊天流 `POST /api/conversations/{id}/chat`
 
@@ -315,16 +317,16 @@ void rofu_free_string(char* s);
 ```json
 {"content": "你好", "images": ["data:image/png;base64,…"], "regenerate": false, "edit_message_id": null}
 ```
-- `regenerate=true`：删除最后一条 user 消息之后的所有消息，重新生成（content 忽略）。
-- `edit_message_id`：把该 user 消息内容改为 content，删除其后所有消息，然后生成。
-- 同一会话已有生成在跑：返回 409。
+- `regenerate=true`：忽略 content/images，重试最后一条 user；紧随其后的 assistant 保留 id/seq、追加并激活空 swipe，删除其后的其他消息；无紧随 assistant 则按原逻辑新建。无 user 返回 400。
+- `edit_message_id`：将该 user 后续消息原样归档到当前 swipe.tail，删除对应行；追加新 content/images 的 user swipe（tail 为空）并激活，再生成。PATCH 只保存不新增版本。
+- 同一会话已有生成在跑：返回 409。切换/删除 swipe 同样返回 409；详细快照、开场白版本与返回示例见 `docs/api.md`。
 
 响应：`Content-Type: text/event-stream`，每个事件 `data: <JSON>\n\n`，JSON 都带 `type`：
 
 | type | 字段 | 说明 |
 |---|---|---|
 | `user_message` | `message` | 已保存的用户消息 |
-| `assistant_start` | `message` | 已创建的空 assistant 消息（带 id、model_name、model_icon） |
+| `assistant_start` | `message` | 新建或重试版本的空 assistant（带 id、model_name、model_icon、swipe_index、swipe_count；不含完整 swipes） |
 | `reasoning` | `delta` | 推理增量 |
 | `reasoning_end` | `duration_ms` | 一段推理结束 |
 | `text` | `delta` | 正文增量 |

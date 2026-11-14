@@ -12,3 +12,7 @@
 - keep_recent is clamped to at least 1 so the summary always has a retained message before which its seq can be placed.
 - JS http calls bypass environment proxies for loopback addresses; other destinations use the normal proxy environment. The 15s HTTP timeout is additionally capped to the remaining 10s tool budget.
 - Remote PNG avatars are fetched on export with a 20s timeout and 32MB limit; non-PNG avatars use the generated solid-color PNG.
+
+- Message swipes are JSON snapshots, synchronized from the active top-level fields on each message save. User branch tails retain complete nested message histories; switch/delete runs under the existing generation mutex and a database transaction. No schema migration is needed.
+- Wire messages expose swipe_index/swipe_count only. Compression and memory scanning explicitly project active contents before serializing to the fast model, so inactive versions and archived tails never enter those prompts.
+- Retrying three rounds with Flutter's empty-content regenerate body preserved the upstream history on both databases, before and after swipe support, in traditional/instant modes and with tools enabled/disabled. The reported loss of all context was not reproduced in the backend.

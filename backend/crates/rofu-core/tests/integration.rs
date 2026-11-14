@@ -219,6 +219,548 @@ async fn retry_history(h: &Harness, mock: &MockServer) {
                 tools
             );
             assert_eq!(upstream["model"], model["model_id"]);
+            let owner = text(&h.get("/auth/me").await, "id");
+            let raw = h
+                .server
+                .state
+                .db
+                .message(&owner, &text(last, "id"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(raw["swipe_index"], 1);
+            assert_eq!(raw["swipes"].as_array().unwrap().len(), 2);
+            assert_eq!(raw["swipes"][0]["content"], "OLD SWIPE MUST NOT LEAK");
+            assert_eq!(raw["swipes"][0]["actual"], "OLD ACTUAL MUST NOT LEAK");
+            for key in [
+                "content",
+                "parts",
+                "actual",
+                "actual_status",
+                "actual_error",
+                "usage",
+                "model",
+                "model_name",
+                "model_icon",
+                "created_at",
+            ] {
+                assert_eq!(raw[key], raw["swipes"][1][key], "{key}");
+            }
+            if instant {
+                assert_eq!(raw["actual_status"], "ok");
+                assert_eq!(raw["actual"], "compressed reply");
+            }
+        }
+    }
+}
+
+async fn swipe_contract(h: &Harness, mock: &MockServer) {
+    let p = h.post("/providers", json!({"base_url":mock.url})).await;
+    let model = h
+        .post("/models", json!({"provider_id":p["id"],"model_id":"plain"}))
+        .await;
+    let c = h.post("/characters", json!({"name":"Swipy","model_id":model["id"],"memory":{"enabled":false},"card":{"first_mes":"First {{char}} {{user}}","alternate_greetings":["Alternate {{char}} {{user}}","Third {{char}}"]}})).await;
+    let conv = h
+        .post(
+            "/conversations",
+            json!({"character_id":c["id"],"greeting_index":0}),
+        )
+        .await;
+    let cid = text(&conv, "id");
+    let greeting = h.get(&format!("/conversations/{cid}/messages")).await[0].clone();
+    assert_eq!(greeting["content"], "Alternate Swipy User");
+    assert_eq!(greeting["swipe_index"], 1);
+    assert_eq!(greeting["swipe_count"], 3);
+    assert!(greeting.get("swipes").is_none());
+    let gid = text(&greeting, "id");
+    assert_eq!(
+        h.post(&format!("/messages/{gid}/swipe"), json!({"index":0}))
+            .await["messages"][0]["content"],
+        "First Swipy User"
+    );
+    assert_eq!(
+        h.post(&format!("/messages/{gid}/swipe"), json!({"index":2}))
+            .await["messages"][0]["content"],
+        "Third Swipy"
+    );
+    assert_eq!(
+        h.request(
+            Method::POST,
+            &format!("/conversations/{cid}/chat"),
+            json!({"regenerate":true,"content":"","images":[]})
+        )
+        .await
+        .status(),
+        400
+    );
+    for body in [
+        json!({"index":-1}),
+        json!({"index":3}),
+        json!({"index":1.5}),
+        json!({}),
+    ] {
+        assert_eq!(
+            h.request(Method::POST, &format!("/messages/{gid}/swipe"), body)
+                .await
+                .status(),
+            400
+        );
+    }
+    let removed = h
+        .json(
+            Method::DELETE,
+            &format!("/messages/{gid}/swipes/2"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(removed["messages"][0]["content"], "Alternate Swipy User");
+    assert_eq!(removed["messages"][0]["swipe_index"], 1);
+    h.json(
+        Method::DELETE,
+        &format!("/messages/{gid}/swipes/0"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        h.request(
+            Method::DELETE,
+            &format!("/messages/{gid}/swipes/0"),
+            json!({})
+        )
+        .await
+        .status(),
+        400
+    );
+
+    h.json(
+        Method::PATCH,
+        &format!("/conversations/{cid}"),
+        json!({"title":"Swipe contract"}),
+    )
+    .await;
+    let events = h
+        .events(
+            &cid,
+            json!({"content":"Original user","images":["old image"]}),
+        )
+        .await;
+    let user = events.iter().find(|e| e["type"] == "user_message").unwrap()["message"].clone();
+    let assistant = events
+        .iter()
+        .find(|e| e["type"] == "assistant_done")
+        .unwrap()["message"]
+        .clone();
+    let uid = text(&user, "id");
+    let aid = text(&assistant, "id");
+    let owner = text(&h.get("/auth/me").await, "id");
+    // Old messages remain uninitialized until their first swipe operation.
+    let raw = h
+        .server
+        .state
+        .db
+        .message(&owner, &uid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(raw.get("swipes").is_none());
+    assert_eq!(user["swipe_index"], 0);
+    assert_eq!(user["swipe_count"], 1);
+    assert_eq!(
+        h.post(&format!("/messages/{uid}/swipe"), json!({"index":0}))
+            .await["messages"][1]["id"],
+        assistant["id"]
+    );
+
+    // PATCH only changes active text and preserves reasoning/tools at their original positions.
+    let mut raw = h
+        .server
+        .state
+        .db
+        .message(&owner, &aid)
+        .await
+        .unwrap()
+        .unwrap();
+    let reasoning = json!({"type":"reasoning","text":"retained reasoning","duration_ms":17});
+    let tool = json!({"type":"tool","id":"retained-call","name":"dice","arguments":"{}","result":"7","duration_ms":9});
+    raw["parts"]["segments"] =
+        json!([reasoning,{"type":"text","text":"before"},tool,{"type":"text","text":"after"}]);
+    h.server.state.db.save_message(&owner, &raw).await.unwrap();
+    let patched = h
+        .json(
+            Method::PATCH,
+            &format!("/messages/{aid}"),
+            json!({"content":"Original assistant","actual":"old actual"}),
+        )
+        .await;
+    assert_eq!(
+        patched["parts"]["segments"],
+        json!([reasoning,{"type":"text","text":"Original assistant"},tool])
+    );
+    assert_eq!(patched["swipe_count"], 1);
+    // Add an extra following message: regenerate keeps the immediate assistant only.
+    let suffix = rofu_core::chat::message(&cid, 4000, "system", "discarded suffix");
+    // greeting=1000, user=2000, assistant=3000
+    h.server
+        .state
+        .db
+        .save_message(&owner, &suffix)
+        .await
+        .unwrap();
+    let events = h
+        .events(&cid, json!({"regenerate":true,"content":"","images":[]}))
+        .await;
+    let started = &events
+        .iter()
+        .find(|e| e["type"] == "assistant_start")
+        .unwrap()["message"];
+    assert_eq!(started["id"], assistant["id"]);
+    assert_eq!(started["swipe_index"], 1);
+    assert_eq!(started["swipe_count"], 2);
+    assert_eq!(started["content"], "");
+    assert_eq!(started["actual_status"], "none");
+    assert!(started["actual"].is_null() && started["actual_error"].is_null());
+    for event in &events {
+        if event["message"].is_object() {
+            assert!(event["message"].get("swipes").is_none(), "{event}");
+            assert!(event["message"]["swipe_count"].is_number());
+        }
+    }
+    assert_eq!(
+        h.get(&format!("/conversations/{cid}")).await["message_count"],
+        3
+    );
+    let switched = h
+        .post(&format!("/messages/{aid}/swipe"), json!({"index":0}))
+        .await;
+    assert_eq!(switched["messages"][0]["content"], "Original assistant");
+    assert_eq!(switched["messages"][0]["actual"], "old actual");
+    assert_eq!(
+        switched["messages"][0]["parts"]["segments"],
+        patched["parts"]["segments"]
+    );
+    h.json(
+        Method::PATCH,
+        &format!("/messages/{aid}"),
+        json!({"content":"Saved active assistant"}),
+    )
+    .await;
+    assert_eq!(
+        h.post(&format!("/messages/{aid}/swipe"), json!({"index":1}))
+            .await["messages"][0]["content"],
+        "Answer complete"
+    );
+    assert_eq!(
+        h.post(&format!("/messages/{aid}/swipe"), json!({"index":0}))
+            .await["messages"][0]["content"],
+        "Saved active assistant"
+    );
+    let deleted = h
+        .json(
+            Method::DELETE,
+            &format!("/messages/{aid}/swipes/0"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(deleted["messages"][0]["content"], "Answer complete");
+    assert_eq!(deleted["messages"][0]["swipe_count"], 1);
+
+    // A user edit archives the entire original branch, including nested assistant swipes.
+    h.events(&cid, json!({"content":"Original second user"}))
+        .await;
+    let nested = h.get(&format!("/conversations/{cid}/messages")).await[3].clone();
+    h.events(
+        &cid,
+        json!({"edit_message_id":nested["id"],"content":"Nested edited user"}),
+    )
+    .await;
+    let original = h.server.state.db.messages(&owner, &cid).await.unwrap();
+    let edit_events = h
+        .events(
+            &cid,
+            json!({"edit_message_id":uid,"content":"Edited user","images":["new image"]}),
+        )
+        .await;
+    assert_eq!(edit_events[0]["message"]["swipe_count"], 2);
+    assert_eq!(edit_events[0]["message"]["swipe_index"], 1);
+    let edited = h.server.state.db.messages(&owner, &cid).await.unwrap();
+    assert_eq!(edited.len(), 3);
+    assert_eq!(edited[1]["swipes"][0]["tail"], json!(original[2..]));
+    assert_eq!(edited[1]["swipes"][1]["tail"], json!([]));
+    assert_eq!(edited[1]["parts"]["images"], json!(["new image"]));
+    assert_eq!(
+        h.get(&format!("/conversations/{cid}/messages?limit=2"))
+            .await["messages"][0]["swipe_count"],
+        2
+    );
+    let restored = h
+        .post(&format!("/messages/{uid}/swipe"), json!({"index":0}))
+        .await;
+    assert_eq!(restored["messages"].as_array().unwrap().len(), 4);
+    assert_eq!(restored["messages"][0]["content"], "Original user");
+    assert_eq!(
+        restored["messages"][0]["parts"]["images"],
+        json!(["old image"])
+    );
+    let restored_raw = h.server.state.db.messages(&owner, &cid).await.unwrap();
+    assert_eq!(restored_raw[2..], original[2..]);
+    assert_eq!(restored_raw[1]["swipes"][0]["tail"], json!([]));
+    assert_eq!(restored_raw[1]["swipes"][1]["tail"], json!(edited[2..]));
+    assert!(h
+        .server
+        .state
+        .db
+        .message(&owner, &text(&edited[2], "id"))
+        .await
+        .unwrap()
+        .is_none());
+    let current_tail = restored_raw[2..].to_vec();
+    h.json(
+        Method::PATCH,
+        &format!("/messages/{uid}"),
+        json!({"content":"Saved user only"}),
+    )
+    .await;
+    assert_eq!(
+        h.server.state.db.messages(&owner, &cid).await.unwrap()[2..],
+        current_tail
+    );
+    assert_eq!(
+        h.post(&format!("/messages/{uid}/swipe"), json!({"index":1}))
+            .await["messages"][1]["id"],
+        edited[2]["id"]
+    );
+    assert_eq!(
+        h.post(&format!("/messages/{uid}/swipe"), json!({"index":0}))
+            .await["messages"][0]["content"],
+        "Saved user only"
+    );
+    // Deleting the active user version restores the adjacent branch and removes its archive.
+    let deleted = h
+        .json(
+            Method::DELETE,
+            &format!("/messages/{uid}/swipes/0"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(deleted["messages"][0]["content"], "Edited user");
+    assert_eq!(deleted["messages"][0]["swipe_index"], 0);
+    assert_eq!(deleted["messages"][0]["swipe_count"], 1);
+    assert_eq!(deleted["messages"][1]["id"], edited[2]["id"]);
+    assert_eq!(
+        h.request(
+            Method::DELETE,
+            &format!("/messages/{uid}/swipes/0"),
+            json!({})
+        )
+        .await
+        .status(),
+        400
+    );
+    // Delete an inactive user version without changing the active branch.
+    h.events(
+        &cid,
+        json!({"edit_message_id":uid,"content":"Third version"}),
+    )
+    .await;
+    let before = h.server.state.db.messages(&owner, &cid).await.unwrap();
+    let deleted = h
+        .json(
+            Method::DELETE,
+            &format!("/messages/{uid}/swipes/0"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(deleted["messages"][0]["content"], "Third version");
+    assert_eq!(
+        h.server.state.db.messages(&owner, &cid).await.unwrap()[2..],
+        before[2..]
+    );
+
+    // Branch copies only active contents; raw persisted copies have no swipe/tail metadata.
+    let branch = h
+        .post(
+            &format!("/messages/{}/branch", text(&before[2], "id")),
+            json!({}),
+        )
+        .await;
+    let copies = h
+        .server
+        .state
+        .db
+        .messages(&owner, &text(&branch, "id"))
+        .await
+        .unwrap();
+    assert_eq!(copies.len(), 3);
+    for (copy, source) in copies.iter().zip(before.iter()) {
+        assert_ne!(copy["id"], source["id"]);
+        assert_eq!(copy["content"], source["content"]);
+        for key in ["swipes", "tail", "swipe_index", "swipe_count"] {
+            assert!(copy.get(key).is_none());
+        }
+    }
+    // If there is no following assistant, regenerate creates one as before.
+    h.json(
+        Method::DELETE,
+        &format!("/messages/{}", text(&before[2], "id")),
+        json!({}),
+    )
+    .await;
+    let events = h.events(&cid, json!({"regenerate":true})).await;
+    let new_assistant = events
+        .iter()
+        .find(|e| e["type"] == "assistant_done")
+        .unwrap()["message"]
+        .clone();
+    assert_ne!(new_assistant["id"], before[2]["id"]);
+    assert_eq!(new_assistant["swipe_count"], 1);
+
+    // Failed and stopped regenerations preserve both the old swipe and the partial new one.
+    for model_id in ["stream-error", "slow"] {
+        let mut configured = model.clone();
+        configured["model_id"] = json!(model_id);
+        h.json(
+            Method::PUT,
+            &format!("/models/{}", text(&model, "id")),
+            configured,
+        )
+        .await;
+        if model_id == "stream-error" {
+            let events = h.events(&cid, json!({"regenerate":true})).await;
+            let done = &events
+                .iter()
+                .find(|e| e["type"] == "assistant_done")
+                .unwrap()["message"];
+            assert_eq!(done["content"], "partial");
+            assert!(!text(&done["parts"], "error").is_empty());
+            assert_eq!(done["swipe_count"], 2);
+        } else {
+            let stream = h
+                .request(
+                    Method::POST,
+                    &format!("/conversations/{cid}/chat"),
+                    json!({"regenerate":true}),
+                )
+                .await;
+            tokio::time::sleep(Duration::from_millis(1250)).await;
+            let aid = text(&new_assistant, "id");
+            for (method, path, body) in [
+                (
+                    Method::POST,
+                    format!("/messages/{aid}/swipe"),
+                    json!({"index":0}),
+                ),
+                (
+                    Method::DELETE,
+                    format!("/messages/{aid}/swipes/0"),
+                    json!({}),
+                ),
+                (
+                    Method::POST,
+                    format!("/messages/{uid}/swipe"),
+                    json!({"index":0}),
+                ),
+            ] {
+                assert_eq!(h.request(method, &path, body).await.status(), 409);
+            }
+            h.post(&format!("/conversations/{cid}/stop"), json!({}))
+                .await;
+            h.idle(&cid).await;
+            drop(stream);
+            let m = h.get(&format!("/messages/{aid}")).await;
+            assert_eq!(m["swipe_count"], 3);
+            assert!(!text(&m, "content").is_empty());
+            assert!(text(&m, "content").len() < 150);
+            assert_eq!(
+                h.post(&format!("/messages/{aid}/swipe"), json!({"index":0}))
+                    .await["messages"][0]["content"],
+                "Answer complete"
+            );
+        }
+    }
+    // Inject a restoration collision: SQL failure must roll back archiving and selection.
+    let mut user_raw = h
+        .server
+        .state
+        .db
+        .message(&owner, &uid)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut conflicting = rofu_core::chat::message(&cid, 9999, "assistant", "collision");
+    conflicting["id"] = json!(gid); // existing greeting id, before the user
+    let mut inactive = user_raw["swipes"][0].clone();
+    inactive["tail"] = json!([conflicting]);
+    user_raw["swipes"].as_array_mut().unwrap().push(inactive);
+    h.server
+        .state
+        .db
+        .save_message(&owner, &user_raw)
+        .await
+        .unwrap();
+    let snapshot = h.server.state.db.messages(&owner, &cid).await.unwrap();
+    assert_eq!(
+        h.request(
+            Method::POST,
+            &format!("/messages/{uid}/swipe"),
+            json!({"index":1})
+        )
+        .await
+        .status(),
+        500
+    );
+    assert_eq!(
+        h.server.state.db.messages(&owner, &cid).await.unwrap(),
+        snapshot
+    );
+}
+
+async fn active_prompt_history(h: &Harness, mock: &MockServer) {
+    let provider = h.post("/providers", json!({"base_url":mock.url})).await;
+    let model = h
+        .post(
+            "/models",
+            json!({"provider_id":provider["id"],"model_id":"plain"}),
+        )
+        .await;
+    let character = h.post("/characters",json!({"model_id":model["id"],"card":{"first_mes":"Active greeting","alternate_greetings":["SECRET_INACTIVE_GREETING"]},"context":{"keep_recent":1,"compress_threshold":999999}})).await;
+    let conv = h
+        .post("/conversations", json!({"character_id":character["id"]}))
+        .await;
+    let cid = text(&conv, "id");
+    h.json(
+        Method::PATCH,
+        &format!("/conversations/{cid}"),
+        json!({"title":"Active prompt history"}),
+    )
+    .await;
+    let events = h
+        .events(&cid, json!({"content":"SECRET_ARCHIVED_USER"}))
+        .await;
+    let user = &events[0]["message"];
+    h.events(
+        &cid,
+        json!({"edit_message_id":user["id"],"content":"Active user"}),
+    )
+    .await;
+    h.events(&cid, json!({"regenerate":true})).await;
+    let start = mock.state.requests.lock().await.len();
+    h.post(&format!("/conversations/{cid}/memory_scan"), json!({}))
+        .await;
+    h.post(&format!("/conversations/{cid}/compress"), json!({}))
+        .await;
+    let captured = mock.state.requests.lock().await[start..].to_vec();
+    assert_eq!(captured.len(), 2);
+    for request in &captured {
+        let input = text(&request["messages"][1], "content");
+        assert!(input.contains("Active greeting"));
+        assert!(input.contains("Active user"));
+        for forbidden in [
+            "SECRET_INACTIVE_GREETING",
+            "SECRET_ARCHIVED_USER",
+            "swipes",
+            "tail",
+        ] {
+            assert!(!input.contains(forbidden), "{input}");
         }
     }
 }
@@ -227,6 +769,8 @@ async fn run_suite(database: Option<String>) {
     let mock = MockServer::start().await;
     let h = Harness::new(database).await;
     retry_history(&h, &mock).await;
+    swipe_contract(&h, &mock).await;
+    active_prompt_history(&h, &mock).await;
     assert_eq!(h.get("/health").await["allow_register"], false);
     let user = h
         .post(

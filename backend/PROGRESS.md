@@ -29,7 +29,11 @@ JuiceFS 曾在 mmap 链接和重用测试二进制时 SIGBUS。已将要求的 t
 - 范围：只修改 backend/ 和 docs/api.md（必要时 backend-spec §6）；不触碰同时修改的 app/。
 - 阶段 1 已完成：SQL 倒序 LIMIT 分页与 message_count、参数/边界回归、API 示例；在旧 regenerate 实现上验证传统/即时 × 工具开关四种三轮重试上下文，SQLite 与实际 PostgreSQL 17 全通过（每库四种场景）。C 项未复现后端丢上下文，历史用户/助手保留，空占位和被重试旧回复排除。
 - 阶段 1 检查：cargo fmt --all、cargo clippy --all-targets -- -D warnings、cargo test（24 项，SQLite/PG 均实际执行）全部通过。
-- 阶段 2 待办：swipe 快照、事务切换/删除、greeting、保留 regenerate 原版、编辑 user 的 tail、PATCH 非 text 段保留、branch 去历史、HTTP/SSE 过滤、完整回归和契约文档。
+- 阶段 2 已完成（阶段 1 提交 29041d7）：JSON swipe 快照/懒初始化/存储同步；regenerate 原 id 追加空版本；greeting 全宏替换版本；编辑 user 归档完整嵌套 tail；事务切换与删除；PATCH 保留推理/工具；branch 只复制激活内容；HTTP/SSE 输出 index/count；压缩/记忆扫描过滤未激活版本；完整 API 示例及 backend-spec §6 同步。
+- 阶段 2 验证：cargo fmt --all、cargo clippy --all-targets -- -D warnings、cargo test 全部通过；26 项 = 20 core 单测 + 2 集成入口 + 3 storage/auth + 1 FFI，0 failed / 0 ignored。两个集成入口均实际执行（SQLite、PostgreSQL 17）。
+- 每库集成场景扩展：4 种三轮重试上下文；分页边界/参数；旧消息懒初始化；开场白选择/宏/400；同 id 重试与后缀删除；user 双向恢复/嵌套 user 分支及尾部原始数据；active/inactive 删除；PATCH 后续不变；branch 原始存储无版本历史；失败/停止保留新旧版本；生成中 409；冲突注入验证事务整体回滚；压缩和记忆扫描 prompt 无 swipes/tail/未激活内容。
+- C 项结论：后端无问题（所述重试请求和覆盖配置下未复现）。旧实现与新实现均保留 system、前三条 user、前两轮 assistant；即时模式按规则使用历史 actual，工具段按协议恢复；空 assistant、被重试旧 display/actual 均不进入首个生成请求。
+- 收尾：阶段 2 提交后检查提交路径与共享索引，写结果 /workspace/work/rofu-sol/result_swipes.md；不 push。
 - 每阶段 fmt/clippy/test 全过后提交，不 push。最终报告 /workspace/work/rofu-sol/result_swipes.md。
 
 - 当前环境已安装/启动 PostgreSQL 17，测试 URL：postgresql:///postgres?host=/var/run/postgresql（本机 peer 身份验证，无口令）；target 原符号链接目标丢失，已重建 /var/tmp/rofu-target 并完成 debug 编译。
