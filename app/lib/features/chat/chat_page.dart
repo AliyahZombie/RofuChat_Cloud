@@ -67,7 +67,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   Future<String?> _ensureConversation(Character ch) async {
     final cur = ref.read(selectedConversationIdProvider);
     if (cur != null) return cur;
-    final j = await ref.read(apiProvider).post('/api/conversations', {'character_id': ch.id, 'greeting_index': 0});
+    final j = await ref.read(apiProvider).post('/api/conversations', ch.newConversationBody(0));
     final id = (j as Map)['id'] as String;
     ref.invalidate(conversationsProvider(ch.id));
     ref.read(selectedConversationIdProvider.notifier).select(id);
@@ -97,7 +97,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       idx = r;
     }
     try {
-      final j = await ref.read(apiProvider).post('/api/conversations', {'character_id': ch.id, 'greeting_index': idx});
+      final j = await ref.read(apiProvider).post('/api/conversations', ch.newConversationBody(idx));
       ref.invalidate(conversationsProvider(ch.id));
       ref.read(selectedConversationIdProvider.notifier).select((j as Map)['id'] as String);
     } catch (e) {

@@ -122,6 +122,14 @@ class Character extends JsonModel {
   String get reasoningEffort => _s(params, 'reasoning_effort');
   String cardStr(String k) => _s(card, k);
   void setCard(String k, dynamic v) => card[k] = v;
+  /// Body for POST /api/conversations choosing greetings[idx]: the API's greeting_index is a
+  /// zero-based index into alternate_greetings, and omitting it selects first_mes.
+  Map<String, dynamic> newConversationBody(int idx) {
+    final hasFirst = cardStr('first_mes').isNotEmpty;
+    final alt = hasFirst ? idx - 1 : idx;
+    return {'character_id': id, if (alt >= 0) 'greeting_index': alt};
+  }
+
   List<String> get greetings {
     final out = <String>[];
     if (cardStr('first_mes').isNotEmpty) out.add(cardStr('first_mes'));
