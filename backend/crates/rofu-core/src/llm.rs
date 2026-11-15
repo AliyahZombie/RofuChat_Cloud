@@ -110,15 +110,16 @@ pub fn headers(
     }
     Ok(request)
 }
-struct Parser {
+struct Parser<'a> {
     responses: bool,
     think: Think,
     calls: BTreeMap<i64, Value>,
     usage: Option<Value>,
     output: String,
+    raw: &'a mut String,
     tx: UnboundedSender<Event>,
 }
-impl Parser {
+impl Parser<'_> {
     fn emit(&mut self, e: Event) {
         if let Event::Text(t) | Event::Reasoning(t) = &e {
             self.output.push_str(t);
@@ -163,7 +164,10 @@ impl Parser {
         }
         if self.responses {
             match text(&v, "type").as_str() {
-                "response.output_text.delta" => self.text(&text(&v, "delta")),
+                "response.output_text.delta" => {
+                    self.raw.push_str(&text(&v, "delta"));
+                    self.text(&text(&v, "delta"));
+                }
                 "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                     self.emit(Event::Reasoning(text(&v, "delta")))
                 }
@@ -188,6 +192,7 @@ impl Parser {
                 for choice in choices.iter().take(1) {
                     let d = &choice["delta"];
                     if let Some(s) = d["content"].as_str() {
+                        self.raw.push_str(s);
                         self.text(s);
                     }
                     if let Some(s) = d["reasoning_content"]
@@ -233,6 +238,15 @@ pub async fn stream(
     request: Request,
     tx: UnboundedSender<Event>,
 ) -> Result<()> {
+    stream_with_raw(client, request, tx, &mut String::new()).await
+}
+
+async fn stream_with_raw(
+    client: &reqwest::Client,
+    request: Request,
+    tx: UnboundedSender<Event>,
+    raw: &mut String,
+) -> Result<()> {
     let responses = request.provider["kind"] == "responses";
     let url = format!(
         "{}/{}",
@@ -261,6 +275,7 @@ pub async fn stream(
         calls: Default::default(),
         usage: None,
         output: String::new(),
+        raw,
         tx,
     };
     let mut decoder = Decoder::default();
@@ -300,23 +315,52 @@ impl std::fmt::Display for EmptyCompletion {
 }
 impl std::error::Error for EmptyCompletion {}
 
-pub async fn complete(client: &reqwest::Client, request: Request) -> Result<String> {
+/// Visible text and diagnostic data are kept separate: reasoning is never an answer.
+#[derive(Default, Debug)]
+pub struct Completion {
+    pub text: String,
+    pub reasoning: String,
+    pub raw: String,
+    pub error: Option<anyhow::Error>,
+}
+
+pub async fn complete_detailed(client: &reqwest::Client, request: Request) -> Completion {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::time::timeout(
+    let mut completion = Completion::default();
+    let result = tokio::time::timeout(
         std::time::Duration::from_secs(120),
-        stream(client, request, tx),
+        stream_with_raw(client, request, tx, &mut completion.raw),
     )
-    .await??;
-    let mut output = String::new();
+    .await;
+    completion.error = match result {
+        Ok(result) => result.err(),
+        Err(error) => Some(error.into()),
+    };
     while let Some(e) = rx.recv().await {
-        if let Event::Text(t) = e {
-            output.push_str(&t);
+        match e {
+            Event::Text(t) => completion.text.push_str(&t),
+            Event::Reasoning(t) => completion.reasoning.push_str(&t),
+            _ => {}
         }
     }
-    if output.is_empty() {
+    if completion.raw.is_empty() {
+        completion.raw = completion.reasoning.clone();
+    }
+    completion
+}
+
+pub async fn complete(client: &reqwest::Client, request: Request) -> Result<String> {
+    let completion = complete_detailed(client, request).await;
+    if let Some(error) = completion.error {
+        return Err(error);
+    }
+    if completion.text.is_empty() {
+        if !completion.reasoning.is_empty() {
+            bail!("model returned reasoning-only output (no content)");
+        }
         return Err(EmptyCompletion.into());
     }
-    Ok(output)
+    Ok(completion.text)
 }
 #[cfg(test)]
 mod tests {
@@ -361,6 +405,7 @@ mod tests {
             calls: Default::default(),
             usage: None,
             output: String::new(),
+            raw: &mut String::new(),
             tx,
         };
         p.parse(&json!({"type":"response.incomplete","response":{"usage":{"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":2}}}}).to_string()).unwrap();
@@ -384,6 +429,7 @@ mod tests {
             calls: Default::default(),
             usage: None,
             output: String::new(),
+            raw: &mut String::new(),
             tx,
         };
         p.parse(&json!({"usage":{"completion_tokens":7}}).to_string())

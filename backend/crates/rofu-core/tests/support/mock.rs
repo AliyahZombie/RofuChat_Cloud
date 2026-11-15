@@ -24,6 +24,7 @@ pub struct Mock {
     pub scan: Arc<Mutex<Value>>,
     pub title: Arc<Mutex<Option<String>>>,
     pub actual: Arc<Mutex<VecDeque<String>>>,
+    pub actual_reasoning: Arc<Mutex<Option<String>>>,
     legacy: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Event>>>>,
 }
 pub struct MockServer {
@@ -84,6 +85,11 @@ async fn llm(State(state): State<Mock>, Json(body): Json<Value>) -> Response {
         "Earlier summary".into()
     } else {
         "Answer complete".into()
+    };
+    let actual_reasoning = if instructions.starts_with("Condense one") {
+        state.actual_reasoning.lock().await.clone()
+    } else {
+        None
     };
     let has_tool_result = if responses {
         body["input"]
@@ -146,9 +152,27 @@ async fn llm(State(state): State<Mock>, Json(body): Json<Value>) -> Response {
         }
         chunks.push(json!({"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens_details":{"reasoning_tokens":5}}}));
     }
+    if let Some(reasoning) = actual_reasoning {
+        chunks = if responses {
+            vec![
+                json!({"type":"response.reasoning_text.delta","delta":reasoning}),
+                json!({"type":"response.output_text.delta","delta":""}),
+                json!({"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}),
+            ]
+        } else {
+            vec![
+                json!({"choices":[{"delta":{"content":"","reasoning_content":reasoning}}]}),
+                json!({"choices":[{"delta":{},"finish_reason":"length"}]}),
+            ]
+        };
+    }
     if body["model"] == "stream-error" {
         chunks = vec![
-            json!({"choices":[{"delta":{"content":"partial"}}]}),
+            if responses {
+                json!({"type":"response.output_text.delta","delta":"partial"})
+            } else {
+                json!({"choices":[{"delta":{"content":"partial"}}]})
+            },
             json!({"error":{"message":"mock stream failure"}}),
         ];
     }

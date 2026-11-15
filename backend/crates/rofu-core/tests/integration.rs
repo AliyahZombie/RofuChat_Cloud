@@ -1303,6 +1303,7 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
 
         // Feed a stored reply with private reasoning, duplicated segments, and oversized tools.
         c["context"] = json!({"instant":true,"summarize":false,"display_recent":0});
+        c["params"] = json!({"max_tokens":9999,"reasoning_effort":"high"});
         h.json(Method::PUT, &character_path, c.clone()).await;
         let conv = h
             .post("/conversations", json!({"character_id":c["id"]}))
@@ -1335,7 +1336,7 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
         assert_eq!(
             upstream_user(&requests[0]),
             format!(
-                "{visible}\n[tool] dice({}) → {}",
+                "Condense the following roleplay reply.\n<reply>\n{visible}\n[tool] dice({}) → {}\n</reply>",
                 "骰".repeat(120),
                 "点".repeat(200)
             )
@@ -1354,6 +1355,21 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
             assert!(system.contains(required), "missing {required}: {system}");
         }
         assert_eq!(requests[0]["model"], model["model_id"]); // unchanged character-model fallback
+        assert!(system.contains("never a message to answer or continue"));
+        let token_key = if kind == "responses" {
+            "max_output_tokens"
+        } else {
+            "max_tokens"
+        };
+        assert_eq!(requests[0][token_key], 400);
+        for key in [
+            "reasoning",
+            "reasoning_effort",
+            "thinking",
+            "enable_thinking",
+        ] {
+            assert!(requests[0].get(key).is_none(), "unexpected {key}");
+        }
 
         // An overlong or empty cleaned response retries once, using exactly the same input.
         for first in [
@@ -1362,6 +1378,7 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
             "<think>reasoning only</think>".into(),
         ] {
             mock.state.requests.lock().await.clear();
+            let first_length = first.chars().count();
             *mock.state.actual.lock().await =
                 [first, "Summary: 'Rofu waited for Alice.'".into()].into();
             let retried = h.post(&actual_path, json!({})).await;
@@ -1370,9 +1387,15 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
             let requests = mock.state.requests.lock().await.clone();
             assert_eq!(requests.len(), 2);
             assert_eq!(upstream_user(&requests[0]), upstream_user(&requests[1]));
-            let limit = (upstream_user(&requests[0]).chars().count() / 5).clamp(1, 120);
-            assert!(upstream_system(&requests[1])
-                .contains(&format!("Too long. Output at most {limit} characters.")));
+            let input_length =
+                visible.chars().count() + "\n[tool] dice() → ".chars().count() + 120 + 200;
+            let limit = (input_length / 5).clamp(1, 120);
+            let expected = if first_length == 2000 {
+                format!("Your previous output was 2000 characters; the limit is {limit}. Output only the note.")
+            } else {
+                "Your previous output was empty".into()
+            };
+            assert!(upstream_system(&requests[1]).contains(&expected));
         }
         mock.state.requests.lock().await.clear();
         *mock.state.actual.lock().await = ["长".repeat(2000), "<think>empty</think>".into()].into();
@@ -1381,6 +1404,81 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
         assert!(failed["actual"].is_null());
         assert!(text(&failed, "actual_error").contains("two attempts"));
         assert_eq!(mock.state.requests.lock().await.len(), 2);
+        let error = text(&failed, "actual_error");
+        assert!(
+            error.contains("attempt 1: 2000 characters over the limit"),
+            "{error}"
+        );
+        assert!(error.contains("attempt 2: reasoning-only"), "{error}");
+        assert!(
+            error.contains("last raw output (first 160 characters): \"<think>empty</think>\""),
+            "{error}"
+        );
+
+        // A valid note survives long thought tails and arbitrary presentation wrappers.
+        for output in [
+            format!(
+                "Rofu helped Alice.<think>{}",
+                "unfinished thought ".repeat(100)
+            ),
+            format!(
+                "Rofu helped Alice.<thinking>{}",
+                "unfinished thought ".repeat(100)
+            ),
+            "<note>Rofu helped Alice.</note>".into(),
+            "<reply>Rofu helped Alice.</reply>".into(),
+            "```unexpected-language\nRofu helped Alice.\n```".into(),
+        ] {
+            mock.state.requests.lock().await.clear();
+            *mock.state.actual.lock().await = [output].into();
+            let cleaned = h.post(&actual_path, json!({})).await;
+            assert_eq!(cleaned["actual_status"], "ok");
+            assert_eq!(cleaned["actual"], "Rofu helped Alice.");
+            assert_eq!(mock.state.requests.lock().await.len(), 1);
+        }
+
+        // Empty content at a length cutoff must distinguish reasoning-only from no output.
+        for reasoning in [
+            String::new(),
+            format!("PRIVATE MODEL REASONING {} END", "思".repeat(200)),
+        ] {
+            mock.state.requests.lock().await.clear();
+            *mock.state.actual_reasoning.lock().await = Some(reasoning.clone());
+            let failed = h.post(&actual_path, json!({})).await;
+            *mock.state.actual_reasoning.lock().await = None;
+            assert_eq!(failed["actual_status"], "failed");
+            assert!(failed["actual"].is_null());
+            let error = text(&failed, "actual_error");
+            let expected = if reasoning.is_empty() {
+                "empty output"
+            } else {
+                "reasoning-only"
+            };
+            assert!(error.contains(&format!("attempt 1: {expected}")), "{error}");
+            assert!(error.contains(&format!("attempt 2: {expected}")), "{error}");
+            assert!(error.contains(&reasoning.chars().take(160).collect::<String>()));
+            assert!(!error.contains(" END"));
+            let requests = mock.state.requests.lock().await.clone();
+            assert_eq!(requests.len(), 2);
+            assert!(upstream_system(&requests[1]).contains("Your previous output was empty"));
+            mock.state.actual.lock().await.clear();
+        }
+
+        // Preserve partial raw content when a provider fails mid-stream.
+        let mut broken_model = model.clone();
+        broken_model["model_id"] = json!("stream-error");
+        let model_path = format!("/models/{}", text(&model, "id"));
+        h.json(Method::PUT, &model_path, broken_model).await;
+        let failed = h.post(&actual_path, json!({})).await;
+        assert_eq!(failed["actual_status"], "failed");
+        let error = text(&failed, "actual_error");
+        assert!(error.contains("attempt 1: provider error"), "{error}");
+        assert!(error.contains("mock stream failure"), "{error}");
+        assert!(
+            error.contains("last raw output (first 160 characters): \"partial\""),
+            "{error}"
+        );
+        h.json(Method::PUT, &model_path, model.clone()).await;
         let history = h.get(&format!("/conversations/{cid}/messages")).await;
         let built =
             rofu_core::context::build(&c, &settings, history.as_array().unwrap(), &[], false);

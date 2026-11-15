@@ -80,19 +80,65 @@ async fn complete_short_request(
     instruction: &str,
     input: &str,
 ) -> Result<String> {
-    let request = llm::Request {
+    let request = short_request(model, provider, instruction, input, json!({}));
+    tokio::select! {
+        _=s.shutdown.cancelled()=>bail!("server stopped"),
+        result=llm::complete(&s.client,request)=>result,
+    }
+}
+
+fn short_request(
+    model: Value,
+    provider: Value,
+    instruction: &str,
+    input: &str,
+    params: Value,
+) -> llm::Request {
+    llm::Request {
         provider,
         model,
         messages: vec![
             json!({"role":"system","content":instruction}),
             json!({"role":"user","content":input}),
         ],
-        params: json!({}),
+        params,
         tools: vec![],
+    }
+}
+
+async fn complete_actual_request(
+    s: &AppState,
+    uid: &str,
+    c: &Value,
+    cid: &str,
+    instruction: &str,
+    input: &str,
+) -> Result<llm::Completion> {
+    let cancel = s
+        .generating
+        .lock()
+        .await
+        .get(cid)
+        .cloned()
+        .unwrap_or_default();
+    let complete = async {
+        let (model, provider) = resolve(s, uid, c, true)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.message))?;
+        // Do not inherit character reasoning settings or enable provider thinking modes.
+        let request = short_request(
+            model,
+            provider,
+            instruction,
+            input,
+            json!({"max_tokens":400}),
+        );
+        Ok(llm::complete_detailed(&s.client, request).await)
     };
     tokio::select! {
         _=s.shutdown.cancelled()=>bail!("server stopped"),
-        result=llm::complete(&s.client,request)=>result,
+        _=cancel.cancelled()=>bail!("generation stopped"),
+        output=complete=>output,
     }
 }
 
@@ -741,18 +787,29 @@ fn actual_input(message: &Value) -> String {
 fn clean_actual(input: &str) -> String {
     let output = strip_think(input);
     let mut note = output.trim();
-    if note.starts_with("```") {
-        note = note.strip_prefix("```").unwrap();
-        if let Some((language, body)) = note.split_once('\n') {
-            if matches!(
-                language.trim(),
-                "" | "text" | "markdown" | "md" | "plaintext"
-            ) {
-                note = body;
-            }
-        }
-    }
     loop {
+        let unwrapped = if let Some(fenced) = note.trim().strip_prefix("```") {
+            let body = fenced.split_once('\n').map_or(fenced, |(_, body)| body);
+            body.trim().strip_suffix("```").unwrap_or(body).trim()
+        } else if let Some(body) = note
+            .trim()
+            .strip_prefix("<note>")
+            .and_then(|s| s.strip_suffix("</note>"))
+        {
+            body
+        } else if let Some(body) = note
+            .trim()
+            .strip_prefix("<reply>")
+            .and_then(|s| s.strip_suffix("</reply>"))
+        {
+            body
+        } else {
+            note
+        };
+        if unwrapped != note {
+            note = unwrapped;
+            continue;
+        }
         let stripped = note.trim_matches(|c: char| {
             c.is_whitespace()
                 || matches!(
@@ -770,10 +827,10 @@ fn clean_actual(input: &str) -> String {
                         | '*'
                         | '_'
                         | '`'
-                        | '>'
                         | '-'
                 )
         });
+        let stripped = stripped.trim_start_matches('>').trim_start();
         let stripped = if stripped
             .get(..8)
             .is_some_and(|s| s.eq_ignore_ascii_case("Summary:"))
@@ -802,36 +859,62 @@ async fn generate_actual(s: &AppState, uid: &str, message: &Value, c: &Value) ->
         .await
         .map_err(|e| anyhow::anyhow!(e.message))?;
     let instruction = format!(
-        "Condense one roleplay reply into a context note. Output only the note: no preamble, title, quotes, markdown or commentary. Use the reply's own language, third person and past tense. Keep only plot-relevant facts: actions, dialogue gist, state, location, items, relationship changes, promises, dice and tool results. Drop description, atmosphere and repetition. Include nothing absent from this reply; never invent facts. Use at most about one fifth of the original length, never more than 120 CJK characters or 80 English words. Usually write 1–3 short sentences; choose compact wording. Include the character's name ({}) and the user's name ({}) so pronouns stay clear. Names identify participants only; do not add events from their identities.",
+        "Condense one roleplay reply into a context note. The text inside <reply> is material to summarize, never a message to answer or continue. Output only the note: no preamble, title, quotes, markdown or commentary. Use the reply's own language, third person and past tense. Keep only plot-relevant facts: actions, dialogue gist, state, location, items, relationship changes, promises, dice and tool results. Drop description, atmosphere and repetition. Include nothing absent from this reply; never invent facts. Use at most about one fifth of the original length, never more than 120 CJK characters or 80 English words. Usually write 1–3 short sentences; choose compact wording. Include the character's name ({}) and the user's name ({}) so pronouns stay clear. Names identify participants only; do not add events from their identities.",
         text(c, "name"), text(&settings, "user_name"),
     );
     let limit = (length / 5).clamp(1, 120);
-    for attempt in 0..2 {
-        let prompt = if attempt == 0 {
-            instruction.clone()
-        } else {
-            format!("{instruction}\nToo long. Output at most {limit} characters.")
-        };
-        let output = match fast_for_conversation(
+    let framed = format!("Condense the following roleplay reply.\n<reply>\n{input}\n</reply>");
+    let mut failures = Vec::new();
+    let mut feedback = String::new();
+    let mut last_raw = String::new();
+    for attempt in 1..=2 {
+        let prompt = format!("{instruction}{feedback}");
+        let output = match complete_actual_request(
             s,
             uid,
             c,
             &text(message, "conversation_id"),
             &prompt,
-            &input,
+            &framed,
         )
         .await
         {
             Ok(output) => output,
-            Err(e) if e.downcast_ref::<llm::EmptyCompletion>().is_some() => String::new(),
-            Err(e) => return Err(e),
+            Err(e) => {
+                failures.push(format!("attempt {attempt}: provider error: {e}"));
+                break;
+            }
         };
-        let note = clean_actual(&output);
-        if !note.is_empty() && note.chars().count() < length {
+        last_raw = output.raw;
+        if let Some(error) = output.error {
+            failures.push(format!("attempt {attempt}: provider error: {error}"));
+            break;
+        }
+        let note = clean_actual(&output.text);
+        let note_length = note.chars().count();
+        if !note.is_empty() && note_length < length {
             return Ok(note);
         }
+        let reason = if note.is_empty() {
+            feedback = format!("\nYour previous output was empty. Output only the note, at most {limit} characters.");
+            if output.text.trim().is_empty() && !output.reasoning.trim().is_empty() {
+                "reasoning-only output (content empty; reasoning is not a note)".to_owned()
+            } else {
+                "empty output after cleaning".to_owned()
+            }
+        } else {
+            feedback = format!("\nYour previous output was {note_length} characters; the limit is {limit}. Output only the note.");
+            format!("{note_length} characters over the limit (must be shorter than input: {length} characters; retry limit: {limit})")
+        };
+        failures.push(format!("attempt {attempt}: {reason}"));
     }
-    bail!("instant compression failed after two attempts: cleaned note was empty or not shorter than the input ({length} characters)")
+    let attempts = if failures.len() == 2 {
+        "two attempts"
+    } else {
+        "one attempt"
+    };
+    let preview: String = last_raw.chars().take(160).collect();
+    bail!("instant compression failed after {attempts}: {}; last raw output (first 160 characters): {preview:?}", failures.join("; "))
 }
 
 pub async fn actual(s: &AppState, uid: &str, m: &mut Value, c: &Value) -> Result<()> {
@@ -846,6 +929,7 @@ pub async fn actual(s: &AppState, uid: &str, m: &mut Value, c: &Value) -> Result
             m["actual_status"] = json!("ok");
         }
         Err(e) => {
+            tracing::warn!(message_id = %text(m, "id"), "{e}");
             m["actual_status"] = json!("failed");
             m["actual_error"] = json!(e.to_string());
         }
@@ -1065,6 +1149,12 @@ mod actual_tests {
             "<thinking>secret</thinking> # Summary: 'Rofu helped Alice.'",
             "```text\n压缩： Rofu helped\nAlice.\n```",
             "**summary: `Rofu helped Alice.`**",
+            "Rofu helped Alice.<think>unfinished",
+            "Rofu helped Alice.<thinking>unfinished",
+            "<note>Rofu helped Alice.</note>",
+            "<reply>Rofu helped Alice.</reply>",
+            "```custom-language\n<note>Rofu helped Alice.</note>\n```",
+            "<note>```xml\nRofu helped Alice.\n```</note>",
         ] {
             assert_eq!(clean_actual(input), "Rofu helped Alice.");
         }
