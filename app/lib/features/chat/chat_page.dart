@@ -217,6 +217,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     return SlideDrawer(
       key: _drawer,
       width: math.min(320, MediaQuery.sizeOf(context).width * 0.85),
+      openZone: ref.watch(appearanceProvider.select((a) => a.swipeZone)) / 10,
       drawer: Sidebar(onNewConversation: newConversation, inDrawer: true),
       child: Scaffold(key: _scaffold, appBar: appBar, body: body),
     );

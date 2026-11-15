@@ -166,6 +166,7 @@ class SettingsPage extends ConsumerWidget {
       SwitchListTile(title: Text(t('紧凑布局', 'Compact layout')), value: a.compact, onChanged: (v) => setA(a.copyWith(compact: v))),
       if (!watch) SwitchListTile(title: Text(t('聊天铺满宽度（桌面）', 'Full-width chat (desktop)')), value: a.fullWidth, onChanged: (v) => setA(a.copyWith(fullWidth: v))),
       _LoadCharsTile(value: a.loadChars, onChanged: (v) => setA(a.copyWith(loadChars: v))),
+      if (!watch && !context.isDesktop) _SwipeZoneTile(value: a.swipeZone, onChanged: (v) => setA(a.copyWith(swipeZone: v))),
       SwitchListTile(title: Text(t('显示头像', 'Show avatars')), value: a.showAvatars, onChanged: (v) => setA(a.copyWith(showAvatars: v))),
       SwitchListTile(title: Text(t('显示 Token 用量', 'Show token usage')), value: a.showTokens, onChanged: (v) => setA(a.copyWith(showTokens: v))),
       if (!watch) SwitchListTile(title: Text(t('Enter 发送（Shift+Enter 换行）', 'Enter to send (Shift+Enter newline)')), value: a.enterToSend, onChanged: (v) => setA(a.copyWith(enterToSend: v))),
@@ -250,6 +251,52 @@ class _LoadCharsTile extends StatelessWidget {
           divisions: steps.length - 1,
           label: fmtCount(steps[i]),
           onChanged: (v) => onChanged(steps[v.round()]),
+        ),
+      ]),
+    );
+  }
+}
+
+/// Ten-step slider for where a rightward swipe may start to open the sidebar,
+/// with a strip preview of the active zone.
+class _SwipeZoneTile extends StatelessWidget {
+  final int value;
+  final ValueChanged<int> onChanged;
+  const _SwipeZoneTile({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final pct = value * 10;
+    return ListTile(
+      title: Text(t('侧滑手势区域', 'Sidebar swipe area')),
+      subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(value == 10
+            ? t('从屏幕任意位置右滑打开侧栏', 'Swipe right from anywhere to open the sidebar')
+            : t('从屏幕左侧 $pct% 内右滑打开侧栏', 'Swipe right within the left $pct% to open the sidebar')),
+        const SizedBox(height: 8),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: SizedBox(
+            height: 8,
+            child: Stack(children: [
+              Positioned.fill(child: ColoredBox(color: scheme.surfaceContainerHighest)),
+              TweenAnimationBuilder<double>(
+                tween: Tween(end: value / 10),
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOutCubic,
+                builder: (_, f, _) => FractionallySizedBox(widthFactor: f, child: ColoredBox(color: scheme.primary.withValues(alpha: 0.5))),
+              ),
+            ]),
+          ),
+        ),
+        Slider(
+          value: value.toDouble(),
+          min: 1,
+          max: 10,
+          divisions: 9,
+          label: '$pct%',
+          onChanged: (v) => onChanged(v.round()),
         ),
       ]),
     );

@@ -48,6 +48,9 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final app = ref.watch(appProvider);
     final watch = context.isWatch;
     final inset = watchInset(context);
+    // Watch and phone share the RikkaHub layout; only the desktop side panel keeps the
+    // character strip on top.
+    final rikka = !context.isDesktop;
 
     final switcher = SizedBox(
       height: watch ? 64 : 84,
@@ -142,12 +145,12 @@ class _SidebarState extends ConsumerState<Sidebar> {
                     ),
                 ],
               ];
-              if (watch) return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: tiles);
+              if (rikka) return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: tiles);
               return ListView(padding: const EdgeInsets.symmetric(horizontal: 8), children: tiles);
             },
           );
 
-    if (watch) return _watchLayout(chars.value ?? const <Character>[], current, list, app, inset);
+    if (rikka) return _rikkaLayout(chars.value ?? const <Character>[], current, list, app, inset, watch);
 
     final header = current == null
         ? const SizedBox.shrink()
@@ -210,14 +213,16 @@ class _SidebarState extends ConsumerState<Sidebar> {
     );
   }
 
-  /// Watch (as in RikkaHub): the chats scroll in the middle; the current character and a row
-  /// of round buttons stay fixed at the bottom. Tapping the character expands a picker above it.
-  Widget _watchLayout(List<Character> chars, Character? current, Widget convs, AppState app, double inset) {
+  /// Watch and phone (as in RikkaHub): the chats scroll in the middle; the current character
+  /// and a row of round buttons stay fixed at the bottom. Tapping the character expands a
+  /// picker above it.
+  Widget _rikkaLayout(List<Character> chars, Character? current, Widget convs, AppState app, double inset, bool watch) {
     final scheme = Theme.of(context).colorScheme;
     final h = MediaQuery.sizeOf(context).height;
+    final btn = watch ? 38.0 : 46.0;
     Widget round(IconData icon, String tip, VoidCallback onTap) => Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 3),
-      child: IconButton.filledTonal(tooltip: tip, onPressed: onTap, icon: Icon(icon, size: 18), constraints: const BoxConstraints.tightFor(width: 38, height: 38), padding: EdgeInsets.zero),
+      padding: EdgeInsets.symmetric(horizontal: watch ? 3 : 5),
+      child: IconButton.filledTonal(tooltip: tip, onPressed: onTap, icon: Icon(icon, size: watch ? 18 : 22), constraints: BoxConstraints.tightFor(width: btn, height: btn), padding: EdgeInsets.zero),
     );
     return SafeArea(
       child: Material(
@@ -228,10 +233,22 @@ class _SidebarState extends ConsumerState<Sidebar> {
               child: ListView(
                 padding: EdgeInsets.fromLTRB(inset + 4, 6, inset + 4, 6),
                 children: [
+                  if (!watch && current != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 4, 4, 6),
+                      child: SizedBox(
+                        height: 40,
+                        child: TextField(
+                          decoration: InputDecoration(prefixIcon: const Icon(Icons.search, size: 18), hintText: t('搜索对话', 'Search chats'), contentPadding: EdgeInsets.zero),
+                          onChanged: (v) => setState(() => _q = v),
+                        ),
+                      ),
+                    ),
                   if (current != null)
                     ListTile(
                       dense: true,
                       contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       leading: const Icon(Icons.add_comment_outlined, size: 20),
                       title: Text(t('新对话', 'New chat')),
                       onTap: () {
@@ -265,6 +282,17 @@ class _SidebarState extends ConsumerState<Sidebar> {
                         },
                         onLongPress: () => _charMenu(c),
                       ),
+                    if (!watch)
+                      ListTile(
+                        dense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                        leading: CircleAvatar(radius: 12, backgroundColor: scheme.surfaceContainerHighest, child: const Icon(Icons.add, size: 16)),
+                        title: Text(t('添加角色', 'Add character')),
+                        onTap: () {
+                          setState(() => _charsOpen = false);
+                          _addCharacter();
+                        },
+                      ),
                   ],
                 ),
               ),
@@ -272,9 +300,10 @@ class _SidebarState extends ConsumerState<Sidebar> {
             Padding(
               padding: EdgeInsets.symmetric(horizontal: inset + 4),
               child: ListTile(
-                dense: true,
+                dense: watch,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                leading: current == null ? const Icon(Icons.person_outline) : CharacterAvatar(character: current, size: 26),
+                leading: current == null ? const Icon(Icons.person_outline) : CharacterAvatar(character: current, size: watch ? 26 : 32),
                 title: Text(current?.name ?? t('选择角色', 'Pick a character'), maxLines: 1, overflow: TextOverflow.ellipsis),
                 trailing: TurnChevron(open: !_charsOpen),
                 onTap: () => setState(() => _charsOpen = !_charsOpen),

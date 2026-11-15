@@ -13,6 +13,10 @@ class Appearance {
   /// Characters of history fetched per page when opening a chat / scrolling up.
   final int loadChars;
 
+  /// How far from the left edge a rightward swipe may start to open the sidebar,
+  /// in tenths of the screen width (1 to 10; 10 = anywhere).
+  final int swipeZone;
+
   const Appearance({
     this.themeMode = 'system',
     this.seed = 0xFF5C6BC0,
@@ -24,6 +28,7 @@ class Appearance {
     this.enterToSend = true,
     this.language = '',
     this.loadChars = 20000,
+    this.swipeZone = 6,
   });
 
   factory Appearance.fromJson(Map<String, dynamic> j) => Appearance(
@@ -37,6 +42,7 @@ class Appearance {
         enterToSend: j['enter_to_send'] as bool? ?? true,
         language: j['language'] as String? ?? '',
         loadChars: (j['load_chars'] as num?)?.toInt() ?? 20000,
+        swipeZone: ((j['swipe_zone'] as num?)?.toInt() ?? 6).clamp(1, 10),
       );
 
   Map<String, dynamic> toJson() => {
@@ -50,9 +56,10 @@ class Appearance {
         'enter_to_send': enterToSend,
         'language': language,
         'load_chars': loadChars,
+        'swipe_zone': swipeZone,
       };
 
-  Appearance copyWith({String? themeMode, int? seed, double? fontScale, bool? compact, bool? fullWidth, bool? showAvatars, bool? showTokens, bool? enterToSend, String? language, int? loadChars}) =>
+  Appearance copyWith({String? themeMode, int? seed, double? fontScale, bool? compact, bool? fullWidth, bool? showAvatars, bool? showTokens, bool? enterToSend, String? language, int? loadChars, int? swipeZone}) =>
       Appearance(
         themeMode: themeMode ?? this.themeMode,
         seed: seed ?? this.seed,
@@ -64,6 +71,7 @@ class Appearance {
         enterToSend: enterToSend ?? this.enterToSend,
         language: language ?? this.language,
         loadChars: loadChars ?? this.loadChars,
+        swipeZone: swipeZone ?? this.swipeZone,
       );
 
   ThemeMode get mode => switch (themeMode) {
