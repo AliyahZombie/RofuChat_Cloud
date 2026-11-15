@@ -910,11 +910,14 @@ async fn wait_title(h: &Harness, cid: &str) -> String {
 }
 
 async fn title_generation(h: &Harness, mock: &MockServer) {
+    for kind in ["openai", "responses"] {
+        title_generation_for_provider(h, mock, kind).await;
+    }
+}
+
+async fn title_generation_for_provider(h: &Harness, mock: &MockServer, kind: &str) {
     let provider = h
-        .post(
-            "/providers",
-            json!({"kind":"responses","base_url":mock.url}),
-        )
+        .post("/providers", json!({"kind":kind,"base_url":mock.url}))
         .await;
     let role = h
         .post(
@@ -922,12 +925,11 @@ async fn title_generation(h: &Harness, mock: &MockServer) {
             json!({"provider_id":provider["id"],"model_id":"role-title-regression"}),
         )
         .await;
-    let fast = h
-        .post(
-            "/models",
-            json!({"provider_id":provider["id"],"model_id":"fast-title-regression"}),
-        )
-        .await;
+    let fast_model = json!({
+        "provider_id":provider["id"], "model_id":"fast-title-regression",
+        "max_output":73, "reasoning":true,
+    });
+    let fast = h.post("/models", fast_model).await;
     let fail = h
         .post(
             "/models",
@@ -979,9 +981,10 @@ async fn title_generation(h: &Harness, mock: &MockServer) {
         assert_eq!(requests[0]["model"], "role-title-regression");
         if called {
             assert_ne!(requests[1]["model"], "role-title-regression");
+            assert_uncapped_short_request(&requests[1]);
             if mid == text(&fast, "id") {
                 assert_eq!(requests[1]["model"], "fast-title-regression");
-                let instruction = text(&requests[1], "instructions");
+                let instruction = upstream_system(&requests[1]);
                 for required in [
                     "16 Chinese characters",
                     "6 English words",
@@ -1193,7 +1196,14 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
         );
     }
     for kind in ["openai", "responses"] {
-        let (model, mut c, _) = h.fixture(mock, kind, "http").await;
+        let (mut model, mut c, _) = h.fixture(mock, kind, "http").await;
+        model["max_output"] = json!(73);
+        h.json(
+            Method::PUT,
+            &format!("/models/{}", text(&model, "id")),
+            model.clone(),
+        )
+        .await;
         c["card"] = json!({"system_prompt":"Switch contract"});
         c["tool_ids"] = json!([]);
         c["mcp"] = json!([]);
@@ -1356,20 +1366,9 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
         }
         assert_eq!(requests[0]["model"], model["model_id"]); // unchanged character-model fallback
         assert!(system.contains("never a message to answer or continue"));
-        let token_key = if kind == "responses" {
-            "max_output_tokens"
-        } else {
-            "max_tokens"
-        };
-        assert_eq!(requests[0][token_key], 400);
-        for key in [
-            "reasoning",
-            "reasoning_effort",
-            "thinking",
-            "enable_thinking",
-        ] {
-            assert!(requests[0].get(key).is_none(), "unexpected {key}");
-        }
+        assert_uncapped_short_request(&requests[0]);
+        // The mock streams reasoning before the visible note; only content is accepted.
+        assert!(!text(&cleaned, "actual").contains("reasoning"));
 
         // An overlong or empty cleaned response retries once, using exactly the same input.
         for first in [
@@ -1386,6 +1385,9 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
             assert_eq!(retried["actual"], "Rofu waited for Alice.");
             let requests = mock.state.requests.lock().await.clone();
             assert_eq!(requests.len(), 2);
+            for request in &requests {
+                assert_uncapped_short_request(request);
+            }
             assert_eq!(upstream_user(&requests[0]), upstream_user(&requests[1]));
             let input_length =
                 visible.chars().count() + "\n[tool] dice() → ".chars().count() + 120 + 200;
@@ -1411,7 +1413,7 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
         );
         assert!(error.contains("attempt 2: reasoning-only"), "{error}");
         assert!(
-            error.contains("last raw output (first 160 characters): \"<think>empty</think>\""),
+            error.contains("last content preview (first 160 characters): \"<think>empty</think>\""),
             "{error}"
         );
 
@@ -1437,7 +1439,7 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
             assert_eq!(mock.state.requests.lock().await.len(), 1);
         }
 
-        // Empty content at a length cutoff must distinguish reasoning-only from no output.
+        // Provider cutoffs with empty content are identified even without reasoning deltas.
         for reasoning in [
             String::new(),
             format!("PRIVATE MODEL REASONING {} END", "思".repeat(200)),
@@ -1449,17 +1451,21 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
             assert_eq!(failed["actual_status"], "failed");
             assert!(failed["actual"].is_null());
             let error = text(&failed, "actual_error");
-            let expected = if reasoning.is_empty() {
-                "empty output"
-            } else {
-                "reasoning-only"
-            };
+            let expected = "truncated while reasoning";
             assert!(error.contains(&format!("attempt 1: {expected}")), "{error}");
             assert!(error.contains(&format!("attempt 2: {expected}")), "{error}");
+            assert!(
+                error.contains("last reasoning preview (first 160 characters)"),
+                "{error}"
+            );
+            assert!(!error.contains("last output"), "{error}");
             assert!(error.contains(&reasoning.chars().take(160).collect::<String>()));
             assert!(!error.contains(" END"));
             let requests = mock.state.requests.lock().await.clone();
             assert_eq!(requests.len(), 2);
+            for request in &requests {
+                assert_uncapped_short_request(request);
+            }
             assert!(upstream_system(&requests[1]).contains("Your previous output was empty"));
             mock.state.actual.lock().await.clear();
         }
@@ -1475,7 +1481,7 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
         assert!(error.contains("attempt 1: provider error"), "{error}");
         assert!(error.contains("mock stream failure"), "{error}");
         assert!(
-            error.contains("last raw output (first 160 characters): \"partial\""),
+            error.contains("last content preview (first 160 characters): \"partial\""),
             "{error}"
         );
         h.json(Method::PUT, &model_path, model.clone()).await;
@@ -1487,6 +1493,20 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
             .any(|m| text(m, "content") == "Rofu waited for Alice."));
     }
     h.json(Method::PUT, "/settings", json!({})).await;
+}
+
+fn assert_uncapped_short_request(request: &Value) {
+    for key in [
+        "max_tokens",
+        "max_output_tokens",
+        "max_completion_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "thinking",
+        "enable_thinking",
+    ] {
+        assert!(request.get(key).is_none(), "unexpected {key}: {request}");
+    }
 }
 
 fn upstream_system(request: &Value) -> String {

@@ -25,6 +25,16 @@ pub struct Request {
     pub tools: Vec<Value>,
 }
 impl Request {
+    /// Short visible answers may still require substantial mandatory reasoning.
+    /// Suppress both explicit limits and the model's default output limit.
+    pub fn without_output_cap(mut self) -> Self {
+        if let Some(params) = self.params.as_object_mut() {
+            params.remove("max_tokens");
+        }
+        self.model["max_output"] = json!(0);
+        self
+    }
+
     pub fn body(&self) -> Value {
         let responses = self.provider["kind"] == "responses";
         let mut body = json!({"model":self.model["model_id"],"stream":true});
@@ -116,7 +126,7 @@ struct Parser<'a> {
     calls: BTreeMap<i64, Value>,
     usage: Option<Value>,
     output: String,
-    raw: &'a mut String,
+    diagnostics: &'a mut Completion,
     tx: UnboundedSender<Event>,
 }
 impl Parser<'_> {
@@ -165,7 +175,7 @@ impl Parser<'_> {
         if self.responses {
             match text(&v, "type").as_str() {
                 "response.output_text.delta" => {
-                    self.raw.push_str(&text(&v, "delta"));
+                    self.diagnostics.raw.push_str(&text(&v, "delta"));
                     self.text(&text(&v, "delta"));
                 }
                 "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
@@ -177,6 +187,9 @@ impl Parser<'_> {
                     self.emit(Event::ToolCall(json!({"id":if cid.is_empty(){format!("call_0_{}",id())}else{cid},"name":c["name"],"arguments":c["arguments"]})));
                 }
                 "response.completed" | "response.incomplete" => {
+                    self.diagnostics.truncated |= v["type"] == "response.incomplete"
+                        || v["response"]["status"] == "incomplete"
+                        || v["response"]["incomplete_details"]["reason"] == "max_output_tokens";
                     let u = &v["response"]["usage"];
                     if u.is_object() {
                         self.usage = Some(
@@ -190,9 +203,10 @@ impl Parser<'_> {
         } else {
             if let Some(choices) = v["choices"].as_array() {
                 for choice in choices.iter().take(1) {
+                    self.diagnostics.truncated |= choice["finish_reason"] == "length";
                     let d = &choice["delta"];
                     if let Some(s) = d["content"].as_str() {
-                        self.raw.push_str(s);
+                        self.diagnostics.raw.push_str(s);
                         self.text(s);
                     }
                     if let Some(s) = d["reasoning_content"]
@@ -238,14 +252,14 @@ pub async fn stream(
     request: Request,
     tx: UnboundedSender<Event>,
 ) -> Result<()> {
-    stream_with_raw(client, request, tx, &mut String::new()).await
+    stream_with_diagnostics(client, request, tx, &mut Completion::default()).await
 }
 
-async fn stream_with_raw(
+async fn stream_with_diagnostics(
     client: &reqwest::Client,
     request: Request,
     tx: UnboundedSender<Event>,
-    raw: &mut String,
+    diagnostics: &mut Completion,
 ) -> Result<()> {
     let responses = request.provider["kind"] == "responses";
     let url = format!(
@@ -275,7 +289,7 @@ async fn stream_with_raw(
         calls: Default::default(),
         usage: None,
         output: String::new(),
-        raw,
+        diagnostics,
         tx,
     };
     let mut decoder = Decoder::default();
@@ -320,8 +334,10 @@ impl std::error::Error for EmptyCompletion {}
 pub struct Completion {
     pub text: String,
     pub reasoning: String,
+    /// Raw content deltas, including think tags; never a fallback to reasoning.
     pub raw: String,
     pub error: Option<anyhow::Error>,
+    pub truncated: bool,
 }
 
 pub async fn complete_detailed(client: &reqwest::Client, request: Request) -> Completion {
@@ -329,7 +345,7 @@ pub async fn complete_detailed(client: &reqwest::Client, request: Request) -> Co
     let mut completion = Completion::default();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(120),
-        stream_with_raw(client, request, tx, &mut completion.raw),
+        stream_with_diagnostics(client, request, tx, &mut completion),
     )
     .await;
     completion.error = match result {
@@ -342,9 +358,6 @@ pub async fn complete_detailed(client: &reqwest::Client, request: Request) -> Co
             Event::Reasoning(t) => completion.reasoning.push_str(&t),
             _ => {}
         }
-    }
-    if completion.raw.is_empty() {
-        completion.raw = completion.reasoning.clone();
     }
     completion
 }
@@ -405,15 +418,29 @@ mod tests {
             calls: Default::default(),
             usage: None,
             output: String::new(),
-            raw: &mut String::new(),
+            diagnostics: &mut Completion::default(),
             tx,
         };
         p.parse(&json!({"type":"response.incomplete","response":{"usage":{"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":2}}}}).to_string()).unwrap();
         assert_eq!(p.usage.as_ref().unwrap()["cached"], 4);
+        assert!(p.diagnostics.truncated);
+        for response in [
+            json!({"status":"incomplete"}),
+            json!({"incomplete_details":{"reason":"max_output_tokens"}}),
+        ] {
+            p.diagnostics.truncated = false;
+            p.parse(&json!({"type":"response.completed","response":response}).to_string())
+                .unwrap();
+            assert!(p.diagnostics.truncated);
+        }
         assert!(p
             .parse(&json!({"type":"response.failed","response":{"error":"failed"}}).to_string())
             .is_err());
         p.responses = false;
+        p.diagnostics.truncated = false;
+        p.parse(&json!({"choices":[{"delta":{},"finish_reason":"length"}]}).to_string())
+            .unwrap();
+        assert!(p.diagnostics.truncated);
         p.parse(&json!({"usage":{"prompt_tokens":30,"completion_tokens":8,"prompt_cache_hit_tokens":9}}).to_string()).unwrap();
         assert_eq!(p.usage.as_ref().unwrap()["cached"], 9);
         assert!(p
@@ -429,7 +456,7 @@ mod tests {
             calls: Default::default(),
             usage: None,
             output: String::new(),
-            raw: &mut String::new(),
+            diagnostics: &mut Completion::default(),
             tx,
         };
         p.parse(&json!({"usage":{"completion_tokens":7}}).to_string())

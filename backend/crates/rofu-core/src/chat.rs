@@ -71,16 +71,10 @@ pub async fn fast(
     let (model, provider) = resolve(s, uid, character, true)
         .await
         .map_err(|e| anyhow::anyhow!(e.message))?;
-    complete_short_request(s, model, provider, instruction, input).await
-}
-async fn complete_short_request(
-    s: &AppState,
-    model: Value,
-    provider: Value,
-    instruction: &str,
-    input: &str,
-) -> Result<String> {
     let request = short_request(model, provider, instruction, input, json!({}));
+    complete_short_request(s, request).await
+}
+async fn complete_short_request(s: &AppState, request: llm::Request) -> Result<String> {
     tokio::select! {
         _=s.shutdown.cancelled()=>bail!("server stopped"),
         result=llm::complete(&s.client,request)=>result,
@@ -125,14 +119,10 @@ async fn complete_actual_request(
         let (model, provider) = resolve(s, uid, c, true)
             .await
             .map_err(|e| anyhow::anyhow!(e.message))?;
+        // Leave room for mandatory reasoning; validate the cleaned note after completion.
         // Do not inherit character reasoning settings or enable provider thinking modes.
-        let request = short_request(
-            model,
-            provider,
-            instruction,
-            input,
-            json!({"max_tokens":400}),
-        );
+        let request =
+            short_request(model, provider, instruction, input, json!({})).without_output_cap();
         Ok(llm::complete_detailed(&s.client, request).await)
     };
     tokio::select! {
@@ -239,11 +229,13 @@ async fn conversation_title(s: &AppState, uid: &str, first: &str) -> String {
         if !flag(&provider, "enabled", true) {
             return None;
         }
-        let output = complete_short_request(
-            s, model, provider,
+        let request = short_request(
+            model, provider,
             "Generate a short conversation title. Output only the title itself, at most 16 Chinese characters or 6 English words, in the user's language. No quotes or trailing punctuation.",
             first,
-        ).await.ok()?;
+            json!({}),
+        ).without_output_cap();
+        let output = complete_short_request(s, request).await.ok()?;
         clean_title(&output)
     }.await;
     generated.unwrap_or_else(|| fallback_title(first))
@@ -866,7 +858,8 @@ async fn generate_actual(s: &AppState, uid: &str, message: &Value, c: &Value) ->
     let framed = format!("Condense the following roleplay reply.\n<reply>\n{input}\n</reply>");
     let mut failures = Vec::new();
     let mut feedback = String::new();
-    let mut last_raw = String::new();
+    let mut last_preview = String::new();
+    let mut preview_source = "reasoning";
     for attempt in 1..=2 {
         let prompt = format!("{instruction}{feedback}");
         let output = match complete_actual_request(
@@ -885,7 +878,12 @@ async fn generate_actual(s: &AppState, uid: &str, message: &Value, c: &Value) ->
                 break;
             }
         };
-        last_raw = output.raw;
+        // Raw content keeps think tags for diagnostics without mixing in reasoning deltas.
+        (preview_source, last_preview) = if output.raw.is_empty() {
+            ("reasoning", output.reasoning.clone())
+        } else {
+            ("content", output.raw)
+        };
         if let Some(error) = output.error {
             failures.push(format!("attempt {attempt}: provider error: {error}"));
             break;
@@ -897,7 +895,9 @@ async fn generate_actual(s: &AppState, uid: &str, message: &Value, c: &Value) ->
         }
         let reason = if note.is_empty() {
             feedback = format!("\nYour previous output was empty. Output only the note, at most {limit} characters.");
-            if output.text.trim().is_empty() && !output.reasoning.trim().is_empty() {
+            if output.text.trim().is_empty() && output.truncated {
+                "truncated while reasoning (content empty; reasoning is not a note)".to_owned()
+            } else if output.text.trim().is_empty() && !output.reasoning.trim().is_empty() {
                 "reasoning-only output (content empty; reasoning is not a note)".to_owned()
             } else {
                 "empty output after cleaning".to_owned()
@@ -913,8 +913,8 @@ async fn generate_actual(s: &AppState, uid: &str, message: &Value, c: &Value) ->
     } else {
         "one attempt"
     };
-    let preview: String = last_raw.chars().take(160).collect();
-    bail!("instant compression failed after {attempts}: {}; last raw output (first 160 characters): {preview:?}", failures.join("; "))
+    let preview: String = last_preview.chars().take(160).collect();
+    bail!("instant compression failed after {attempts}: {}; last {preview_source} preview (first 160 characters): {preview:?}", failures.join("; "))
 }
 
 pub async fn actual(s: &AppState, uid: &str, m: &mut Value, c: &Value) -> Result<()> {
