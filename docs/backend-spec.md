@@ -123,7 +123,7 @@ void rofu_free_string(char* s);
 每个角色独立配置：
 ```json
 {
-  "id": "…", "name": "露芙", "avatar": "data:image/png;base64,…" ,   // 或 http(s) URL，可空
+  "id": "…", "name": "露芙", "avatar": "/api/attachments/…" ,   // data URL 上传后返回 blob 路径；或 http(s) URL，可空
   "model_id": "…",           // Model.id；空 = 用用户默认模型
   "card": { /* SillyTavern V2 data 段，见 4.3.1 */ },
   "mcp": [ {"name": "search", "url": "https://…/mcp", "transport": "http", "headers": {"Authorization": "Bearer …"}, "enabled": true} ],
@@ -135,7 +135,7 @@ void rofu_free_string(char* s);
   "sort": 0
 }
 ```
-- 头像较大时（>1MB）允许存为 data URL，但列表接口 `GET /api/characters` 返回的 `avatar` 若为 data URL 则替换为 `/api/characters/{id}/avatar`（返回图片二进制，支持 `?token=`）。单个 GET 返回完整值。
+- 头像继续接受 data URL；保存/导入时移到独立 blob，列表和单个 GET 的 `avatar` 均为 `/api/attachments/{id}`，附加 `avatar_attachment` 元数据。原 `/api/characters/{id}/avatar` 和 PNG 导出仍可用。鉴权、缓存和升级迁移见 `api.md` 的 Image attachments。
 
 #### 4.3.1 SillyTavern 角色卡兼容
 - `card` 字段 = Character Card V2 的 `data`：`name, description, personality, scenario, first_mes, mes_example, creator_notes, system_prompt, post_history_instructions, alternate_greetings[], character_book, tags[], creator, character_version, extensions{}`。
@@ -177,7 +177,7 @@ void rofu_free_string(char* s);
       {"type": "tool", "id": "call_1", "name": "search__scrape", "arguments": "{…}", "result": "…", "is_error": false, "duration_ms": 4700},
       {"type": "text", "text": "以下为…"}
     ],
-    "images": [],                 // user 消息附带图片（data URL）
+    "images": [],                 // user 图片引用 {id,mime,width?,height?,bytes}，兼容 HTTP(S) 字符串；上传仍接受 data URL
     "error": null                 // 生成失败的错误信息
   },
   "model": "…",                   // 生成它的 Model.id
@@ -278,6 +278,8 @@ void rofu_free_string(char* s);
 | POST | `/api/characters` | 创建；缺省 context/memory/params 用默认值 |
 | GET/PUT/DELETE | `/api/characters/{id}` | |
 | GET | `/api/characters/{id}/avatar` | 头像二进制 |
+| POST | `/api/attachments` | 接受 `{data_url}`，返回图片引用（详见 api.md） |
+| GET | `/api/attachments/{id}` | 当前用户图片二进制；ETag/Cache-Control，支持 `?token=` |
 | POST | `/api/characters/import` | 见 4.3.1，返回创建的 Character |
 | GET | `/api/characters/{id}/export?format=json\|png` | |
 | PUT | `/api/characters/order` | `["id1","id2",…]` 重排 sort |

@@ -151,3 +151,24 @@ DELETE /api/messages/u1/swipes/1
 Creating a conversation initializes its greeting versions as `[first_mes, ...alternate_greetings]`, expanding character/user macros in every version. Omitting `greeting_index` activates swipe 0 (`first_mes`); supplying `greeting_index:k` retains the existing zero-based alternate rule and activates swipe `k+1`. The existing rule for an empty or invalid selected greeting is unchanged: no greeting row is inserted. Greetings can be switched/deleted through the message APIs; regenerate requires a user message.
 
 `POST /api/messages/{id}/branch` still copies the conversation through that message (inclusive) with new conversation/message ids, but copies only active contents. Copies contain no swipes or archived tails and appear to clients as index 0/count 1 until new versions are added.
+
+## Image attachments
+
+Message `parts.images` accepts existing data-URL strings on chat/edit uploads and now also accepts attachment references. New and migrated messages return metadata references instead of inline bytes, including in SSE `user_message`, full history, paging, single-message and swipe responses:
+
+```json
+{"parts":{"images":[{"id":"<opaque-id>","mime":"image/png","width":640,"height":480,"bytes":18234}]}}
+```
+
+`width`/`height` are optional (currently extracted from PNG headers); `bytes` is the decoded blob size. Existing HTTP(S) image strings remain supported. Reference ids belong to the authenticated user and supplied reference metadata is replaced by the stored metadata. A reference owned by another user is rejected.
+
+- `POST /api/attachments` with `{"data_url":"data:image/png;base64,..."}` optionally uploads an image ahead of sending and returns its reference. Sending a data URL directly continues to upload automatically. Supported MIME types: PNG, JPEG, GIF, WebP, AVIF and BMP. Decoded images are limited to 24 MiB; the existing 32 MiB JSON body limit still applies.
+- `GET /api/attachments/{id}` returns the original image bytes and MIME type. Authenticate with the existing bearer header or `?token=` mechanism (including browser images and the embedded loopback server). Unknown/other-owner ids return 404; missing authentication returns 401. Responses use `ETag: "<id>"`, `Cache-Control: private, max-age=31536000, immutable`, and `X-Content-Type-Options: nosniff`. A matching `If-None-Match` returns 304 after authentication/ownership checks. Ids include the owner, MIME type and content in a SHA-256 digest; repeated uploads by that owner deduplicate.
+
+Character `avatar` retains its string type. Inline avatar uploads/imports are stored as blobs and returned as `/api/attachments/{id}`, with additive `avatar_attachment` reference metadata. The existing character avatar and PNG export routes resolve stored blobs, preserving export behavior. HTTP(S) avatars keep their existing behavior.
+
+Schema version 2 performs an idempotent startup migration of existing message attachments (including inactive swipes and archived branch tails) and inline character avatars on both SQLite and PostgreSQL. It marks completion only after all rows have been persisted; an interrupted upgrade safely retries. This can make the first startup after upgrade longer. Blob bytes are stored separately from JSON. Blobs remain available for shared references and swipe history; deleting a user removes that user's blobs.
+
+Only the selected vision-provider context resolves image references back to data URLs, server-side, for both Chat Completions and Responses. API history never does this. Pagination `max_chars` continues to ignore images; page `bytes` still measures the compact public JSON array, which now includes only reference metadata, never the referenced blob bytes.
+
+The Flutter client reserves image geometry before loading, loads near the viewport (including the eager newest-turn sliver), caches providers/decoded images, requests display-sized decoding, fades with the emphasized-decelerate curve, and offers retry after failure. Legacy data URLs use an isolate and a bounded shared byte cache on native platforms; web delegates them to the browser's asynchronous image loader. Avatars share memoized image providers across rebuilds.
