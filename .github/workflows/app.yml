@@ -41,15 +41,29 @@ jobs:
         if: hashFiles('backend/Cargo.toml') != ''
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ROFU_ANDROID_ABIS: arm64-v8a x86_64
         run: |
-          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          rustup target add aarch64-linux-android x86_64-linux-android
           cargo install cargo-ndk --locked
           tool/build_native.sh android
-      - run: flutter build apk --release
+      # Same release keystore as release.yml; falls back to debug keys when the secret is unavailable (e.g. forks).
+      - name: Release keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then echo "::warning::No keystore secret; signing with debug keys"; exit 0; fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+          echo "ROFU_KEYSTORE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
+      - name: Build APKs (arm64-v8a, x86_64)
+        env:
+          ROFU_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: flutter build apk --release --split-per-abi --target-platform android-arm64,android-x64
       - uses: actions/upload-artifact@v4
         with:
           name: rofuchat-android
-          path: app/build/app/outputs/flutter-apk/app-release.apk
+          path: |
+            app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            app/build/app/outputs/flutter-apk/app-x86_64-release.apk
 
   linux:
     needs: test

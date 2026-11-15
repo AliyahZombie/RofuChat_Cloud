@@ -14,6 +14,9 @@ case "${1:-}" in
     mkdir -p native/windows && cp "$target_dir/release/rofu_ffi.dll" native/windows/ ;;
   android)
     # requires: cargo install cargo-ndk; rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
-    (cd "$BACKEND" && cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o "$APP/android/app/src/main/jniLibs" build -p rofu-ffi --release) ;;
+    # ROFU_ANDROID_ABIS (space separated) limits the ABIs; default builds all three.
+    abis=${ROFU_ANDROID_ABIS:-"arm64-v8a armeabi-v7a x86_64"}; targs=()
+    for a in $abis; do targs+=(-t "$a"); done
+    (cd "$BACKEND" && cargo ndk "${targs[@]}" -o "$APP/android/app/src/main/jniLibs" build -p rofu-ffi --release) ;;
   *) echo "usage: $0 linux|windows|android"; exit 1 ;;
 esac
