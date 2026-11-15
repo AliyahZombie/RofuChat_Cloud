@@ -1,6 +1,7 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import 'dart:convert';
 
 import '../../core/form_factor.dart';
@@ -68,15 +69,17 @@ class _SidebarState extends ConsumerState<Sidebar> {
           if (!watch)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Column(children: [
-                InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: _addCharacter,
-                  child: CircleAvatar(radius: 24, backgroundColor: scheme.surfaceContainerHighest, child: const Icon(Icons.add)),
-                ),
-                const SizedBox(height: 4),
-                Text(t('添加', 'Add'), style: Theme.of(context).textTheme.labelSmall),
-              ]),
+              child: Column(
+                children: [
+                  InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: _addCharacter,
+                    child: CircleAvatar(radius: 24, backgroundColor: scheme.surfaceContainerHighest, child: const Icon(Icons.add)),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(t('添加', 'Add'), style: Theme.of(context).textTheme.labelSmall),
+                ],
+              ),
             ),
         ],
       ),
@@ -85,7 +88,9 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final list = convs == null
         ? const SizedBox.shrink()
         : convs.when(
-            loading: () => const Center(child: Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator())),
+            loading: () => const Center(
+              child: Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator()),
+            ),
             error: (e, _) => Padding(padding: const EdgeInsets.all(16), child: Text('$e')),
             data: (items) {
               final q = _q.toLowerCase();
@@ -97,21 +102,30 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 final d = DateTime.fromMillisecondsSinceEpoch(c.updatedAt);
                 final day = DateTime(d.year, d.month, d.day);
                 final diff = today.difference(day).inDays;
-                final g = diff <= 0 ? t('今天', 'Today') : diff == 1 ? t('昨天', 'Yesterday') : diff < 7 ? t('7 天内', 'Last 7 days') : t('更早', 'Earlier');
+                final g = diff <= 0
+                    ? t('今天', 'Today')
+                    : diff == 1
+                    ? t('昨天', 'Yesterday')
+                    : diff < 7
+                    ? t('7 天内', 'Last 7 days')
+                    : t('更早', 'Earlier');
                 groups.putIfAbsent(g, () => []).add(c);
               }
               final tiles = <Widget>[
-                  if (filtered.isEmpty)
-                    Padding(padding: const EdgeInsets.all(16), child: Text(t('暂无对话', 'No chats yet'), style: Theme.of(context).textTheme.bodySmall)),
-                  for (final e in groups.entries) ...[
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(8, 10, 8, 4),
-                      child: Text(e.key, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
-                    ),
-                    for (final c in e.value)
-                      GestureDetector(
-                        onSecondaryTapUp: (d) => _convMenu(c, at: d.globalPosition),
-                        child: ListTile(
+                if (filtered.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(t('暂无对话', 'No chats yet'), style: Theme.of(context).textTheme.bodySmall),
+                  ),
+                for (final e in groups.entries) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 10, 8, 4),
+                    child: Text(e.key, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
+                  ),
+                  for (final c in e.value)
+                    GestureDetector(
+                      onSecondaryTapUp: (d) => _convMenu(c, at: d.globalPosition),
+                      child: ListTile(
                         dense: true,
                         visualDensity: VisualDensity.compact,
                         selected: c.id == convId,
@@ -124,8 +138,9 @@ class _SidebarState extends ConsumerState<Sidebar> {
                           _close();
                         },
                         onLongPress: () => _convMenu(c),
-                      )),
-                  ],
+                      ),
+                    ),
+                ],
               ];
               if (watch) return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: tiles);
               return ListView(padding: const EdgeInsets.symmetric(horizontal: 8), children: tiles);
@@ -138,121 +153,150 @@ class _SidebarState extends ConsumerState<Sidebar> {
         ? const SizedBox.shrink()
         : Padding(
             padding: EdgeInsets.fromLTRB(watch ? inset : 12, 4, watch ? inset : 8, 4),
-            child: Row(children: [
-              Expanded(
-                child: watch
-                    ? Text(current.name, style: Theme.of(context).textTheme.titleSmall, overflow: TextOverflow.ellipsis)
-                    : SizedBox(
-                        height: 38,
-                        child: TextField(
-                          decoration: InputDecoration(prefixIcon: const Icon(Icons.search, size: 18), hintText: t('搜索对话', 'Search chats'), contentPadding: EdgeInsets.zero),
-                          onChanged: (v) => setState(() => _q = v),
+            child: Row(
+              children: [
+                Expanded(
+                  child: watch
+                      ? Text(current.name, style: Theme.of(context).textTheme.titleSmall, overflow: TextOverflow.ellipsis)
+                      : SizedBox(
+                          height: 38,
+                          child: TextField(
+                            decoration: InputDecoration(prefixIcon: const Icon(Icons.search, size: 18), hintText: t('搜索对话', 'Search chats'), contentPadding: EdgeInsets.zero),
+                            onChanged: (v) => setState(() => _q = v),
+                          ),
                         ),
-                      ),
-              ),
-              IconButton(
-                tooltip: t('新对话', 'New chat'),
-                onPressed: () async {
-                  _close();
-                  widget.onNewConversation(current);
-                },
-                icon: const Icon(Icons.add_comment_outlined),
-              ),
-            ]),
+                ),
+                IconButton(
+                  tooltip: t('新对话', 'New chat'),
+                  onPressed: () async {
+                    _close();
+                    widget.onNewConversation(current);
+                  },
+                  icon: const Icon(Icons.add_comment_outlined),
+                ),
+              ],
+            ),
           );
 
-    final footer = watch
-        ? Padding(
-            padding: EdgeInsets.symmetric(horizontal: inset, vertical: 4),
-            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              IconButton(onPressed: () => _push(const SettingsPage()), icon: const Icon(Icons.settings_outlined)),
-            ]),
-          )
-        : Column(children: [
-            const Divider(),
-            _NavTile(icon: Icons.psychology_alt_outlined, label: t('记忆', 'Memory'), onTap: () => _push(const MemoryPage())),
-            _NavTile(icon: Icons.code_rounded, label: t('本地工具', 'Local tools'), onTap: () => _push(const ToolsPage())),
-            _NavTile(icon: Icons.settings_outlined, label: t('设置', 'Settings'), onTap: () => _push(const SettingsPage())),
-            ListTile(
-              dense: true,
-              leading: Icon(app.active?.isLocal == true ? Icons.phone_android_rounded : Icons.cloud_outlined, size: 20),
-              title: Text(app.active?.isLocal == true ? t('本地后端', 'Local backend') : (app.active?.name ?? ''), maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(app.user?.username ?? '', maxLines: 1),
-              trailing: const Icon(Icons.swap_horiz, size: 18),
-              onTap: () => ref.read(appProvider.notifier).showConnect(),
-            ),
-          ]);
+    final footer = Column(
+      children: [
+        const Divider(),
+        _NavTile(icon: Icons.psychology_alt_outlined, label: t('记忆', 'Memory'), onTap: () => _push(const MemoryPage())),
+        _NavTile(icon: Icons.code_rounded, label: t('本地工具', 'Local tools'), onTap: () => _push(const ToolsPage())),
+        _NavTile(icon: Icons.settings_outlined, label: t('设置', 'Settings'), onTap: () => _push(const SettingsPage())),
+        ListTile(
+          dense: true,
+          leading: Icon(app.active?.isLocal == true ? Icons.phone_android_rounded : Icons.cloud_outlined, size: 20),
+          title: Text(app.active?.isLocal == true ? t('本地后端', 'Local backend') : (app.active?.name ?? ''), maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: Text(app.user?.username ?? '', maxLines: 1),
+          trailing: const Icon(Icons.swap_horiz, size: 18),
+          onTap: () => ref.read(appProvider.notifier).showConnect(),
+        ),
+      ],
+    );
 
     return SafeArea(
       child: Material(
         color: widget.inDrawer ? Colors.transparent : scheme.surfaceContainerLow,
-        child: Column(children: [
-          switcher,
-          header,
-          Expanded(child: list),
-          footer,
-        ]),
+        child: Column(
+          children: [
+            switcher,
+            header,
+            Expanded(child: list),
+            footer,
+          ],
+        ),
       ),
     );
   }
 
-  /// Watch: everything scrolls in one list so the chats get the whole screen. The character is
-  /// one row that expands into a picker; navigation sits at the end of the list.
+  /// Watch (as in RikkaHub): the chats scroll in the middle; the current character and a row
+  /// of round buttons stay fixed at the bottom. Tapping the character expands a picker above it.
   Widget _watchLayout(List<Character> chars, Character? current, Widget convs, AppState app, double inset) {
     final scheme = Theme.of(context).colorScheme;
+    final h = MediaQuery.sizeOf(context).height;
+    Widget round(IconData icon, String tip, VoidCallback onTap) => Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 3),
+      child: IconButton.filledTonal(tooltip: tip, onPressed: onTap, icon: Icon(icon, size: 18), constraints: const BoxConstraints.tightFor(width: 38, height: 38), padding: EdgeInsets.zero),
+    );
     return SafeArea(
       child: Material(
         color: Colors.transparent,
-        child: ListView(
-          padding: EdgeInsets.fromLTRB(inset + 4, 8, inset + 4, 24),
+        child: Column(
           children: [
-            ListTile(
-              dense: true,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              tileColor: scheme.surfaceContainerHigh,
-              leading: current == null ? const Icon(Icons.person_outline) : CharacterAvatar(character: current, size: 26),
-              title: Text(current?.name ?? t('选择角色', 'Pick a character'), maxLines: 1, overflow: TextOverflow.ellipsis),
-              trailing: TurnChevron(open: _charsOpen),
-              onTap: () => setState(() => _charsOpen = !_charsOpen),
-              onLongPress: current == null ? null : () => _charMenu(current),
+            Expanded(
+              child: ListView(
+                padding: EdgeInsets.fromLTRB(inset + 4, 6, inset + 4, 6),
+                children: [
+                  if (current != null)
+                    ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                      leading: const Icon(Icons.add_comment_outlined, size: 20),
+                      title: Text(t('新对话', 'New chat')),
+                      onTap: () {
+                        _close();
+                        widget.onNewConversation(current);
+                      },
+                    ),
+                  convs,
+                ],
+              ),
             ),
             Collapsible(
               open: _charsOpen,
-              child: Column(children: [
-                for (final c in chars)
-                  ListTile(
-                    dense: true,
-                    contentPadding: const EdgeInsets.only(left: 20, right: 8),
-                    leading: CharacterAvatar(character: c, size: 22),
-                    title: Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                    trailing: c.id == current?.id ? Icon(Icons.check, size: 16, color: scheme.primary) : null,
-                    onTap: () {
-                      ref.read(selectedCharacterIdProvider.notifier).select(c.id);
-                      ref.read(selectedConversationIdProvider.notifier).select(null);
-                      setState(() => _charsOpen = false);
-                    },
-                    onLongPress: () => _charMenu(c),
-                  ),
-              ]),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: h * 0.45),
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.symmetric(horizontal: inset + 4),
+                  children: [
+                    for (final c in chars)
+                      ListTile(
+                        dense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                        leading: CharacterAvatar(character: c, size: 24),
+                        title: Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                        trailing: c.id == current?.id ? Icon(Icons.check, size: 16, color: scheme.primary) : null,
+                        onTap: () {
+                          ref.read(selectedCharacterIdProvider.notifier).select(c.id);
+                          ref.read(selectedConversationIdProvider.notifier).select(null);
+                          setState(() => _charsOpen = false);
+                        },
+                        onLongPress: () => _charMenu(c),
+                      ),
+                  ],
+                ),
+              ),
             ),
-            if (current != null)
-              ListTile(
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: inset + 4),
+              child: ListTile(
                 dense: true,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                leading: const Icon(Icons.add_comment_outlined, size: 20),
-                title: Text(t('新对话', 'New chat')),
-                onTap: () {
-                  _close();
-                  widget.onNewConversation(current);
-                },
+                leading: current == null ? const Icon(Icons.person_outline) : CharacterAvatar(character: current, size: 26),
+                title: Text(current?.name ?? t('选择角色', 'Pick a character'), maxLines: 1, overflow: TextOverflow.ellipsis),
+                trailing: TurnChevron(open: !_charsOpen),
+                onTap: () => setState(() => _charsOpen = !_charsOpen),
+                onLongPress: current == null ? null : () => _charMenu(current),
               ),
-            convs,
-            const Divider(),
-            _NavTile(icon: Icons.psychology_alt_outlined, label: t('记忆', 'Memory'), onTap: () => _push(const MemoryPage())),
-            _NavTile(icon: Icons.code_rounded, label: t('本地工具', 'Local tools'), onTap: () => _push(const ToolsPage())),
-            _NavTile(icon: Icons.settings_outlined, label: t('设置', 'Settings'), onTap: () => _push(const SettingsPage())),
-            _NavTile(icon: Icons.swap_horiz, label: app.active?.name ?? t('连接', 'Connection'), onTap: () => ref.read(appProvider.notifier).showConnect()),
+            ),
+            Padding(
+              padding: EdgeInsets.fromLTRB(inset + 4, 0, inset + 4, 8),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    round(Icons.psychology_alt_outlined, t('记忆', 'Memory'), () => _push(const MemoryPage())),
+                    round(Icons.code_rounded, t('本地工具', 'Local tools'), () => _push(const ToolsPage())),
+                    round(Icons.swap_horiz, t('连接', 'Connection'), () => ref.read(appProvider.notifier).showConnect()),
+                    const SizedBox(width: 10),
+                    round(Icons.settings_outlined, t('设置', 'Settings'), () => _push(const SettingsPage())),
+                  ],
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -269,10 +313,13 @@ class _SidebarState extends ConsumerState<Sidebar> {
       context: context,
       showDragHandle: true,
       builder: (c) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(leading: const Icon(Icons.person_add_alt), title: Text(t('新建角色', 'New character')), onTap: () => Navigator.pop(c, 'new')),
-          ListTile(leading: const Icon(Icons.file_open_outlined), title: Text(t('导入角色卡（PNG / JSON）', 'Import card (PNG / JSON)')), onTap: () => Navigator.pop(c, 'import')),
-        ]),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(leading: const Icon(Icons.person_add_alt), title: Text(t('新建角色', 'New character')), onTap: () => Navigator.pop(c, 'new')),
+            ListTile(leading: const Icon(Icons.file_open_outlined), title: Text(t('导入角色卡（PNG / JSON）', 'Import card (PNG / JSON)')), onTap: () => Navigator.pop(c, 'import')),
+          ],
+        ),
       ),
     );
     if (!mounted || v == null) return;
@@ -322,10 +369,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
   }
 
   Future<void> _convMenu(Conversation c, {Offset? at}) async {
-    final v = await showActions(context, [
-      MenuAction('rename', Icons.drive_file_rename_outline, t('重命名', 'Rename')),
-      MenuAction('del', Icons.delete_outline, t('删除', 'Delete'), danger: true),
-    ], at: at);
+    final v = await showActions(context, [MenuAction('rename', Icons.drive_file_rename_outline, t('重命名', 'Rename')), MenuAction('del', Icons.delete_outline, t('删除', 'Delete'), danger: true)], at: at);
     if (!mounted || v == null) return;
     final api = ref.read(apiProvider);
     try {
@@ -372,17 +416,27 @@ class _CharChip extends StatelessWidget {
         onSecondaryTapUp: (d) => onMenu(d.globalPosition),
         child: SizedBox(
           width: size + 14,
-          child: Column(children: [
-            Container(
-              padding: const EdgeInsets.all(2),
-              decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: selected ? scheme.primary : Colors.transparent, width: 2)),
-              child: CharacterAvatar(character: character, size: size),
-            ),
-            if (!compact) ...[
-              const SizedBox(height: 2),
-              Text(character.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: selected ? scheme.primary : null)),
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: selected ? scheme.primary : Colors.transparent, width: 2),
+                ),
+                child: CharacterAvatar(character: character, size: size),
+              ),
+              if (!compact) ...[
+                const SizedBox(height: 2),
+                Text(
+                  character.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(color: selected ? scheme.primary : null),
+                ),
+              ],
             ],
-          ]),
+          ),
         ),
       ),
     );
