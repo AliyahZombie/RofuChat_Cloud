@@ -25,60 +25,73 @@ class Appearance {
     this.fullWidth = true,
     this.showAvatars = true,
     this.showTokens = true,
-    this.enterToSend = true,
+    this.enterToSend = false,
     this.language = '',
     this.loadChars = 20000,
     this.swipeZone = 6,
   });
 
   factory Appearance.fromJson(Map<String, dynamic> j) => Appearance(
-        themeMode: j['theme_mode'] as String? ?? 'system',
-        seed: (j['seed'] as num?)?.toInt() ?? 0xFF5C6BC0,
-        fontScale: (j['font_scale'] as num?)?.toDouble() ?? 1.0,
-        compact: j['compact'] as bool? ?? true,
-        fullWidth: j['full_width'] as bool? ?? true,
-        showAvatars: j['show_avatars'] as bool? ?? true,
-        showTokens: j['show_tokens'] as bool? ?? true,
-        enterToSend: j['enter_to_send'] as bool? ?? true,
-        language: j['language'] as String? ?? '',
-        loadChars: (j['load_chars'] as num?)?.toInt() ?? 20000,
-        swipeZone: ((j['swipe_zone'] as num?)?.toInt() ?? 6).clamp(1, 10),
-      );
+    themeMode: j['theme_mode'] as String? ?? 'system',
+    seed: (j['seed'] as num?)?.toInt() ?? 0xFF5C6BC0,
+    fontScale: (j['font_scale'] as num?)?.toDouble() ?? 1.0,
+    compact: j['compact'] as bool? ?? true,
+    fullWidth: j['full_width'] as bool? ?? true,
+    showAvatars: j['show_avatars'] as bool? ?? true,
+    showTokens: j['show_tokens'] as bool? ?? true,
+    // New key: the old enter_to_send was saved as true by default, so it is ignored and
+    // everyone starts on Enter = newline.
+    enterToSend: j['enter_sends'] as bool? ?? false,
+    language: j['language'] as String? ?? '',
+    loadChars: (j['load_chars'] as num?)?.toInt() ?? 20000,
+    swipeZone: ((j['swipe_zone'] as num?)?.toInt() ?? 6).clamp(1, 10),
+  );
 
   Map<String, dynamic> toJson() => {
-        'theme_mode': themeMode,
-        'seed': seed,
-        'font_scale': fontScale,
-        'compact': compact,
-        'full_width': fullWidth,
-        'show_avatars': showAvatars,
-        'show_tokens': showTokens,
-        'enter_to_send': enterToSend,
-        'language': language,
-        'load_chars': loadChars,
-        'swipe_zone': swipeZone,
-      };
+    'theme_mode': themeMode,
+    'seed': seed,
+    'font_scale': fontScale,
+    'compact': compact,
+    'full_width': fullWidth,
+    'show_avatars': showAvatars,
+    'show_tokens': showTokens,
+    'enter_sends': enterToSend,
+    'language': language,
+    'load_chars': loadChars,
+    'swipe_zone': swipeZone,
+  };
 
-  Appearance copyWith({String? themeMode, int? seed, double? fontScale, bool? compact, bool? fullWidth, bool? showAvatars, bool? showTokens, bool? enterToSend, String? language, int? loadChars, int? swipeZone}) =>
-      Appearance(
-        themeMode: themeMode ?? this.themeMode,
-        seed: seed ?? this.seed,
-        fontScale: fontScale ?? this.fontScale,
-        compact: compact ?? this.compact,
-        fullWidth: fullWidth ?? this.fullWidth,
-        showAvatars: showAvatars ?? this.showAvatars,
-        showTokens: showTokens ?? this.showTokens,
-        enterToSend: enterToSend ?? this.enterToSend,
-        language: language ?? this.language,
-        loadChars: loadChars ?? this.loadChars,
-        swipeZone: swipeZone ?? this.swipeZone,
-      );
+  Appearance copyWith({
+    String? themeMode,
+    int? seed,
+    double? fontScale,
+    bool? compact,
+    bool? fullWidth,
+    bool? showAvatars,
+    bool? showTokens,
+    bool? enterToSend,
+    String? language,
+    int? loadChars,
+    int? swipeZone,
+  }) => Appearance(
+    themeMode: themeMode ?? this.themeMode,
+    seed: seed ?? this.seed,
+    fontScale: fontScale ?? this.fontScale,
+    compact: compact ?? this.compact,
+    fullWidth: fullWidth ?? this.fullWidth,
+    showAvatars: showAvatars ?? this.showAvatars,
+    showTokens: showTokens ?? this.showTokens,
+    enterToSend: enterToSend ?? this.enterToSend,
+    language: language ?? this.language,
+    loadChars: loadChars ?? this.loadChars,
+    swipeZone: swipeZone ?? this.swipeZone,
+  );
 
   ThemeMode get mode => switch (themeMode) {
-        'light' => ThemeMode.light,
-        'dark' || 'black' => ThemeMode.dark,
-        _ => ThemeMode.system,
-      };
+    'light' => ThemeMode.light,
+    'dark' || 'black' => ThemeMode.dark,
+    _ => ThemeMode.system,
+  };
 }
 
 const seedPresets = <(String, String, int)>[
@@ -103,12 +116,26 @@ ThemeData buildTheme(Appearance a, Brightness b) {
       surfaceContainerHighest: const Color(0xFF1E1E23),
     );
   }
-  final base = ThemeData(colorScheme: scheme, useMaterial3: true, brightness: b);
+  final base = ThemeData(
+    colorScheme: scheme,
+    useMaterial3: true,
+    brightness: b,
+  );
   return base.copyWith(
     scaffoldBackgroundColor: scheme.surface,
     visualDensity: a.compact ? VisualDensity.compact : VisualDensity.standard,
-    appBarTheme: AppBarTheme(backgroundColor: scheme.surface, surfaceTintColor: Colors.transparent, scrolledUnderElevation: 0),
-    dividerTheme: DividerThemeData(color: scheme.outlineVariant.withValues(alpha: 0.4), space: 1),
-    inputDecorationTheme: const InputDecorationTheme(border: OutlineInputBorder(), isDense: true),
+    appBarTheme: AppBarTheme(
+      backgroundColor: scheme.surface,
+      surfaceTintColor: Colors.transparent,
+      scrolledUnderElevation: 0,
+    ),
+    dividerTheme: DividerThemeData(
+      color: scheme.outlineVariant.withValues(alpha: 0.4),
+      space: 1,
+    ),
+    inputDecorationTheme: const InputDecorationTheme(
+      border: OutlineInputBorder(),
+      isDense: true,
+    ),
   );
 }

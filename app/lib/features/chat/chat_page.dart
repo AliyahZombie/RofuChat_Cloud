@@ -13,6 +13,7 @@ import '../../core/format.dart';
 import '../../core/i18n.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
+import '../../widgets/back_guard.dart';
 import '../../widgets/common.dart';
 import '../../widgets/slide_drawer.dart';
 import '../../widgets/motion.dart';
@@ -68,23 +69,38 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     } else if (convId == null) {
       _ctl = ChatController.draft(ref.read(apiProvider), ch!);
     } else {
-      _ctl = ChatController(ref.read(apiProvider), convId, maxChars: ref.read(appearanceProvider).loadChars)..load();
+      _ctl = ChatController(
+        ref.read(apiProvider),
+        convId,
+        maxChars: ref.read(appearanceProvider).loadChars,
+      )..load();
     }
     return _ctl;
   }
 
   /// First send from a draft: create the conversation with the greeting shown, load it, then
   /// send on the new controller before anything else can touch it (no lost first message).
-  Future<void> _startConversation(Character ch, String text, List<String> images) async {
+  Future<void> _startConversation(
+    Character ch,
+    String text,
+    List<String> images,
+  ) async {
     final draft = _ctl;
     if (draft == null || !draft.isDraft || draft.generating) return;
     draft.addPendingUser(text, images);
     final api = ref.read(apiProvider);
     final ChatController ctl;
     try {
-      final j = await api.post('/api/conversations', ch.newConversationBody(draft.draftGreeting));
+      final j = await api.post(
+        '/api/conversations',
+        ch.newConversationBody(draft.draftGreeting),
+      );
       final id = (j as Map)['id'] as String;
-      ctl = ChatController(api, id, maxChars: ref.read(appearanceProvider).loadChars);
+      ctl = ChatController(
+        api,
+        id,
+        maxChars: ref.read(appearanceProvider).loadChars,
+      );
       await ctl.load();
       if (!mounted || _ctl != draft) {
         ctl.dispose();
@@ -116,7 +132,12 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => BackGuard(
+    isBusy: () => _drawer.currentState?.isOpen ?? false,
+    child: _page(context),
+  );
+
+  Widget _page(BuildContext context) {
     final ff = context.formFactor;
     final ch = ref.watch(currentCharacterProvider);
     final convId = ref.watch(selectedConversationIdProvider);
@@ -133,7 +154,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             scroll: _scroll,
             atBottom: _atBottom,
             onNewConversation: () => newConversation(ch),
-            startConversation: (text, images) => _startConversation(ch, text, images),
+            startConversation: (text, images) =>
+                _startConversation(ch, text, images),
           );
 
     if (ff == FormFactor.watch) {
@@ -150,11 +172,21 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 child: ActionChip(
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
-                  avatar: ch == null ? const Icon(Icons.menu, size: 14) : CharacterAvatar(character: ch, size: 18),
-                  label: Text(ch?.name ?? 'RofuChat', style: const TextStyle(fontSize: 11)),
+                  avatar: ch == null
+                      ? const Icon(Icons.menu, size: 14)
+                      : CharacterAvatar(character: ch, size: 18),
+                  label: Text(
+                    ch?.name ?? 'RofuChat',
+                    style: const TextStyle(fontSize: 11),
+                  ),
                   onPressed: () => Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => Scaffold(body: Sidebar(onNewConversation: newConversation, inDrawer: true)),
+                      builder: (_) => Scaffold(
+                        body: Sidebar(
+                          onNewConversation: newConversation,
+                          inDrawer: true,
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -191,7 +223,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 width: 301,
                 child: Row(
                   children: [
-                    SizedBox(width: 300, child: Sidebar(onNewConversation: newConversation)),
+                    SizedBox(
+                      width: 300,
+                      child: Sidebar(onNewConversation: newConversation),
+                    ),
                     const VerticalDivider(width: 1),
                   ],
                 ),
@@ -201,7 +236,12 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 child: v == 0
                     ? Offstage(child: child)
                     : ClipRect(
-                        child: OverflowBox(alignment: Alignment.centerRight, minWidth: 301, maxWidth: 301, child: child),
+                        child: OverflowBox(
+                          alignment: Alignment.centerRight,
+                          minWidth: 301,
+                          maxWidth: 301,
+                          child: child,
+                        ),
                       ),
               ),
             ),
@@ -236,12 +276,21 @@ class _NoCharacter extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.theater_comedy_outlined, size: 56, color: Theme.of(context).colorScheme.primary),
+            Icon(
+              Icons.theater_comedy_outlined,
+              size: 56,
+              color: Theme.of(context).colorScheme.primary,
+            ),
             const SizedBox(height: 12),
-            Text(t('还没有角色', 'No characters yet'), style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              t('还没有角色', 'No characters yet'),
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 16),
             FilledButton.icon(
-              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CharacterEditorPage())),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const CharacterEditorPage()),
+              ),
               icon: const Icon(Icons.add),
               label: Text(t('新建或导入角色', 'Create or import a character')),
             ),
@@ -257,7 +306,12 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final Character? character;
   final VoidCallback onMenu;
   final VoidCallback? onNew;
-  const _ChatAppBar({required this.ctl, required this.character, required this.onMenu, required this.onNew});
+  const _ChatAppBar({
+    required this.ctl,
+    required this.character,
+    required this.onMenu,
+    required this.onNew,
+  });
 
   @override
   Size get preferredSize => const Size.fromHeight(60);
@@ -266,21 +320,36 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final ch = character;
     final convId = ref.watch(selectedConversationIdProvider);
-    final convs = ch == null ? null : ref.watch(conversationsProvider(ch.id)).value;
+    final convs = ch == null
+        ? null
+        : ref.watch(conversationsProvider(ch.id)).value;
     final conv = convs?.where((c) => c.id == convId).firstOrNull;
-    final model = ch == null ? null : ref.watch(characterModelProvider(ch.modelId));
-    final providers = ref.watch(providersProvider).value ?? const <ProviderCfg>[];
+    final model = ch == null
+        ? null
+        : ref.watch(characterModelProvider(ch.modelId));
+    final providers =
+        ref.watch(providersProvider).value ?? const <ProviderCfg>[];
     final prov = providers.where((p) => p.id == model?.providerId).firstOrNull;
     final text = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
-    final title = conv == null || conv.title.isEmpty ? t('新对话', 'New chat') : conv.title;
-    final sub = ch == null ? '' : '${ch.name} / ${model?.name ?? t('未选择模型', 'No model')}${prov == null ? '' : ' (${prov.name})'}';
+    final title = conv == null || conv.title.isEmpty
+        ? t('新对话', 'New chat')
+        : conv.title;
+    final sub = ch == null
+        ? ''
+        : '${ch.name} / ${model?.name ?? t('未选择模型', 'No model')}${prov == null ? '' : ' (${prov.name})'}';
     return AppBar(
       toolbarHeight: 60,
       titleSpacing: 0,
-      leading: IconButton(icon: const Icon(Icons.notes_rounded), onPressed: onMenu, tooltip: t('侧边栏', 'Sidebar')),
+      leading: IconButton(
+        icon: const Icon(Icons.notes_rounded),
+        onPressed: onMenu,
+        tooltip: t('侧边栏', 'Sidebar'),
+      ),
       title: InkWell(
-        onTap: ch == null ? null : () => pickModelForCharacter(context, ref, ch),
+        onTap: ch == null
+            ? null
+            : () => pickModelForCharacter(context, ref, ch),
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
@@ -288,33 +357,63 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: text.titleMedium),
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: text.titleMedium,
+              ),
               if (sub.isNotEmpty)
                 Text(
                   sub,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+                  style: text.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
             ],
           ),
         ),
       ),
       actions: [
-        if (onNew != null) IconButton(onPressed: onNew, icon: const Icon(Icons.add_comment_outlined), tooltip: t('新对话', 'New chat')),
+        if (onNew != null)
+          IconButton(
+            onPressed: onNew,
+            icon: const Icon(Icons.add_comment_outlined),
+            tooltip: t('新对话', 'New chat'),
+          ),
         if (ch != null)
           PopupMenuButton<String>(
             onSelected: (v) => _menu(context, ref, v, ch, conv),
             itemBuilder: (c) => [
-              if (conv != null) PopupMenuItem(value: 'rename', child: Text(t('重命名', 'Rename'))),
-              if (conv != null && ch.summarize) PopupMenuItem(value: 'compress', child: Text(t('立即压缩上下文', 'Compress context now'))),
-              if (conv != null) PopupMenuItem(value: 'scan', child: Text(t('立即整理记忆', 'Update memory now'))),
-              PopupMenuItem(value: 'memory', child: Text(t('角色记忆', 'Character memory'))),
-              PopupMenuItem(value: 'edit', child: Text(t('角色设置', 'Character settings'))),
+              if (conv != null)
+                PopupMenuItem(value: 'rename', child: Text(t('重命名', 'Rename'))),
+              if (conv != null && ch.summarize)
+                PopupMenuItem(
+                  value: 'compress',
+                  child: Text(t('立即压缩上下文', 'Compress context now')),
+                ),
+              if (conv != null)
+                PopupMenuItem(
+                  value: 'scan',
+                  child: Text(t('立即整理记忆', 'Update memory now')),
+                ),
+              PopupMenuItem(
+                value: 'memory',
+                child: Text(t('角色记忆', 'Character memory')),
+              ),
+              PopupMenuItem(
+                value: 'edit',
+                child: Text(t('角色设置', 'Character settings')),
+              ),
               if (conv != null)
                 PopupMenuItem(
                   value: 'delete',
-                  child: Text(t('删除对话', 'Delete chat'), style: TextStyle(color: scheme.error)),
+                  child: Text(
+                    t('删除对话', 'Delete chat'),
+                    style: TextStyle(color: scheme.error),
+                  ),
                 ),
             ],
           ),
@@ -322,12 +421,22 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
     );
   }
 
-  Future<void> _menu(BuildContext context, WidgetRef ref, String v, Character ch, Conversation? conv) async {
+  Future<void> _menu(
+    BuildContext context,
+    WidgetRef ref,
+    String v,
+    Character ch,
+    Conversation? conv,
+  ) async {
     final api = ref.read(apiProvider);
     try {
       switch (v) {
         case 'rename':
-          final s = await promptText(context, t('重命名对话', 'Rename chat'), initial: conv!.title);
+          final s = await promptText(
+            context,
+            t('重命名对话', 'Rename chat'),
+            initial: conv!.title,
+          );
           if (s != null) {
             await api.patch('/api/conversations/${conv.id}', {'title': s});
             ref.invalidate(conversationsProvider(ch.id));
@@ -335,19 +444,32 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
         case 'compress':
           await ctl?.compressNow();
         case 'scan':
-          final r = await api.post('/api/conversations/${conv!.id}/memory_scan');
+          final r = await api.post(
+            '/api/conversations/${conv!.id}/memory_scan',
+          );
           if (context.mounted) {
             final m = r is Map ? r : const {};
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text(t('记忆已整理：新增 ${m['added'] ?? 0}，更新 ${m['updated'] ?? 0}，删除 ${m['deleted'] ?? 0}', 'Memory updated: +${m['added'] ?? 0} ~${m['updated'] ?? 0} -${m['deleted'] ?? 0}')),
+                content: Text(
+                  t(
+                    '记忆已整理：新增 ${m['added'] ?? 0}，更新 ${m['updated'] ?? 0}，删除 ${m['deleted'] ?? 0}',
+                    'Memory updated: +${m['added'] ?? 0} ~${m['updated'] ?? 0} -${m['deleted'] ?? 0}',
+                  ),
+                ),
               ),
             );
           }
         case 'memory':
-          await Navigator.of(context).push(MaterialPageRoute(builder: (_) => MemoryPage(characterId: ch.id)));
+          await Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => MemoryPage(characterId: ch.id)),
+          );
         case 'edit':
-          await Navigator.of(context).push(MaterialPageRoute(builder: (_) => CharacterEditorPage(character: ch)));
+          await Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => CharacterEditorPage(character: ch),
+            ),
+          );
         case 'delete':
           if (await confirm(context, t('删除这个对话？', 'Delete this chat?'))) {
             await api.delete('/api/conversations/${conv!.id}');
@@ -368,7 +490,8 @@ class _ChatBody extends ConsumerStatefulWidget {
   final ScrollController scroll;
   final bool atBottom;
   final VoidCallback onNewConversation;
-  final Future<void> Function(String text, List<String> images) startConversation;
+  final Future<void> Function(String text, List<String> images)
+  startConversation;
   const _ChatBody({
     super.key,
     required this.ctl,
@@ -389,7 +512,12 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
 
   void _toBottom() {
     final s = widget.scroll;
-    if (s.hasClients && s.offset > 0) s.animateTo(0, duration: const Duration(milliseconds: 320), curve: Curves.easeOutCubic);
+    if (s.hasClients && s.offset > 0)
+      s.animateTo(
+        0,
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOutCubic,
+      );
   }
 
   Future<void> _send(String text, List<String> images) async {
@@ -420,10 +548,20 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
             ),
           );
     final input = ctl == null
-        ? ChatInputBar(key: _input, ctl: null, character: widget.character, onSend: _send)
+        ? ChatInputBar(
+            key: _input,
+            ctl: null,
+            character: widget.character,
+            onSend: _send,
+          )
         : ListenableBuilder(
             listenable: ctl,
-            builder: (context, _) => ChatInputBar(key: _input, ctl: ctl.isDraft ? null : ctl, character: widget.character, onSend: _send),
+            builder: (context, _) => ChatInputBar(
+              key: _input,
+              ctl: ctl.isDraft ? null : ctl,
+              character: widget.character,
+              onSend: _send,
+            ),
           );
     if (watch) {
       return Stack(
@@ -444,7 +582,11 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
                 Positioned(
                   right: 12,
                   bottom: 8,
-                  child: FloatingActionButton.small(heroTag: 'bottom', onPressed: _toBottom, child: const Icon(Icons.keyboard_double_arrow_down_rounded)),
+                  child: FloatingActionButton.small(
+                    heroTag: 'bottom',
+                    onPressed: _toBottom,
+                    child: const Icon(Icons.keyboard_double_arrow_down_rounded),
+                  ),
                 ),
             ],
           ),
@@ -454,7 +596,10 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
     );
     if (!appearance.fullWidth && context.isDesktop) {
       content = Center(
-        child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 900), child: content),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 900),
+          child: content,
+        ),
       );
     }
     return content;
@@ -473,13 +618,23 @@ class _EmptyChat extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CharacterAvatar(character: character, size: context.isWatch ? 48 : 72),
+            CharacterAvatar(
+              character: character,
+              size: context.isWatch ? 48 : 72,
+            ),
             const SizedBox(height: 12),
             Text(character.name, style: text.titleLarge),
-            if (character.cardStr('creator_notes').isNotEmpty && !context.isWatch)
+            if (character.cardStr('creator_notes').isNotEmpty &&
+                !context.isWatch)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
-                child: Text(character.cardStr('creator_notes'), maxLines: 4, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: text.bodySmall),
+                child: Text(
+                  character.cardStr('creator_notes'),
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: text.bodySmall,
+                ),
               ),
           ],
         ),
@@ -494,11 +649,18 @@ class _MessageList extends ConsumerWidget {
   final BlockCache cache;
   final ScrollController scroll;
   final void Function(Message) onEdit;
-  const _MessageList({required this.ctl, required this.character, required this.cache, required this.scroll, required this.onEdit});
+  const _MessageList({
+    required this.ctl,
+    required this.character,
+    required this.cache,
+    required this.scroll,
+    required this.onEdit,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    if (ctl.loading && ctl.messages.isEmpty) return const Center(child: CircularProgressIndicator());
+    if (ctl.loading && ctl.messages.isEmpty)
+      return const Center(child: CircularProgressIndicator());
     if (ctl.loadError != null && ctl.messages.isEmpty) {
       return Center(
         child: Padding(
@@ -511,19 +673,36 @@ class _MessageList extends ConsumerWidget {
     final settings = ref.watch(settingsProvider).value;
     final models = ref.watch(modelsProvider).value ?? const <ModelCfg>[];
     final watch = context.isWatch;
-    final rows = buildRows(ctl.messages, cache, streamingId: ctl.streamingId, generating: ctl.generating);
-    final hInset = watch ? watchInset(context) : (appearance.compact ? 12.0 : 18.0);
-    final base = Theme.of(context).textTheme.bodyLarge!.copyWith(height: 1.55, fontSize: (watch ? 13 : 15.5) * appearance.fontScale);
+    final rows = buildRows(
+      ctl.messages,
+      cache,
+      streamingId: ctl.streamingId,
+      generating: ctl.generating,
+    );
+    final hInset = watch
+        ? watchInset(context)
+        : (appearance.compact ? 12.0 : 18.0);
+    final base = Theme.of(context).textTheme.bodyLarge!.copyWith(
+      height: 1.55,
+      fontSize: (watch ? 13 : 15.5) * appearance.fontScale,
+    );
     // The newest turn (from the last user message on) is laid out in its own sliver at the
     // bottom of the reversed list. At the very bottom the view follows the stream; once
     // scrolled up, _KeepStill offsets its growth so what the user is reading stays put.
-    final lastUser = ctl.messages.lastWhere((m) => m.isUser, orElse: () => ctl.messages.isEmpty ? Message({'id': ''}) : ctl.messages.last);
+    final lastUser = ctl.messages.lastWhere(
+      (m) => m.isUser,
+      orElse: () =>
+          ctl.messages.isEmpty ? Message({'id': ''}) : ctl.messages.last,
+    );
     var split = rows.indexWhere((r) => r.msg.id == lastUser.id);
     if (split < 0) split = rows.length;
     final older = rows.sublist(0, split);
     final newest = rows.sublist(split);
     final m = older.length;
-    Widget build(ChatRow row) => KeyedSubtree(key: ValueKey(row.key), child: _row(context, ref, row, base, appearance, settings, models, watch));
+    Widget build(ChatRow row) => KeyedSubtree(
+      key: ValueKey(row.key),
+      child: _row(context, ref, row, base, appearance, settings, models, watch),
+    );
     final list = CustomScrollView(
       controller: scroll,
       reverse: true,
@@ -549,20 +728,33 @@ class _MessageList extends ConsumerWidget {
             itemBuilder: (context, i) {
               if (i == m) {
                 // Top of the (reversed) list: fetch the previous page once it scrolls into view.
-                if (ctl.hasMore && !ctl.loadingOlder) WidgetsBinding.instance.addPostFrameCallback((_) => ctl.loadOlder());
+                if (ctl.hasMore && !ctl.loadingOlder)
+                  WidgetsBinding.instance.addPostFrameCallback(
+                    (_) => ctl.loadOlder(),
+                  );
                 final loaded = ctl.loadedChars > 0
                     ? Text(
-                        t('已加载 ${fmtCount(ctl.loadedChars)} 字 · ${fmtBytes(ctl.loadedBytes)}', 'Loaded ${fmtCount(ctl.loadedChars)} chars · ${fmtBytes(ctl.loadedBytes)}'),
+                        t(
+                          '已加载 ${fmtCount(ctl.loadedChars)} 字 · ${fmtBytes(ctl.loadedBytes)}',
+                          'Loaded ${fmtCount(ctl.loadedChars)} chars · ${fmtBytes(ctl.loadedBytes)}',
+                        ),
                         textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.outline),
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
                       )
                     : null;
                 return Padding(
                   padding: const EdgeInsets.all(12),
                   child: Column(
                     children: [
-                      if (ctl.hasMore) const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-                      if (ctl.hasMore && loaded != null) const SizedBox(height: 6),
+                      if (ctl.hasMore)
+                        const SizedBox.square(
+                          dimension: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      if (ctl.hasMore && loaded != null)
+                        const SizedBox(height: 6),
                       ?loaded,
                     ],
                   ),
@@ -591,7 +783,16 @@ class _MessageList extends ConsumerWidget {
     },
   );
 
-  Widget _row(BuildContext context, WidgetRef ref, ChatRow row, TextStyle base, dynamic appearance, UserSettings? settings, List<ModelCfg> models, bool watch) {
+  Widget _row(
+    BuildContext context,
+    WidgetRef ref,
+    ChatRow row,
+    TextStyle base,
+    dynamic appearance,
+    UserSettings? settings,
+    List<ModelCfg> models,
+    bool watch,
+  ) {
     final m = row.msg;
     switch (row) {
       case UserRow():
@@ -609,14 +810,27 @@ class _MessageList extends ConsumerWidget {
       case AssistantHeaderRow():
         if (watch) return const SizedBox(height: 6);
         final model = models.where((x) => x.id == m.model).firstOrNull;
-        final name = model?.name ?? (m.modelName.isNotEmpty ? m.modelName : character.name);
+        final name =
+            model?.name ??
+            (m.modelName.isNotEmpty ? m.modelName : character.name);
         return Padding(
           padding: const EdgeInsets.only(top: 14, bottom: 4),
           child: Row(
             children: [
-              if (appearance.showAvatars) ...[ModelIcon(iconKey: model?.icon ?? m.modelIcon, name: name, size: 28), const SizedBox(width: 10)],
+              if (appearance.showAvatars) ...[
+                ModelIcon(
+                  iconKey: model?.icon ?? m.modelIcon,
+                  name: name,
+                  size: 28,
+                ),
+                const SizedBox(width: 10),
+              ],
               Flexible(
-                child: Text(name, style: Theme.of(context).textTheme.titleSmall, overflow: TextOverflow.ellipsis),
+                child: Text(
+                  name,
+                  style: Theme.of(context).textTheme.titleSmall,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             ],
           ),
@@ -633,7 +847,10 @@ class _MessageList extends ConsumerWidget {
             opacity: m.visible ? 1 : 0.5,
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 1),
-              child: MarkdownSingleBlockRenderer(row.block, baseTextStyle: base),
+              child: MarkdownSingleBlockRenderer(
+                row.block,
+                baseTextStyle: base,
+              ),
             ),
           ),
         );
@@ -641,7 +858,12 @@ class _MessageList extends ConsumerWidget {
         return SummaryCard(
           msg: m,
           onEdit: () async {
-            final s = await promptText(context, t('编辑摘要', 'Edit summary'), initial: m.content, maxLines: 12);
+            final s = await promptText(
+              context,
+              t('编辑摘要', 'Edit summary'),
+              initial: m.content,
+              maxLines: 12,
+            );
             if (s != null) await ctl.editContent(m, s);
           },
         );
@@ -662,44 +884,81 @@ class _MessageList extends ConsumerWidget {
     }
   }
 
-  Future<void> _messageMenu(BuildContext context, WidgetRef ref, Message m, Offset pos) async {
+  Future<void> _messageMenu(
+    BuildContext context,
+    WidgetRef ref,
+    Message m,
+    Offset pos,
+  ) async {
     if (ctl.isDraft) return;
     final scheme = Theme.of(context).colorScheme;
     final items = <PopupMenuEntry<String>>[
       PopupMenuItem(
         value: 'copy',
-        child: ListTile(dense: true, leading: const Icon(Icons.copy_rounded), title: Text(t('复制', 'Copy'))),
+        child: ListTile(
+          dense: true,
+          leading: const Icon(Icons.copy_rounded),
+          title: Text(t('复制', 'Copy')),
+        ),
       ),
       PopupMenuItem(
         value: 'edit',
-        child: ListTile(dense: true, leading: const Icon(Icons.edit_outlined), title: Text(t('编辑', 'Edit'))),
+        child: ListTile(
+          dense: true,
+          leading: const Icon(Icons.edit_outlined),
+          title: Text(t('编辑', 'Edit')),
+        ),
       ),
       PopupMenuItem(
         value: 'visible',
         child: ListTile(
           dense: true,
-          leading: Icon(m.visible ? Icons.visibility_off_outlined : Icons.visibility_outlined),
-          title: Text(m.visible ? t('移出上下文', 'Exclude from context') : t('加入上下文', 'Include in context')),
+          leading: Icon(
+            m.visible
+                ? Icons.visibility_off_outlined
+                : Icons.visibility_outlined,
+          ),
+          title: Text(
+            m.visible
+                ? t('移出上下文', 'Exclude from context')
+                : t('加入上下文', 'Include in context'),
+          ),
         ),
       ),
       if (m.isAssistant && character.instant)
         PopupMenuItem(
           value: 'actual',
-          child: ListTile(dense: true, leading: const Icon(Icons.compress_rounded), title: Text(t('查看/编辑压缩内容', 'View/edit compressed'))),
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.compress_rounded),
+            title: Text(t('查看/编辑压缩内容', 'View/edit compressed')),
+          ),
         ),
       if (m.isAssistant && m.usage != null && context.isWatch)
         PopupMenuItem(
           value: 'usage',
-          child: ListTile(dense: true, leading: const Icon(Icons.data_usage), title: Text(t('Token 用量', 'Token usage'))),
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.data_usage),
+            title: Text(t('Token 用量', 'Token usage')),
+          ),
         ),
       if (m.swipeCount > 1 && !ctl.generating)
         PopupMenuItem(
           value: 'del_swipe',
-          child: ListTile(dense: true, leading: const Icon(Icons.layers_clear_outlined), title: Text(t('删除当前版本', 'Delete this version'))),
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.layers_clear_outlined),
+            title: Text(t('删除当前版本', 'Delete this version')),
+          ),
         ),
       PopupMenuItem(
         value: 'branch',
-        child: ListTile(dense: true, leading: const Icon(Icons.call_split_rounded), title: Text(t('从这里分支', 'Branch from here'))),
+        child: ListTile(
+          dense: true,
+          leading: const Icon(Icons.call_split_rounded),
+          title: Text(t('从这里分支', 'Branch from here')),
+        ),
       ),
       PopupMenuItem(
         value: 'delete',
@@ -710,7 +969,11 @@ class _MessageList extends ConsumerWidget {
         ),
       ),
     ];
-    final v = await showMenu<String>(context: context, position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy), items: items);
+    final v = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      items: items,
+    );
     if (v == null || !context.mounted) return;
     try {
       switch (v) {
@@ -737,7 +1000,8 @@ class _MessageList extends ConsumerWidget {
             ref.read(selectedConversationIdProvider.notifier).select(id);
           }
         case 'delete':
-          if (await confirm(context, t('删除这条消息？', 'Delete this message?'))) await ctl.deleteMessage(m);
+          if (await confirm(context, t('删除这条消息？', 'Delete this message?')))
+            await ctl.deleteMessage(m);
       }
     } catch (e) {
       if (context.mounted) showError(context, e);
@@ -745,7 +1009,11 @@ class _MessageList extends ConsumerWidget {
   }
 }
 
-Future<void> showActualDialog(BuildContext context, ChatController ctl, Message m) async {
+Future<void> showActualDialog(
+  BuildContext context,
+  ChatController ctl,
+  Message m,
+) async {
   final ctlText = TextEditingController(text: m.actual ?? '');
   final scheme = Theme.of(context).colorScheme;
   await showDialog(
@@ -763,8 +1031,14 @@ Future<void> showActualDialog(BuildContext context, ChatController ctl, Message 
                 width: double.infinity,
                 margin: const EdgeInsets.only(bottom: 12),
                 padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: scheme.errorContainer, borderRadius: BorderRadius.circular(8)),
-                child: Text('${t('摘要生成失败，已回退发送完整内容。', 'Summary failed; the full message is sent instead.')}\n${m.actualError ?? ''}', style: TextStyle(color: scheme.onErrorContainer)),
+                decoration: BoxDecoration(
+                  color: scheme.errorContainer,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '${t('摘要生成失败，已回退发送完整内容。', 'Summary failed; the full message is sent instead.')}\n${m.actualError ?? ''}',
+                  style: TextStyle(color: scheme.onErrorContainer),
+                ),
               ),
             TextField(
               controller: ctlText,
@@ -783,7 +1057,10 @@ Future<void> showActualDialog(BuildContext context, ChatController ctl, Message 
           },
           child: Text(t('重新生成', 'Regenerate')),
         ),
-        TextButton(onPressed: () => Navigator.pop(c), child: Text(t('取消', 'Cancel'))),
+        TextButton(
+          onPressed: () => Navigator.pop(c),
+          child: Text(t('取消', 'Cancel')),
+        ),
         FilledButton(
           onPressed: () async {
             Navigator.pop(c);
@@ -808,7 +1085,8 @@ class _ListTail extends StatelessWidget {
     final segs = m?.segments ?? const <Segment>[];
     if (segs.isEmpty) return null;
     final last = segs.last;
-    if (last.type == 'tool' && last.result == null) return t('正在调用 ${last.name}…', 'Calling ${last.name}…');
+    if (last.type == 'tool' && last.result == null)
+      return t('正在调用 ${last.name}…', 'Calling ${last.name}…');
     if (last.type == 'reasoning') return t('思考中…', 'Thinking…');
     return null;
   }
@@ -827,12 +1105,18 @@ class _ListTail extends StatelessWidget {
         child: SizeTransition(sizeFactor: a, axisAlignment: -1, child: child),
       ),
       child: !busy
-          ? const SizedBox(key: ValueKey('idle'), height: 4, width: double.infinity)
+          ? const SizedBox(
+              key: ValueKey('idle'),
+              height: 4,
+              width: double.infinity,
+            )
           : Padding(
               key: const ValueKey('busy'),
               padding: const EdgeInsets.fromLTRB(0, 10, 0, 8),
               child: Row(
-                mainAxisAlignment: watch ? MainAxisAlignment.center : MainAxisAlignment.start,
+                mainAxisAlignment: watch
+                    ? MainAxisAlignment.center
+                    : MainAxisAlignment.start,
                 children: [
                   LoadingBlob(size: watch ? 22 : 30),
                   AnimatedSize(
@@ -841,7 +1125,15 @@ class _ListTail extends StatelessWidget {
                         ? const SizedBox.shrink()
                         : Padding(
                             padding: const EdgeInsets.only(left: 10),
-                            child: Text(status, style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                            child: Text(
+                              status,
+                              style: Theme.of(context).textTheme.labelMedium
+                                  ?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                            ),
                           ),
                   ),
                 ],
@@ -895,23 +1187,49 @@ class _AssistantFooter extends StatelessWidget {
                   Icon(Icons.error_outline, color: scheme.error, size: 18),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(msg.error!, style: TextStyle(color: scheme.error, fontSize: 12.5)),
+                    child: Text(
+                      msg.error!,
+                      style: TextStyle(color: scheme.error, fontSize: 12.5),
+                    ),
                   ),
-                  if (isLast) TextButton(onPressed: ctl.generating ? null : () => ctl.send(regenerate: true), child: Text(t('重试', 'Retry'))),
+                  if (isLast)
+                    TextButton(
+                      onPressed: ctl.generating
+                          ? null
+                          : () => ctl.send(regenerate: true),
+                      child: Text(t('重试', 'Retry')),
+                    ),
                 ],
               ),
             ),
           for (final n in notices)
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: Text(n, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
+              child: Text(
+                n,
+                style: Theme.of(context).textTheme.labelSmall
+                    ?.copyWith(color: scheme.outline),
+              ),
             ),
           if (compact)
             Row(
               children: [
-                ActualStatusIcon(msg: msg, pending: ctl.actualPending.contains(msg.id), onTapFailed: () => showActualDialog(context, ctl, msg)),
+                ActualStatusIcon(
+                  msg: msg,
+                  pending: ctl.actualPending.contains(msg.id),
+                  onTapFailed: () => showActualDialog(context, ctl, msg),
+                ),
                 const Spacer(),
-                if (ctl.isDraft) swipeNav else Builder(builder: (c) => MiniIconButton(Icons.more_horiz, t('更多', 'More'), () => onMore(_centerOf(c)))),
+                if (ctl.isDraft)
+                  swipeNav
+                else
+                  Builder(
+                    builder: (c) => MiniIconButton(
+                      Icons.more_horiz,
+                      t('更多', 'More'),
+                      () => onMore(_centerOf(c)),
+                    ),
+                  ),
               ],
             )
           else
@@ -923,20 +1241,50 @@ class _AssistantFooter extends StatelessWidget {
                   if (!msg.visible)
                     Padding(
                       padding: const EdgeInsets.only(right: 6),
-                      child: Text(t('不在上下文中', 'Not in context'), style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
+                      child: Text(
+                        t('不在上下文中', 'Not in context'),
+                        style: Theme.of(context).textTheme.labelSmall
+                            ?.copyWith(color: scheme.outline),
+                      ),
                     ),
                   if (showTokens && usage != null)
                     Padding(
                       padding: const EdgeInsets.only(right: 4),
                       child: TokenIndicator(usage: usage),
                     ),
-                  ActualStatusIcon(msg: msg, pending: ctl.actualPending.contains(msg.id), onTapFailed: () => showActualDialog(context, ctl, msg)),
-                  MiniIconButton(Icons.copy_rounded, t('复制', 'Copy'), () => copyText(context, msg.content)),
+                  ActualStatusIcon(
+                    msg: msg,
+                    pending: ctl.actualPending.contains(msg.id),
+                    onTapFailed: () => showActualDialog(context, ctl, msg),
+                  ),
+                  MiniIconButton(
+                    Icons.copy_rounded,
+                    t('复制', 'Copy'),
+                    () => copyText(context, msg.content),
+                  ),
                   swipeNav,
                   if (!ctl.isDraft) ...[
-                    if (!compact) MiniIconButton(Icons.edit_outlined, t('编辑', 'Edit'), onEdit),
-                    if (isLast) MiniIconButton(Icons.refresh_rounded, t('重新生成', 'Regenerate'), ctl.generating ? () {} : () => ctl.send(regenerate: true)),
-                    Builder(builder: (c) => MiniIconButton(Icons.more_vert, t('更多', 'More'), () => onMore(_centerOf(c)))),
+                    if (!compact)
+                      MiniIconButton(
+                        Icons.edit_outlined,
+                        t('编辑', 'Edit'),
+                        onEdit,
+                      ),
+                    if (isLast)
+                      MiniIconButton(
+                        Icons.refresh_rounded,
+                        t('重新生成', 'Regenerate'),
+                        ctl.generating
+                            ? () {}
+                            : () => ctl.send(regenerate: true),
+                      ),
+                    Builder(
+                      builder: (c) => MiniIconButton(
+                        Icons.more_vert,
+                        t('更多', 'More'),
+                        () => onMore(_centerOf(c)),
+                      ),
+                    ),
                   ],
                 ],
               ),
@@ -948,7 +1296,9 @@ class _AssistantFooter extends StatelessWidget {
 
   Offset _centerOf(BuildContext c) {
     final box = c.findRenderObject() as RenderBox?;
-    return box == null ? Offset.zero : box.localToGlobal(box.size.center(Offset.zero));
+    return box == null
+        ? Offset.zero
+        : box.localToGlobal(box.size.center(Offset.zero));
   }
 }
 
@@ -958,7 +1308,12 @@ class ChatInputBar extends ConsumerStatefulWidget {
   final ChatController? ctl;
   final Character character;
   final Future<void> Function(String text, List<String> images) onSend;
-  const ChatInputBar({super.key, required this.ctl, required this.character, required this.onSend});
+  const ChatInputBar({
+    super.key,
+    required this.ctl,
+    required this.character,
+    required this.onSend,
+  });
   @override
   ConsumerState<ChatInputBar> createState() => ChatInputBarState();
 }
@@ -1022,7 +1377,8 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
   Future<void> _submit() async {
     final s = _text.text.trim();
     final editing = _editing;
-    if (editing != null && !editing.isUser) return _saveEditOnly(); // assistant edits only save
+    if (editing != null && !editing.isUser)
+      return _saveEditOnly(); // assistant edits only save
     if (_busy) return;
     if (s.isEmpty && _images.isEmpty) return;
     final images = List<String>.from(_images);
@@ -1043,7 +1399,10 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
 
   Future<void> _pickImage(bool vision) async {
     if (!vision) {
-      showError(context, t('当前模型不支持图片输入', 'The current model does not accept images'));
+      showError(
+        context,
+        t('当前模型不支持图片输入', 'The current model does not accept images'),
+      );
       return;
     }
     final f = await FilePicker.pickFile(type: FileType.image);
@@ -1051,11 +1410,19 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
     final bytes = await f.readAsBytes();
     final ext = (f.extension ?? 'png').toLowerCase();
     final mime = ext == 'jpg' ? 'jpeg' : ext;
-    setState(() => _images.add('data:image/$mime;base64,${base64Encode(bytes)}'));
+    setState(
+      () => _images.add('data:image/$mime;base64,${base64Encode(bytes)}'),
+    );
   }
 
-  Future<void> _setCompression(ChatController ctl, {bool? instant, bool? summarize}) async {
-    final ch = Character(jsonDecode(jsonEncode(widget.character.json)) as Map<String, dynamic>);
+  Future<void> _setCompression(
+    ChatController ctl, {
+    bool? instant,
+    bool? summarize,
+  }) async {
+    final ch = Character(
+      jsonDecode(jsonEncode(widget.character.json)) as Map<String, dynamic>,
+    );
     ch.setCompression(instant: instant, summarize: summarize);
     try {
       await ref.read(charactersProvider.notifier).save(ch);
@@ -1081,7 +1448,10 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 children: [
                   ContextRing(info: c, size: 36, stroke: 4),
                   const SizedBox(width: 12),
-                  Text('${c.estimated ? '~' : ''}${fmtTokens(c.tokens)} / ${fmtTokens(c.max)}  (${(c.ratio * 100).toStringAsFixed(0)}%)', style: Theme.of(ctx).textTheme.titleMedium),
+                  Text(
+                    '${c.estimated ? '~' : ''}${fmtTokens(c.tokens)} / ${fmtTokens(c.max)}  (${(c.ratio * 100).toStringAsFixed(0)}%)',
+                    style: Theme.of(ctx).textTheme.titleMedium,
+                  ),
                 ],
               ),
               const SizedBox(height: 12),
@@ -1089,7 +1459,11 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 contentPadding: EdgeInsets.zero,
                 secondary: const Icon(Icons.compress_rounded),
                 title: Text(t('摘要压缩', 'Summary compression')),
-                subtitle: c.summarize && c.threshold > 0 ? Text('${t('压缩阈值', 'Threshold')}: ${fmtTokens(c.threshold)}') : null,
+                subtitle: c.summarize && c.threshold > 0
+                    ? Text(
+                        '${t('压缩阈值', 'Threshold')}: ${fmtTokens(c.threshold)}',
+                      )
+                    : null,
                 value: c.summarize,
                 onChanged: (v) async {
                   Navigator.pop(ctx);
@@ -1138,15 +1512,32 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
     final vision = model?.vision ?? false;
 
     if (context.isWatch) {
-      return _WatchInput(info: info, busy: _busy, onStop: () => ctl?.stop(), onText: (s) => widget.onSend(s, const []));
+      return _WatchInput(
+        info: info,
+        busy: _busy,
+        onStop: () => ctl?.stop(),
+        onText: (s) => widget.onSend(s, const []),
+      );
     }
 
     final editingAssistant = _editing != null && !_editing!.isUser;
     final sendBtn = editingAssistant
-        ? IconButton.filled(onPressed: _saveEditOnly, icon: const Icon(Icons.check_rounded), tooltip: t('保存', 'Save'))
+        ? IconButton.filled(
+            onPressed: _saveEditOnly,
+            icon: const Icon(Icons.check_rounded),
+            tooltip: t('保存', 'Save'),
+          )
         : _busy
-        ? IconButton.filled(onPressed: () => ctl?.stop(), icon: const Icon(Icons.stop_rounded), tooltip: t('停止', 'Stop'))
-        : IconButton.filled(onPressed: _submit, icon: const Icon(Icons.arrow_upward_rounded), tooltip: t('发送', 'Send'));
+        ? IconButton.filled(
+            onPressed: () => ctl?.stop(),
+            icon: const Icon(Icons.stop_rounded),
+            tooltip: t('停止', 'Stop'),
+          )
+        : IconButton.filled(
+            onPressed: _submit,
+            icon: const Icon(Icons.arrow_upward_rounded),
+            tooltip: t('发送', 'Send'),
+          );
 
     return SafeArea(
       top: false,
@@ -1155,7 +1546,9 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
         decoration: BoxDecoration(
           color: scheme.surfaceContainer,
           borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.6)),
+          border: Border.all(
+            color: scheme.outlineVariant.withValues(alpha: 0.6),
+          ),
         ),
         padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
         child: Column(
@@ -1169,15 +1562,30 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                     Icon(Icons.edit_outlined, size: 14, color: scheme.primary),
                     const SizedBox(width: 6),
                     Expanded(
-                      child: Text(_editing!.isUser ? t('编辑消息 · 发送 = 保存并重新生成', 'Editing · Send = save & regenerate') : t('编辑回复', 'Editing reply'), style: Theme.of(context).textTheme.labelSmall),
+                      child: Text(
+                        _editing!.isUser
+                            ? t(
+                                '编辑消息 · 发送 = 保存并重新生成',
+                                'Editing · Send = save & regenerate',
+                              )
+                            : t('编辑回复', 'Editing reply'),
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
                     ),
                     if (_editing!.isUser)
                       TextButton(
-                        style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                        ),
                         onPressed: _saveEditOnly,
                         child: Text(t('仅保存', 'Save only')),
                       ),
-                    IconButton(iconSize: 16, tooltip: t('取消编辑', 'Cancel edit'), onPressed: () => setState(_endEdit), icon: const Icon(Icons.close)),
+                    IconButton(
+                      iconSize: 16,
+                      tooltip: t('取消编辑', 'Cancel edit'),
+                      onPressed: () => setState(_endEdit),
+                      icon: const Icon(Icons.close),
+                    ),
                   ],
                 ),
               ),
@@ -1195,14 +1603,27 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                           children: [
                             ClipRRect(
                               borderRadius: BorderRadius.circular(8),
-                              child: Image.memory(base64Decode(_images[i].substring(_images[i].indexOf(',') + 1)), width: 56, height: 56, fit: BoxFit.cover),
+                              child: Image.memory(
+                                base64Decode(
+                                  _images[i].substring(
+                                    _images[i].indexOf(',') + 1,
+                                  ),
+                                ),
+                                width: 56,
+                                height: 56,
+                                fit: BoxFit.cover,
+                              ),
                             ),
                             Positioned(
                               right: 0,
                               top: 0,
                               child: InkWell(
-                                onTap: () => setState(() => _images.removeAt(i)),
-                                child: const CircleAvatar(radius: 9, child: Icon(Icons.close, size: 12)),
+                                onTap: () =>
+                                    setState(() => _images.removeAt(i)),
+                                child: const CircleAvatar(
+                                  radius: 9,
+                                  child: Icon(Icons.close, size: 12),
+                                ),
                               ),
                             ),
                           ],
@@ -1212,7 +1633,10 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 ),
               ),
             CallbackShortcuts(
-              bindings: {if (appearance.enterToSend) const SingleActivator(LogicalKeyboardKey.enter): _submit},
+              bindings: {
+                if (appearance.enterToSend)
+                  const SingleActivator(LogicalKeyboardKey.enter): _submit,
+              },
               child: TextField(
                 controller: _text,
                 focusNode: _focus,
@@ -1220,7 +1644,14 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 maxLines: 8,
                 keyboardType: TextInputType.multiline,
                 textInputAction: TextInputAction.newline,
-                decoration: InputDecoration(hintText: t('和 ${ch.name} 聊天', 'Chat with ${ch.name}'), border: InputBorder.none, contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10)),
+                decoration: InputDecoration(
+                  hintText: t('和 ${ch.name} 聊天', 'Chat with ${ch.name}'),
+                  border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                ),
               ),
             ),
             Row(
@@ -1228,16 +1659,26 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 IconButton(
                   tooltip: t('切换模型', 'Switch model'),
                   onPressed: () => pickModelForCharacter(context, ref, ch),
-                  icon: ModelIcon(iconKey: model?.icon ?? '', name: model?.name ?? '?', size: 26),
+                  icon: ModelIcon(
+                    iconKey: model?.icon ?? '',
+                    name: model?.name ?? '?',
+                    size: 26,
+                  ),
                 ),
                 if (model?.reasoning ?? false) _ReasoningButton(character: ch),
                 const Spacer(),
                 IconButton(
                   onPressed: () => _pickImage(vision),
-                  icon: Icon(Icons.add_rounded, color: vision ? null : scheme.outline),
+                  icon: Icon(
+                    Icons.add_rounded,
+                    color: vision ? null : scheme.outline,
+                  ),
                   tooltip: t('添加图片', 'Add image'),
                 ),
-                ContextRing(info: info, onTap: ctl == null ? null : () => _contextCard(ctl)),
+                ContextRing(
+                  info: info,
+                  onTap: ctl == null ? null : () => _contextCard(ctl),
+                ),
                 const SizedBox(width: 4),
                 sendBtn,
               ],
@@ -1257,7 +1698,12 @@ class _ReasoningButton extends ConsumerWidget {
     final e = character.reasoningEffort;
     final scheme = Theme.of(context).colorScheme;
     const levels = ['', 'low', 'medium', 'high'];
-    final labels = [t('关闭', 'Off'), t('低', 'Low'), t('中', 'Medium'), t('高', 'High')];
+    final labels = [
+      t('关闭', 'Off'),
+      t('低', 'Low'),
+      t('中', 'Medium'),
+      t('高', 'High'),
+    ];
     return PopupMenuButton<String>(
       tooltip: t('推理强度', 'Reasoning effort'),
       initialValue: e,
@@ -1270,8 +1716,18 @@ class _ReasoningButton extends ConsumerWidget {
           if (context.mounted) showError(context, err);
         }
       },
-      itemBuilder: (c) => [for (var i = 0; i < levels.length; i++) CheckedPopupMenuItem(value: levels[i], checked: levels[i] == e, child: Text(labels[i]))],
-      icon: Icon(e.isEmpty ? Icons.lightbulb_outline : Icons.lightbulb, color: e.isEmpty ? scheme.onSurfaceVariant : scheme.primary),
+      itemBuilder: (c) => [
+        for (var i = 0; i < levels.length; i++)
+          CheckedPopupMenuItem(
+            value: levels[i],
+            checked: levels[i] == e,
+            child: Text(labels[i]),
+          ),
+      ],
+      icon: Icon(
+        e.isEmpty ? Icons.lightbulb_outline : Icons.lightbulb,
+        color: e.isEmpty ? scheme.onSurfaceVariant : scheme.primary,
+      ),
     );
   }
 }
@@ -1282,7 +1738,12 @@ class _WatchInput extends StatelessWidget {
   final bool busy;
   final VoidCallback onStop;
   final void Function(String) onText;
-  const _WatchInput({required this.info, required this.busy, required this.onStop, required this.onText});
+  const _WatchInput({
+    required this.info,
+    required this.busy,
+    required this.onStop,
+    required this.onText,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1302,10 +1763,22 @@ class _WatchInput extends StatelessWidget {
               onTap: busy
                   ? onStop
                   : () async {
-                      final s = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const _WatchComposer()));
+                      final s = await Navigator.of(context).push<String>(
+                        MaterialPageRoute(
+                          builder: (_) => const _WatchComposer(),
+                        ),
+                      );
                       if (s != null && s.trim().isNotEmpty) onText(s.trim());
                     },
-              child: SizedBox(width: 40, height: 40, child: Icon(busy ? Icons.stop_rounded : Icons.mic_none_rounded, color: busy ? scheme.onErrorContainer : scheme.onPrimary, size: 22)),
+              child: SizedBox(
+                width: 40,
+                height: 40,
+                child: Icon(
+                  busy ? Icons.stop_rounded : Icons.mic_none_rounded,
+                  color: busy ? scheme.onErrorContainer : scheme.onPrimary,
+                  size: 22,
+                ),
+              ),
             ),
           ),
         ],
@@ -1337,14 +1810,23 @@ class _WatchComposerState extends State<_WatchComposer> {
                 maxLines: null,
                 expands: true,
                 style: const TextStyle(fontSize: 13),
-                decoration: InputDecoration(hintText: t('说点什么…', 'Say something…'), border: InputBorder.none),
+                decoration: InputDecoration(
+                  hintText: t('说点什么…', 'Say something…'),
+                  border: InputBorder.none,
+                ),
               ),
             ),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
-                IconButton.filled(onPressed: () => Navigator.pop(context, _c.text), icon: const Icon(Icons.send_rounded, size: 18)),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close),
+                ),
+                IconButton.filled(
+                  onPressed: () => Navigator.pop(context, _c.text),
+                  icon: const Icon(Icons.send_rounded, size: 18),
+                ),
               ],
             ),
           ],
@@ -1358,5 +1840,9 @@ class _WatchComposerState extends State<_WatchComposer> {
 // behavior enables drag scrolling with mouse on desktop for touch-like lists.
 class AppScrollBehavior extends MaterialScrollBehavior {
   @override
-  Set<PointerDeviceKind> get dragDevices => {PointerDeviceKind.touch, PointerDeviceKind.stylus, PointerDeviceKind.trackpad};
+  Set<PointerDeviceKind> get dragDevices => {
+    PointerDeviceKind.touch,
+    PointerDeviceKind.stylus,
+    PointerDeviceKind.trackpad,
+  };
 }
