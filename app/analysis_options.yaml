@@ -12,6 +12,7 @@ analyzer:
     - web/**
     - windows/**
     - linux/**
+    - packages/**
 linter:
   rules:
     prefer_const_constructors: false

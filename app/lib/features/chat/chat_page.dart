@@ -274,9 +274,16 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       handleBack: false, // BackGuard coordinates Back: keyboard, then drawer, then exit
 
       drawer: Sidebar(onNewConversation: newConversation, inDrawer: true),
-      child: Scaffold(key: _scaffold, appBar: appBar, body: body),
+      // With the keyboard up on a short window the app bar yields its height to the composer.
+      child: Scaffold(key: _scaffold, appBar: tightWithKeyboard(context) ? null : appBar, body: body),
     );
   }
+}
+
+/// True when the keyboard is up and the remaining window is too short for the full chrome.
+bool tightWithKeyboard(BuildContext context) {
+  final mq = MediaQuery.of(context);
+  return mq.viewInsets.bottom > 0 && mq.size.height - mq.viewInsets.bottom < kTightComposerHeight;
 }
 
 class _NoCharacter extends ConsumerWidget {
@@ -1281,11 +1288,6 @@ class _AssistantFooter extends StatelessWidget {
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   if (!msg.visible) const ContextTag(),
-                  if (showTokens && usage != null)
-                    Padding(
-                      padding: const EdgeInsets.only(right: Insets.x1),
-                      child: TokenIndicator(usage: usage),
-                    ),
                   ActualStatusIcon(
                     msg: msg,
                     pending: ctl.actualPending.contains(msg.id),
@@ -1323,6 +1325,12 @@ class _AssistantFooter extends StatelessWidget {
                 ],
               ),
             ),
+          // Token counts get their own row under the action buttons.
+          if (!compact && showTokens && usage != null)
+            Padding(
+              padding: const EdgeInsets.only(left: Insets.x1, bottom: Insets.x2),
+              child: TokenIndicator(usage: usage),
+            ),
         ],
       ),
     );
@@ -1358,6 +1366,8 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
   final List<String> _images = [];
   Message? _editing;
   bool _hover = false;
+  // The + button's secondary menu (attachments), revealed inside the composer.
+  bool _more = false;
 
   @override
   void initState() {
@@ -1578,6 +1588,32 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
         : _hover
         ? scheme.onSurfaceVariant
         : scheme.outlineVariant;
+    // Short window with the keyboard up (square watches, landscape): keep the text field
+    // and send button only, so the composer always fits above the IME.
+    final tight = tightWithKeyboard(context);
+    final moreMenu = Collapsible(
+      open: _more && !tight,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(Insets.x2, 0, Insets.x2, Insets.x2),
+        child: Wrap(
+          spacing: Insets.x2,
+          runSpacing: Insets.x2,
+          children: [
+            _ComposerAction(
+              icon: Icons.image_outlined,
+              label: t('图片', 'Image'),
+              tooltip: vision ? null : t('当前模型不支持图片输入', 'The current model does not accept images'),
+              onPressed: vision
+                  ? () {
+                      setState(() => _more = false);
+                      _pickImage();
+                    }
+                  : null,
+            ),
+          ],
+        ),
+      ),
+    );
     return SafeArea(
       top: false,
       child: MouseRegion(
@@ -1677,7 +1713,11 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                   ],
                 ),
               ),
-            CallbackShortcuts(
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: CallbackShortcuts(
               bindings: {
                 if (appearance.enterToSend)
                   const SingleActivator(LogicalKeyboardKey.enter): _submit,
@@ -1686,7 +1726,7 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 controller: _text,
                 focusNode: _focus,
                 minLines: 1,
-                maxLines: 8,
+                maxLines: tight ? 3 : 8,
                 keyboardType: TextInputType.multiline,
                 textInputAction: TextInputAction.newline,
                 style: chatBody(context),
@@ -1700,7 +1740,11 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 ),
               ),
             ),
-            Row(
+                ),
+                if (tight) sendBtn,
+              ],
+            ),
+            if (!tight) Row(
               children: [
                 IconButton(
                   tooltip: t('切换模型', 'Switch model'),
@@ -1714,12 +1758,15 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 if (model?.reasoning ?? false) _ReasoningButton(character: ch),
                 const Spacer(),
                 IconButton(
-                  // Disabled (M3 disabled roles) with the reason in the tooltip.
-                  onPressed: vision ? _pickImage : null,
-                  icon: const Icon(Icons.add_rounded),
-                  tooltip: vision
-                      ? t('添加图片', 'Add image')
-                      : t('当前模型不支持图片输入', 'The current model does not accept images'),
+                  isSelected: _more,
+                  onPressed: () => setState(() => _more = !_more),
+                  tooltip: _more ? t('收起', 'Close') : t('更多输入', 'More inputs'),
+                  icon: AnimatedRotation(
+                    turns: _more ? 0.125 : 0,
+                    duration: Motion.of(context, Motion.short4),
+                    curve: Motion.emphasized,
+                    child: const Icon(Icons.add_rounded),
+                  ),
                 ),
                 ContextRing(
                   info: info,
@@ -1728,10 +1775,49 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 sendBtn,
               ],
             ),
+            moreMenu,
           ],
         ),
       ),
       ),
+    );
+  }
+}
+
+/// Height (window minus keyboard) below which the composer drops its action row.
+const double kTightComposerHeight = 260;
+
+/// One entry of the composer's + menu: a tonal square button with a label under it.
+class _ComposerAction extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String? tooltip;
+  final VoidCallback? onPressed;
+  const _ComposerAction({required this.icon, required this.label, this.tooltip, this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final scheme = Theme.of(context).colorScheme;
+    final button = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton.filledTonal(
+          onPressed: onPressed,
+          icon: Icon(icon),
+          style: IconButton.styleFrom(
+            minimumSize: const Size.square(56),
+            shape: const RoundedRectangleBorder(borderRadius: Corners.rLg),
+          ),
+        ),
+        const SizedBox(height: Insets.x1),
+        Text(label, style: text.labelMedium?.copyWith(color: onPressed == null ? scheme.onSurface.withValues(alpha: 0.38) : scheme.onSurfaceVariant)),
+      ],
+    );
+    return Semantics(
+      button: true,
+      label: label,
+      child: tooltip == null ? button : Tooltip(message: tooltip!, child: button),
     );
   }
 }

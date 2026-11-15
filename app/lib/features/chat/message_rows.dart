@@ -8,6 +8,7 @@ import '../../core/format.dart';
 import '../../core/i18n.dart';
 import '../../core/theme.dart';
 import '../../core/tokens.dart';
+import 'markdown_fix.dart';
 import '../../models/models.dart';
 import '../../core/form_factor.dart';
 import '../../widgets/motion.dart';
@@ -75,10 +76,11 @@ class BlockCache {
     final h = text.hashCode ^ text.length;
     if (hit != null && hit.$1 == h) return hit.$2;
     List<Block> blocks;
+    final src = preprocessMarkdown(text);
     try {
-      blocks = markdownToBlocks(text);
+      blocks = markdownToBlocks(src);
     } catch (_) {
-      blocks = markdownToBlocks(text.replaceAll('`', "'"));
+      blocks = markdownToBlocks(src.replaceAll('`', "'"));
     }
     _cache[k] = (h, blocks);
     return blocks;
@@ -136,6 +138,8 @@ String closeStreamingMarkdown(String text) {
   var out = text;
   final fences = RegExp(r'^\s*(```|~~~)', multiLine: true).allMatches(out).length;
   if (fences.isOdd) return '$out\n```';
+  // An unfinished $$ block: close it so the half-written formula doesn't show as raw text.
+  if (RegExp(r'^\s*\$\$\s*$', multiLine: true).allMatches(out).length.isOdd) return '$out\n\$\$';
   // Only look at the last paragraph: inline markers never span blocks.
   final cut = out.lastIndexOf('\n\n');
   final para = cut < 0 ? out : out.substring(cut + 2);

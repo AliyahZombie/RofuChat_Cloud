@@ -488,11 +488,9 @@ packages:
   md_single_block_renderer:
     dependency: "direct main"
     description:
-      path: "."
-      ref: HEAD
-      resolved-ref: "3d57fcd24b127ef8533d68e5009b71c556636032"
-      url: "https://github.com/EnderWolf006/md_single_block_renderer"
-    source: git
+      path: "packages/md_single_block_renderer"
+      relative: true
+    source: path
     version: "0.0.1"
   meta:
     dependency: transitive

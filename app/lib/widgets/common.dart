@@ -237,7 +237,7 @@ class _RingPainter extends CustomPainter {
   bool shouldRepaint(covariant _RingPainter o) => o.ratio != ratio || o.color != color || o.track != track;
 }
 
-/// "↑1.2k ↓350 ⚡800 · 5.3s"
+/// "↑1.2k (800 cached) ↓350 · 5.3s"
 class TokenIndicator extends StatelessWidget {
   final Usage usage;
   const TokenIndicator({super.key, required this.usage});
@@ -247,9 +247,9 @@ class TokenIndicator extends StatelessWidget {
     final style = Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant, fontFeatures: const [FontFeature.tabularFigures()]);
     final est = usage.estimated ? '~' : '';
     final parts = <String>[
-      '↑$est${fmtTokens(usage.input)}',
+      // Cached tokens follow the upload count: "↑1.2k (800 cached)".
+      '↑$est${fmtTokens(usage.input)}${usage.cached > 0 ? ' (${fmtTokens(usage.cached)} cached)' : ''}',
       '↓$est${fmtTokens(usage.output)}',
-      if (usage.cached > 0) '⚡${fmtTokens(usage.cached)}',
     ];
     final tip = [
       '${t('输入', 'Input')}: ${usage.input}',

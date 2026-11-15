@@ -43,8 +43,10 @@ dependencies:
   path_provider: ^2.1.6
   file_picker: ^13.3.3
   ffi: ^2.2.0
+  # Vendored from github.com/EnderWolf006/md_single_block_renderer (3d57fcd) with RofuChat
+  # fixes: tight list items keep their inline formatting, nested quotes show their depth.
   md_single_block_renderer:
-    git: https://github.com/EnderWolf006/md_single_block_renderer
+    path: packages/md_single_block_renderer
 
 dev_dependencies:
   flutter_test:
