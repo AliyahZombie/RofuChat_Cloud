@@ -972,6 +972,15 @@ class _MessageList extends ConsumerWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (ctl.floorOf(m) case final f?) ...[
+                const SizedBox(width: Insets.x2),
+                Text(
+                  '#$f',
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
             ],
           ),
         );

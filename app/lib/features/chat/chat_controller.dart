@@ -159,6 +159,15 @@ class ChatController extends ChangeNotifier {
   int get loadedCount => messages.length + _cold.length;
   int get coldCount => _cold.length;
 
+  /// Stored messages older than everything loaded (from the conversation's message_count).
+  int _unloaded = 0;
+
+  /// 1-based floor number (#n) of a live message: its position among all stored messages.
+  int? floorOf(Message m) {
+    final i = messages.indexOf(m);
+    return i < 0 ? null : _unloaded + _cold.length + i + 1;
+  }
+
   /// Brings older messages into view: thaws a chunk from the frozen cache first, otherwise
   /// fetches the previous page from the server.
   Future<void> loadOlder() async {
@@ -195,6 +204,7 @@ class ChatController extends ChangeNotifier {
         messages.insertAll(0, fresh);
       }
       hasMore = more && older.isNotEmpty;
+      _unloaded = hasMore ? max(0, _unloaded - fresh.length) : 0;
       got = fresh.isNotEmpty;
     } catch (_) {}
     loadingOlder = false;
@@ -289,6 +299,8 @@ class ChatController extends ChangeNotifier {
       messages = page;
       _cold.clear();
       hasMore = more;
+      final total = (conv['message_count'] as num?)?.toInt();
+      _unloaded = more && total != null ? max(0, total - page.length) : 0;
       loadError = null;
       if (autoLoad && hasMore) unawaited(_autoLoadAll());
       if (conv['generating'] == true && _sub == null) {
@@ -673,6 +685,7 @@ class ChatController extends ChangeNotifier {
       messages = await api.list('/api/conversations/$conversationId/messages', Message.new);
       _cold.clear();
       hasMore = false;
+      _unloaded = 0;
       rev++;
       trimToWindow();
     } finally {
