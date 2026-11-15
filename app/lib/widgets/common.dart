@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/format.dart';
 import '../core/i18n.dart';
+import '../core/theme.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 
@@ -74,28 +75,51 @@ class ModelIcon extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final key = iconKey.isNotEmpty ? iconKey : detectIconKey(name);
     final asset = _assetFor(key, Theme.of(context).brightness);
+    final (bg, fg) = nameColors(name, Theme.of(context).brightness);
+    Widget initial() => _Initial(name: name, size: size * 0.68, color: fg);
+    // Brand artwork keeps its colours on a neutral disc; the fallback initial uses the
+    // name's tonal pair.
     return Container(
       width: size,
       height: size,
-      decoration: BoxDecoration(shape: BoxShape.circle, color: scheme.surfaceContainerHighest),
+      decoration: BoxDecoration(shape: BoxShape.circle, color: asset != null ? scheme.surfaceContainerHighest : bg),
       padding: EdgeInsets.all(size * 0.16),
-      child: asset != null
-          ? Image.asset(asset, fit: BoxFit.contain, errorBuilder: (_, _, _) => _Initial(name: name, size: size))
-          : _Initial(name: name, size: size),
+      child: asset != null ? Image.asset(asset, fit: BoxFit.contain, errorBuilder: (_, _, _) => initial()) : initial(),
     );
   }
 }
 
+/// A deterministic tonal pair for a name: the hash picks a hue, and an M3 tonal scheme of
+/// that hue supplies an accessible container / on-container pair for the brightness.
+(Color, Color) nameColors(String name, Brightness b) {
+  final hue = (name.hashCode % 360).abs();
+  return _nameColors.putIfAbsent((hue, b), () {
+    final s = ColorScheme.fromSeed(seedColor: HSLColor.fromAHSL(1, hue.toDouble(), 0.6, 0.5).toColor(), brightness: b);
+    return (s.primaryContainer, s.onPrimaryContainer);
+  });
+}
+
+final _nameColors = <(int, Brightness), (Color, Color)>{};
+
+/// The initial of a name in an avatar. The size follows the avatar (a decorative, local
+/// exception) on top of the titleMedium role; screen readers get the name from the
+/// enclosing control instead.
 class _Initial extends StatelessWidget {
   final String name;
   final double size;
-  const _Initial({required this.name, required this.size});
+  final Color color;
+  const _Initial({required this.name, required this.size, required this.color});
   @override
   Widget build(BuildContext context) {
     final txt = name.trim().isEmpty ? '?' : name.trim().characters.first.toUpperCase();
-    final hue = (name.hashCode % 360).abs().toDouble();
-    return Center(
-      child: Text(txt, style: TextStyle(fontSize: size * 0.5, fontWeight: FontWeight.w700, color: HSLColor.fromAHSL(1, hue, 0.55, 0.55).toColor())),
+    return ExcludeSemantics(
+      child: Center(
+        child: Text(
+          txt,
+          textScaler: TextScaler.noScaling, // must fit its circle; the name is announced elsewhere
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(fontSize: size * 0.45, height: 1, fontWeight: FontWeight.w600, color: color),
+        ),
+      ),
     );
   }
 }
@@ -109,15 +133,14 @@ class CharacterAvatar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final c = character;
-    final scheme = Theme.of(context).colorScheme;
     final name = c?.name ?? '?';
-    final hue = (name.hashCode % 360).abs().toDouble();
+    final (bg, fg) = nameColors(name, Theme.of(context).brightness);
     final fallback = Container(
       width: size,
       height: size,
       alignment: Alignment.center,
-      decoration: BoxDecoration(shape: BoxShape.circle, color: HSLColor.fromAHSL(1, hue, 0.45, Theme.of(context).brightness == Brightness.dark ? 0.35 : 0.75).toColor()),
-      child: Text(name.isEmpty ? '?' : name.characters.first.toUpperCase(), style: TextStyle(fontSize: size * 0.45, color: scheme.onSurface, fontWeight: FontWeight.w600)),
+      decoration: BoxDecoration(shape: BoxShape.circle, color: bg),
+      child: _Initial(name: name, size: size, color: fg),
     );
     final av = c?.avatar ?? '';
     if (av.isEmpty) return fallback;
@@ -163,7 +186,7 @@ class ContextRing extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final r = info.ratio;
-    final color = r > 0.85 ? scheme.error : (r > 0.6 ? Colors.orange : scheme.primary);
+    final color = r > 0.85 ? scheme.error : (r > 0.6 ? AppColors.resolve(context).warning : scheme.primary);
     final ring = CustomPaint(
       size: Size.square(size),
       painter: _RingPainter(
@@ -223,7 +246,7 @@ class TokenIndicator extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final style = Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.outline, fontFeatures: const [FontFeature.tabularFigures()]);
+    final style = Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant, fontFeatures: const [FontFeature.tabularFigures()]);
     final est = usage.estimated ? '~' : '';
     final parts = <String>[
       '↑$est${fmtTokens(usage.input)}',

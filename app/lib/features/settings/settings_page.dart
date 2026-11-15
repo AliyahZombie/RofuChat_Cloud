@@ -141,10 +141,46 @@ class SettingsPage extends ConsumerWidget {
           onSelectionChanged: (v) => setA(a.copyWith(themeMode: v.first)),
         ),
       ),
+      SwitchListTile(
+        secondary: const Icon(Icons.wallpaper_rounded),
+        title: Text(t('动态取色', 'Dynamic colour')),
+        subtitle: Text(t('使用系统壁纸/强调色（Android 12+ 等）；不支持时使用下方种子色', 'Use the system wallpaper / accent palette (Android 12+ and others); falls back to the seed below')),
+        value: a.colorSource == 'dynamic',
+        onChanged: (v) => setA(a.copyWith(colorSource: v ? 'dynamic' : 'seed')),
+      ),
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Wrap(spacing: 4, runSpacing: 4, children: [
-          for (final (zh, en, color) in seedPresets) _SeedSwatch(label: t(zh, en), color: Color(color), selected: a.seed == color, onTap: () => setA(a.copyWith(seed: color))),
+          for (final (zh, en, color) in seedPresets)
+            _SeedSwatch(
+              label: t(zh, en),
+              color: Color(color),
+              selected: a.colorSource == 'seed' && a.seed == color,
+              onTap: () => setA(a.copyWith(seed: color, colorSource: 'seed')),
+            ),
+          // Custom seed: shows the current custom colour, opens a hex entry.
+          _SeedSwatch(
+            label: t('自定义颜色', 'Custom colour'),
+            color: seedPresets.any((p) => p.$3 == a.seed) ? Theme.of(context).colorScheme.surfaceContainerHighest : Color(a.seed),
+            selected: a.colorSource == 'seed' && !seedPresets.any((p) => p.$3 == a.seed),
+            icon: Icons.colorize_rounded,
+            onTap: () async {
+              final v = await promptText(
+                context,
+                t('自定义种子色', 'Custom seed colour'),
+                initial: '#${(a.seed & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}',
+                label: t('十六进制颜色，如 #5C6BC0', 'Hex colour, e.g. #5C6BC0'),
+                ok: t('应用', 'Apply'),
+              );
+              final hex = v?.trim().replaceFirst('#', '') ?? '';
+              final n = RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(hex) ? int.parse(hex, radix: 16) : null;
+              if (n != null) {
+                setA(a.copyWith(seed: 0xFF000000 | n, colorSource: 'seed'));
+              } else if (v != null && context.mounted) {
+                showError(context, t('请输入 6 位十六进制颜色', 'Enter a 6-digit hex colour'));
+              }
+            },
+          ),
         ]),
       ),
       ListTile(
@@ -298,7 +334,8 @@ class _SeedSwatch extends StatelessWidget {
   final Color color;
   final bool selected;
   final VoidCallback onTap;
-  const _SeedSwatch({required this.label, required this.color, required this.selected, required this.onTap});
+  final IconData? icon;
+  const _SeedSwatch({required this.label, required this.color, required this.selected, required this.onTap, this.icon});
 
   @override
   Widget build(BuildContext context) {
@@ -324,7 +361,7 @@ class _SeedSwatch extends StatelessWidget {
                   shape: BoxShape.circle,
                   border: selected ? Border.all(color: Theme.of(context).colorScheme.onSurface, width: 2) : null,
                 ),
-                child: selected ? Icon(Icons.check, size: 18, color: onColor) : null,
+                child: selected ? Icon(Icons.check, size: 18, color: onColor) : (icon == null ? null : Icon(icon, size: 18, color: onColor)),
               ),
             ),
           ),

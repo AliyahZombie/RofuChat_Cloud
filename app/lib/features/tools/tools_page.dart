@@ -40,7 +40,7 @@ class ToolsPage extends ConsumerWidget {
             : ListView(children: [
                 for (final tool in list)
                   ListTile(
-                    leading: Icon(builtinToolNames.contains(tool.name) ? Icons.casino_outlined : Icons.code_rounded, color: tool.enabled ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.outline),
+                    leading: Icon(builtinToolNames.contains(tool.name) ? Icons.casino_outlined : Icons.code_rounded, color: tool.enabled ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.onSurfaceVariant),
                     title: Text(tool.name),
                     subtitle: Text(tool.description, maxLines: 1, overflow: TextOverflow.ellipsis),
                     trailing: Switch(

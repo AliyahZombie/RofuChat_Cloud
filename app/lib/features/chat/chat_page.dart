@@ -787,7 +787,7 @@ class _MessageList extends ConsumerWidget {
                         ),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: Theme.of(context).colorScheme.outline,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       )
                     : null;
@@ -891,7 +891,7 @@ class _MessageList extends ConsumerWidget {
         return Appear(
           enabled: m.id == ctl.streamingId,
           child: Opacity(
-            opacity: m.visible ? 1 : 0.5,
+            opacity: m.visible ? 1 : kExcludedOpacity,
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 1),
               child: MarkdownSingleBlockRenderer(
@@ -1198,7 +1198,7 @@ class _AssistantFooter extends StatelessWidget {
     final notices = ctl.notices[msg.id] ?? const <String>[];
     final usage = msg.usage;
     return Opacity(
-      opacity: msg.visible ? 1 : 0.6,
+      opacity: msg.visible ? 1 : kExcludedOpacity,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1237,7 +1237,7 @@ class _AssistantFooter extends StatelessWidget {
               child: Text(
                 n,
                 style: Theme.of(context).textTheme.labelSmall
-                    ?.copyWith(color: scheme.outline),
+                    ?.copyWith(color: scheme.onSurfaceVariant),
               ),
             ),
           if (compact)
@@ -1267,15 +1267,7 @@ class _AssistantFooter extends StatelessWidget {
               child: Wrap(
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  if (!msg.visible)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: Text(
-                        t('不在上下文中', 'Not in context'),
-                        style: Theme.of(context).textTheme.labelSmall
-                            ?.copyWith(color: scheme.outline),
-                      ),
-                    ),
+                  if (!msg.visible) const ContextTag(),
                   if (showTokens && usage != null)
                     Padding(
                       padding: const EdgeInsets.only(right: 4),

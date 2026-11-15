@@ -422,7 +422,9 @@ class _ToolsTab extends ConsumerWidget {
               return CheckboxListTile(
                 value: c.toolIds.contains(tool.id),
                 onChanged: (v) => touch(() => c.toolIds = v == true ? [...c.toolIds, tool.id] : c.toolIds.where((x) => x != tool.id).toList()),
-                title: Text(tool.name, style: TextStyle(color: allowed ? null : scheme.outline)),
+                // Still selectable for configuration: keep the label readable and explain the
+                // restriction in the supporting text instead of fading it.
+                title: Text(tool.name),
                 subtitle: Text(
                   [
                     if (tool.description.isNotEmpty) tool.description,

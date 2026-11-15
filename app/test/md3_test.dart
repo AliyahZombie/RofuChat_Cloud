@@ -1,4 +1,6 @@
 // Material 3 migration checks (docs/md3/audit-reconciled.md).
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -37,6 +39,8 @@ void _expectTargets(WidgetTester t, Finder f) {
 }
 
 void main() {
+  foundationTests();
+
   for (final platform in [TargetPlatform.android, TargetPlatform.linux, TargetPlatform.windows]) {
     testWidgets('message action buttons are at least 48dp on $platform', (t) async {
       debugDefaultTargetPlatformOverride = platform;
@@ -186,5 +190,85 @@ void main() {
     final base = buildTheme(const Appearance(), Brightness.dark);
     final w = watchTheme(base);
     expect(w.textTheme.bodyLarge!.fontSize, closeTo(16 * 0.85, 0.01)); // M3 bodyLarge 16sp
+  });
+}
+
+// ------------------------------------------------------------------ foundation (phase 2)
+
+double _contrast(Color a, Color b) {
+  final la = a.computeLuminance(), lb = b.computeLuminance();
+  final hi = la > lb ? la : lb, lo = la > lb ? lb : la;
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+void foundationTests() {
+  test('outline is never a text colour (role-based colour, grep review)', () {
+    final offenders = <String>[];
+    for (final f in Directory('lib').listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart'))) {
+      final lines = f.readAsLinesSync();
+      for (var i = 0; i < lines.length; i++) {
+        final l = lines[i];
+        if (!RegExp(r'\.outline\b(?!Variant)').hasMatch(l)) continue;
+        // Allowed only as a boundary (border/side) colour.
+        if (!RegExp(r'Border|side|BorderSide').hasMatch(l)) offenders.add('${f.path}:${i + 1}: ${l.trim()}');
+      }
+    }
+    expect(offenders, isEmpty);
+  });
+
+  test('no linear curves or unnamed local durations in shared motion code', () {
+    for (final path in ['lib/widgets/motion.dart', 'lib/widgets/slide_drawer.dart', 'lib/main.dart']) {
+      final src = File(path).readAsStringSync();
+      expect(src.contains('Curves.linear'), isFalse, reason: path);
+      expect(RegExp(r'Curves\.ease(Out|In)Cubic\b').hasMatch(src), isFalse, reason: '$path uses tokens');
+    }
+  });
+
+  for (final b in Brightness.values) {
+    for (final seed in [0xFFFFA726, 0xFFE57399, 0xFF5C6BC0]) {
+      test('warning pair and small-text roles contrast ($b, ${seed.toRadixString(16)})', () {
+        final theme = buildTheme(Appearance(seed: seed), b);
+        final c = theme.colorScheme;
+        final w = theme.extension<AppColors>()!;
+        expect(_contrast(w.onWarning, w.warning), greaterThanOrEqualTo(4.5));
+        expect(_contrast(w.onWarningContainer, w.warningContainer), greaterThanOrEqualTo(4.5));
+        expect(_contrast(w.warning, c.surface), greaterThanOrEqualTo(3));
+        expect(_contrast(c.onSurfaceVariant, c.surface), greaterThanOrEqualTo(4.5));
+        expect(_contrast(c.onSurfaceVariant, c.surfaceContainerHigh), greaterThanOrEqualTo(4.5));
+      });
+    }
+  }
+
+  test('AMOLED black keeps a pure black surface and readable on-colours', () {
+    final c = buildTheme(const Appearance(themeMode: 'black'), Brightness.dark).colorScheme;
+    expect(c.surface, Colors.black);
+    expect(_contrast(c.onSurface, c.surface), greaterThanOrEqualTo(7));
+    expect(_contrast(c.onSurfaceVariant, c.surfaceContainerHigh), greaterThanOrEqualTo(4.5));
+  });
+
+  test('dynamic colour source uses the platform palette, else falls back to the seed', () {
+    final platform = ColorScheme.fromSeed(seedColor: Colors.green);
+    final seeded = buildTheme(const Appearance(seed: 0xFF5C6BC0), Brightness.light).colorScheme;
+    expect(buildTheme(const Appearance(colorSource: 'dynamic'), Brightness.light, platform: platform).colorScheme.primary, platform.primary);
+    expect(buildTheme(const Appearance(colorSource: 'dynamic', seed: 0xFF5C6BC0), Brightness.light).colorScheme.primary, seeded.primary);
+    expect(buildTheme(const Appearance(seed: 0xFF5C6BC0), Brightness.light, platform: platform).colorScheme.primary, seeded.primary);
+    expect(Appearance.fromJson(const Appearance(colorSource: 'dynamic').toJson()).colorSource, 'dynamic');
+  });
+
+  test('theme encodes the M3 component policy', () {
+    final th = buildTheme(const Appearance(compact: true), Brightness.light);
+    expect(th.visualDensity, VisualDensity.standard, reason: 'compact never shrinks controls');
+    expect(th.materialTapTargetSize, MaterialTapTargetSize.padded);
+    // ignore: deprecated_member_use
+    expect(th.sliderTheme.year2023, isFalse);
+    // ignore: deprecated_member_use
+    expect(th.progressIndicatorTheme.year2023, isFalse);
+    expect(th.snackBarTheme.behavior, SnackBarBehavior.floating);
+    expect(th.dialogTheme.constraints?.maxWidth, 560);
+    expect(th.dividerTheme.color, th.colorScheme.outlineVariant);
+    expect(th.inputDecorationTheme.isDense, isFalse);
+    expect(th.appBarTheme.scrolledUnderElevation, greaterThan(0));
+    final bg = th.appBarTheme.backgroundColor! as WidgetStateColor;
+    expect(bg.resolve({WidgetState.scrolledUnder}), isNot(bg.resolve({})));
   });
 }

@@ -132,7 +132,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 for (final e in groups.entries) ...[
                   Padding(
                     padding: const EdgeInsets.fromLTRB(8, 10, 8, 4),
-                    child: Text(e.key, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
+                    child: Text(e.key, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
                   ),
                   for (final c in e.value)
                     GestureDetector(

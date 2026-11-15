@@ -132,7 +132,12 @@ function main(args) {
 
 - Material 3 `ColorScheme.fromSeed`，深浅色两套；纯黑模式把 surface 设为 #000。
 - 用户气泡用 `primaryContainer`，工具/思考卡用 `surfaceContainerHigh`，与截图一致的深色观感。
-- 所有颜色从 ColorScheme 取，不写死。
+- 所有颜色从 ColorScheme 取，不写死。按角色取色：`outline` 只用于边界，文字一律 `onSurface` / `onSurfaceVariant`。
+- 配色来源（`appearance.color_source`）：`seed`（预设或自定义种子色，存于 `seed`）或 `dynamic`（Android 12+ 壁纸取色 / 桌面强调色，经 `dynamic_color`）；平台无动态色时回退到种子色。纯黑模式同样作用于动态色的深色方案。
+- 产品专用颜色角色放在 `AppColors` ThemeExtension：警告（橙色）`warning/onWarning/warningContainer/onWarningContainer`，按明暗分别取色。不加 surface tint 叠色、不加任意阴影；滚动到内容下方的顶栏改用 `surfaceContainer` 色调区分。
+- 设计令牌在 `lib/core/tokens.dart`：间距 4dp 栅格（`Insets`）、圆角 0/4/8/12/16/20/28/full（`Corners`，用户气泡 20 为 large-increased）、M3 动效时长 short1…extraLong4 与 standard / emphasized 缓动（`Motion`）；组件主题在 `lib/core/theme.dart`。
+- 文字只用 M3 TextTheme 角色；保留系统 TextScaler（不做截断/线性化）。手表通过主题缩小字号（基础 13sp），用户“字体大小”通过 `AppTypography.chatScale` 作用于所有聊天文字（回复、用户气泡、思考/工具、摘要、输入框）；代码字体由 `bodyMedium` 派生为等宽。
+- “紧凑布局”只压缩内容与文字间距，所有可交互目标保持 ≥ 48dp。
 
 ## 11. 国际化
 

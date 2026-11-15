@@ -6,6 +6,7 @@ import 'package:md_single_block_renderer/md_single_block_renderer.dart';
 
 import '../../core/format.dart';
 import '../../core/i18n.dart';
+import '../../core/tokens.dart';
 import '../../models/models.dart';
 import '../../widgets/motion.dart';
 
@@ -167,7 +168,7 @@ class UserBubble extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     return Opacity(
-      opacity: msg.visible ? 1 : 0.5,
+      opacity: msg.visible ? 1 : kExcludedOpacity,
       child: Padding(
         padding: EdgeInsets.only(top: compact ? 6 : 10, bottom: 2),
         child: Column(
@@ -211,7 +212,7 @@ class UserBubble extends StatelessWidget {
                 alignment: WrapAlignment.end,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  if (!msg.visible) _NotInContext(),
+                  if (!msg.visible) const ContextTag(),
                   _MiniIcon(Icons.copy_rounded, t('复制', 'Copy'), onCopy),
                   ?swipeNav,
                   _MiniIcon(Icons.edit_outlined, t('编辑', 'Edit'), onEdit),
@@ -231,15 +232,18 @@ Offset _center(BuildContext c) {
   return box.localToGlobal(box.size.center(Offset.zero));
 }
 
-class _NotInContext extends StatelessWidget {
+/// "Not in context" status tag, shared by user and assistant rows (labelSmall,
+/// onSurfaceVariant on an outlineVariant hairline, extra-small corners).
+class ContextTag extends StatelessWidget {
+  const ContextTag({super.key});
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Container(
-      margin: const EdgeInsets.only(right: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-      decoration: BoxDecoration(border: Border.all(color: scheme.outline), borderRadius: BorderRadius.circular(6)),
-      child: Text(t('不在上下文中', 'Not in context'), style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
+      margin: const EdgeInsetsDirectional.only(end: Insets.x2),
+      padding: const EdgeInsets.symmetric(horizontal: Insets.x2, vertical: Insets.hairline),
+      decoration: BoxDecoration(border: Border.all(color: scheme.outlineVariant), borderRadius: Corners.rXs),
+      child: Text(t('不在上下文中', 'Not in context'), style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
     );
   }
 }
@@ -436,7 +440,7 @@ class _StepsCardState extends State<StepsCard> {
                     Text(sub, style: text.bodySmall?.copyWith(color: scheme.primary), maxLines: 2, overflow: TextOverflow.ellipsis),
                 ]),
               ),
-              if (isTool && !running) Text(fmtDuration(s.durationMs), style: text.labelSmall?.copyWith(color: scheme.outline)),
+              if (isTool && !running) Text(fmtDuration(s.durationMs), style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
               TurnChevron(open: open, sideways: isTool, color: scheme.onSurfaceVariant),
             ]),
           ),
@@ -449,10 +453,10 @@ class _StepsCardState extends State<StepsCard> {
             padding: EdgeInsets.fromLTRB(widget.compact ? 12 : 44, 0, widget.compact ? 8 : 14, 8),
             child: isTool
                 ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(t('参数', 'Arguments'), style: text.labelSmall?.copyWith(color: scheme.outline)),
+                    Text(t('参数', 'Arguments'), style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
                     _Mono(_pretty(s.arguments)),
                     const SizedBox(height: 6),
-                    Text(t('结果', 'Result'), style: text.labelSmall?.copyWith(color: scheme.outline)),
+                    Text(t('结果', 'Result'), style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
                     _Mono(s.result ?? t('运行中…', 'Running…'), maxLines: 30),
                   ])
                 : Text(
