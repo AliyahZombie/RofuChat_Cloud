@@ -1,4 +1,5 @@
 import 'dart:math';
+
 // Data classes mirroring the backend JSON (docs/backend-spec.md §4).
 // Each wraps the raw JSON map so unknown fields survive a GET → PUT round trip.
 
@@ -10,6 +11,7 @@ String _s(Json j, String k, [String d = '']) => (j[k] as String?) ?? d;
 int _i(Json j, String k, [int d = 0]) => (j[k] as num?)?.toInt() ?? d;
 bool _b(Json j, String k, [bool d = false]) => (j[k] as bool?) ?? d;
 List<String> _ls(Json j, String k) => ((j[k] as List?) ?? const []).map((e) => e.toString()).toList();
+
 /// The nested map at [k], attached to [j] so edits to it stick. Returns the same instance on
 /// every call (a fresh copy each time would detach maps the UI already holds).
 Json _m(Json j, String k) {
@@ -98,16 +100,16 @@ class McpServerCfg {
 class Character extends JsonModel {
   Character(super.j);
   factory Character.blank() => Character({
-        'name': '',
-        'avatar': '',
-        'model_id': '',
-        'card': <String, dynamic>{'name': ''},
-        'mcp': <dynamic>[],
-        'tool_ids': <dynamic>[],
-        'context': <String, dynamic>{'mode': 'traditional', 'compress_threshold': 0, 'keep_recent': 6, 'display_recent': 4},
-        'memory': <String, dynamic>{'enabled': true, 'auto_scan': true, 'share_global': true},
-        'params': <String, dynamic>{'reasoning_effort': ''},
-      });
+    'name': '',
+    'avatar': '',
+    'model_id': '',
+    'card': <String, dynamic>{'name': ''},
+    'mcp': <dynamic>[],
+    'tool_ids': <dynamic>[],
+    'context': <String, dynamic>{'mode': 'traditional', 'summarize': true, 'instant': false, 'compress_threshold': 0, 'keep_recent': 6, 'display_recent': 4},
+    'memory': <String, dynamic>{'enabled': true, 'auto_scan': true, 'share_global': true},
+    'params': <String, dynamic>{'reasoning_effort': ''},
+  });
   String get name => _s(json, 'name');
   set name(String v) => json['name'] = v;
   String get avatar => _s(json, 'avatar');
@@ -118,7 +120,22 @@ class Character extends JsonModel {
   Json get context => _m(json, 'context');
   Json get memory => _m(json, 'memory');
   Json get params => _m(json, 'params');
-  String get contextMode => _s(context, 'mode', 'traditional');
+  String get contextMode => instant ? 'instant' : 'traditional';
+
+  /// Per-reply compression (`actual`). Missing key follows the legacy `mode`.
+  bool get instant => (context['instant'] as bool?) ?? _s(context, 'mode') == 'instant';
+
+  /// Threshold summary compression; defaults to on.
+  bool get summarize => _b(context, 'summarize', true);
+
+  /// Writes both switches (and `mode` for old servers).
+  void setCompression({bool? instant, bool? summarize}) {
+    final i = instant ?? this.instant, s = summarize ?? this.summarize;
+    context['instant'] = i;
+    context['summarize'] = s;
+    context['mode'] = i ? 'instant' : 'traditional';
+  }
+
   List<String> get toolIds => _ls(json, 'tool_ids');
   set toolIds(List<String> v) => json['tool_ids'] = v;
   List<McpServerCfg> get mcp => ((json['mcp'] as List?) ?? const []).map((e) => McpServerCfg(Map<String, dynamic>.from(e as Map))).toList();
@@ -126,6 +143,7 @@ class Character extends JsonModel {
   String get reasoningEffort => _s(params, 'reasoning_effort');
   String cardStr(String k) => _s(card, k);
   void setCard(String k, dynamic v) => card[k] = v;
+
   /// Body for POST /api/conversations choosing greetings[idx]: the API's greeting_index is a
   /// zero-based index into alternate_greetings, and omitting it selects first_mes.
   Map<String, dynamic> newConversationBody(int idx) {
@@ -145,13 +163,13 @@ class Character extends JsonModel {
 class LocalTool extends JsonModel {
   LocalTool(super.j);
   factory LocalTool.blank() => LocalTool({
-        'name': 'my_tool',
-        'description': '',
-        'parameters': {'type': 'object', 'properties': <String, dynamic>{}},
-        'code': '// args 为模型传入的参数对象；可使用 console.log 与同步 http(method, url, body, headers)\nfunction main(args) {\n  return { echo: args };\n}\n',
-        'models': <dynamic>[],
-        'enabled': true,
-      });
+    'name': 'my_tool',
+    'description': '',
+    'parameters': {'type': 'object', 'properties': <String, dynamic>{}},
+    'code': '// args 为模型传入的参数对象；可使用 console.log 与同步 http(method, url, body, headers)\nfunction main(args) {\n  return { echo: args };\n}\n',
+    'models': <dynamic>[],
+    'enabled': true,
+  });
   String get name => _s(json, 'name');
   set name(String v) => json['name'] = v;
   String get description => _s(json, 'description');
@@ -234,6 +252,7 @@ class Message extends JsonModel {
   String get modelIcon => _s(json, 'model_icon');
   Usage? get usage => json['usage'] is Map ? Usage(Map<String, dynamic>.from(json['usage'] as Map)) : null;
   int get createdAt => _i(json, 'created_at');
+
   /// Active swipe (0-based) and number of swipes; a message without swipes has one.
   int get swipeIndex => _i(json, 'swipe_index');
   int get swipeCount => max(1, _i(json, 'swipe_count', 1));
@@ -264,13 +283,17 @@ class ContextInfo {
   final bool estimated;
   final String mode;
   final int threshold;
-  const ContextInfo({this.tokens = 0, this.max = 0, this.estimated = true, this.mode = 'traditional', this.threshold = 0});
+  final bool instant;
+  final bool summarize;
+  const ContextInfo({this.tokens = 0, this.max = 0, this.estimated = true, this.mode = 'traditional', this.threshold = 0, this.instant = false, this.summarize = true});
   factory ContextInfo.fromJson(Json j) => ContextInfo(
-        tokens: _i(j, 'tokens'),
-        max: _i(j, 'max'),
-        estimated: _b(j, 'estimated', true),
-        mode: _s(j, 'mode', 'traditional'),
-        threshold: _i(j, 'threshold'),
-      );
+    tokens: _i(j, 'tokens'),
+    max: _i(j, 'max'),
+    estimated: _b(j, 'estimated', true),
+    mode: _s(j, 'mode', 'traditional'),
+    threshold: _i(j, 'threshold'),
+    instant: (j['instant'] as bool?) ?? _s(j, 'mode') == 'instant',
+    summarize: _b(j, 'summarize', true),
+  );
   double get ratio => max <= 0 ? 0 : (tokens / max).clamp(0.0, 1.0);
 }

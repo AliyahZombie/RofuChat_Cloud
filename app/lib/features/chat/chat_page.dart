@@ -139,25 +139,29 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     if (ff == FormFactor.watch) {
       // Watch: no app bar; a small title chip at the top opens the character/chat list.
       return Scaffold(
-        body: Stack(children: [
-          Positioned.fill(child: body),
-          Positioned(
-            top: 4,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: ActionChip(
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                avatar: ch == null ? const Icon(Icons.menu, size: 14) : CharacterAvatar(character: ch, size: 18),
-                label: Text(ch?.name ?? 'RofuChat', style: const TextStyle(fontSize: 11)),
-                onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => Scaffold(body: Sidebar(onNewConversation: newConversation, inDrawer: true)),
-                )),
+        body: Stack(
+          children: [
+            Positioned.fill(child: body),
+            Positioned(
+              top: 4,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  avatar: ch == null ? const Icon(Icons.menu, size: 14) : CharacterAvatar(character: ch, size: 18),
+                  label: Text(ch?.name ?? 'RofuChat', style: const TextStyle(fontSize: 11)),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => Scaffold(body: Sidebar(onNewConversation: newConversation, inDrawer: true)),
+                    ),
+                  ),
+                ),
               ),
             ),
-          ),
-        ]),
+          ],
+        ),
       );
     }
 
@@ -177,27 +181,35 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     if (ff == FormFactor.desktop) {
       return Scaffold(
         key: _scaffold,
-        body: Row(children: [
-          TweenAnimationBuilder<double>(
-            tween: Tween(end: _sidebarOpen ? 1 : 0),
-            duration: const Duration(milliseconds: 360),
-            curve: Curves.easeInOutCubicEmphasized,
-            child: SizedBox(
-              width: 301,
-              child: Row(children: [
-                SizedBox(width: 300, child: Sidebar(onNewConversation: newConversation)),
-                const VerticalDivider(width: 1),
-              ]),
+        body: Row(
+          children: [
+            TweenAnimationBuilder<double>(
+              tween: Tween(end: _sidebarOpen ? 1 : 0),
+              duration: const Duration(milliseconds: 360),
+              curve: Curves.easeInOutCubicEmphasized,
+              child: SizedBox(
+                width: 301,
+                child: Row(
+                  children: [
+                    SizedBox(width: 300, child: Sidebar(onNewConversation: newConversation)),
+                    const VerticalDivider(width: 1),
+                  ],
+                ),
+              ),
+              builder: (_, v, child) => SizedBox(
+                width: 301 * v,
+                child: v == 0
+                    ? Offstage(child: child)
+                    : ClipRect(
+                        child: OverflowBox(alignment: Alignment.centerRight, minWidth: 301, maxWidth: 301, child: child),
+                      ),
+              ),
             ),
-            builder: (_, v, child) => SizedBox(
-              width: 301 * v,
-              child: v == 0
-                  ? Offstage(child: child)
-                  : ClipRect(child: OverflowBox(alignment: Alignment.centerRight, minWidth: 301, maxWidth: 301, child: child)),
+            Expanded(
+              child: Scaffold(appBar: appBar, body: body),
             ),
-          ),
-          Expanded(child: Scaffold(appBar: appBar, body: body)),
-        ]),
+          ],
+        ),
       );
     }
     // Swipe right anywhere on the chat to pull the sidebar out (it follows the finger and
@@ -220,17 +232,20 @@ class _NoCharacter extends ConsumerWidget {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.theater_comedy_outlined, size: 56, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(height: 12),
-          Text(t('还没有角色', 'No characters yet'), style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CharacterEditorPage())),
-            icon: const Icon(Icons.add),
-            label: Text(t('新建或导入角色', 'Create or import a character')),
-          ),
-        ]),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.theater_comedy_outlined, size: 56, color: Theme.of(context).colorScheme.primary),
+            const SizedBox(height: 12),
+            Text(t('还没有角色', 'No characters yet'), style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const CharacterEditorPage())),
+              icon: const Icon(Icons.add),
+              label: Text(t('新建或导入角色', 'Create or import a character')),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -268,10 +283,20 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-            Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: text.titleMedium),
-            if (sub.isNotEmpty) Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
-          ]),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: text.titleMedium),
+              if (sub.isNotEmpty)
+                Text(
+                  sub,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+                ),
+            ],
+          ),
         ),
       ),
       actions: [
@@ -281,11 +306,15 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
             onSelected: (v) => _menu(context, ref, v, ch, conv),
             itemBuilder: (c) => [
               if (conv != null) PopupMenuItem(value: 'rename', child: Text(t('重命名', 'Rename'))),
-              if (conv != null && ch.contextMode == 'traditional') PopupMenuItem(value: 'compress', child: Text(t('立即压缩上下文', 'Compress context now'))),
+              if (conv != null && ch.summarize) PopupMenuItem(value: 'compress', child: Text(t('立即压缩上下文', 'Compress context now'))),
               if (conv != null) PopupMenuItem(value: 'scan', child: Text(t('立即整理记忆', 'Update memory now'))),
               PopupMenuItem(value: 'memory', child: Text(t('角色记忆', 'Character memory'))),
               PopupMenuItem(value: 'edit', child: Text(t('角色设置', 'Character settings'))),
-              if (conv != null) PopupMenuItem(value: 'delete', child: Text(t('删除对话', 'Delete chat'), style: TextStyle(color: scheme.error))),
+              if (conv != null)
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Text(t('删除对话', 'Delete chat'), style: TextStyle(color: scheme.error)),
+                ),
             ],
           ),
       ],
@@ -308,10 +337,11 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
           final r = await api.post('/api/conversations/${conv!.id}/memory_scan');
           if (context.mounted) {
             final m = r is Map ? r : const {};
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(t('记忆已整理：新增 ${m['added'] ?? 0}，更新 ${m['updated'] ?? 0}，删除 ${m['deleted'] ?? 0}',
-                  'Memory updated: +${m['added'] ?? 0} ~${m['updated'] ?? 0} -${m['deleted'] ?? 0}')),
-            ));
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(t('记忆已整理：新增 ${m['added'] ?? 0}，更新 ${m['updated'] ?? 0}，删除 ${m['deleted'] ?? 0}', 'Memory updated: +${m['added'] ?? 0} ~${m['updated'] ?? 0} -${m['deleted'] ?? 0}')),
+              ),
+            );
           }
         case 'memory':
           await Navigator.of(context).push(MaterialPageRoute(builder: (_) => MemoryPage(characterId: ch.id)));
@@ -338,7 +368,16 @@ class _ChatBody extends ConsumerStatefulWidget {
   final bool atBottom;
   final VoidCallback onNewConversation;
   final Future<void> Function(String text, List<String> images) startConversation;
-  const _ChatBody({super.key, required this.ctl, required this.character, required this.cache, required this.scroll, required this.atBottom, required this.onNewConversation, required this.startConversation});
+  const _ChatBody({
+    super.key,
+    required this.ctl,
+    required this.character,
+    required this.cache,
+    required this.scroll,
+    required this.atBottom,
+    required this.onNewConversation,
+    required this.startConversation,
+  });
 
   @override
   ConsumerState<_ChatBody> createState() => _ChatBodyState();
@@ -367,37 +406,55 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
     final watch = context.isWatch;
     final list = ctl == null || (ctl.isDraft && ctl.messages.isEmpty)
         ? _EmptyChat(character: widget.character)
-        : ListenableBuilder(listenable: ctl, builder: (context, _) => _MessageList(ctl: ctl, character: widget.character, cache: widget.cache, scroll: widget.scroll, onEdit: (m) { if (!ctl.isDraft) _input.currentState?.startEdit(m); }));
+        : ListenableBuilder(
+            listenable: ctl,
+            builder: (context, _) => _MessageList(
+              ctl: ctl,
+              character: widget.character,
+              cache: widget.cache,
+              scroll: widget.scroll,
+              onEdit: (m) {
+                if (!ctl.isDraft) _input.currentState?.startEdit(m);
+              },
+            ),
+          );
     final input = ctl == null
         ? ChatInputBar(key: _input, ctl: null, character: widget.character, onSend: _send)
-        : ListenableBuilder(listenable: ctl, builder: (context, _) => ChatInputBar(key: _input, ctl: ctl.isDraft ? null : ctl, character: widget.character, onSend: _send));
+        : ListenableBuilder(
+            listenable: ctl,
+            builder: (context, _) => ChatInputBar(key: _input, ctl: ctl.isDraft ? null : ctl, character: widget.character, onSend: _send),
+          );
     if (watch) {
-      return Stack(children: [
-        Positioned.fill(child: list),
-        Positioned(left: 0, right: 0, bottom: 6, child: Center(child: input)),
-      ]);
+      return Stack(
+        children: [
+          Positioned.fill(child: list),
+          Positioned(left: 0, right: 0, bottom: 6, child: Center(child: input)),
+        ],
+      );
     }
     final appearance = ref.watch(appearanceProvider);
-    Widget content = Column(children: [
-      Expanded(
-        child: Stack(children: [
-          Positioned.fill(child: list),
-          if (!widget.atBottom && ctl != null && !ctl.isDraft)
-            Positioned(
-              right: 12,
-              bottom: 8,
-              child: FloatingActionButton.small(
-                heroTag: 'bottom',
-                onPressed: _toBottom,
-                child: const Icon(Icons.keyboard_double_arrow_down_rounded),
-              ),
-            ),
-        ]),
-      ),
-      input,
-    ]);
+    Widget content = Column(
+      children: [
+        Expanded(
+          child: Stack(
+            children: [
+              Positioned.fill(child: list),
+              if (!widget.atBottom && ctl != null && !ctl.isDraft)
+                Positioned(
+                  right: 12,
+                  bottom: 8,
+                  child: FloatingActionButton.small(heroTag: 'bottom', onPressed: _toBottom, child: const Icon(Icons.keyboard_double_arrow_down_rounded)),
+                ),
+            ],
+          ),
+        ),
+        input,
+      ],
+    );
     if (!appearance.fullWidth && context.isDesktop) {
-      content = Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 900), child: content));
+      content = Center(
+        child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 900), child: content),
+      );
     }
     return content;
   }
@@ -412,16 +469,19 @@ class _EmptyChat extends StatelessWidget {
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          CharacterAvatar(character: character, size: context.isWatch ? 48 : 72),
-          const SizedBox(height: 12),
-          Text(character.name, style: text.titleLarge),
-          if (character.cardStr('creator_notes').isNotEmpty && !context.isWatch)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(character.cardStr('creator_notes'), maxLines: 4, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: text.bodySmall),
-            ),
-        ]),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CharacterAvatar(character: character, size: context.isWatch ? 48 : 72),
+            const SizedBox(height: 12),
+            Text(character.name, style: text.titleLarge),
+            if (character.cardStr('creator_notes').isNotEmpty && !context.isWatch)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(character.cardStr('creator_notes'), maxLines: 4, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: text.bodySmall),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -439,7 +499,12 @@ class _MessageList extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     if (ctl.loading && ctl.messages.isEmpty) return const Center(child: CircularProgressIndicator());
     if (ctl.loadError != null && ctl.messages.isEmpty) {
-      return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(ctl.loadError!, textAlign: TextAlign.center)));
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(ctl.loadError!, textAlign: TextAlign.center),
+        ),
+      );
     }
     final appearance = ref.watch(appearanceProvider);
     final settings = ref.watch(settingsProvider).value;
@@ -466,10 +531,13 @@ class _MessageList extends ConsumerWidget {
           sliver: SliverPadding(
             padding: EdgeInsets.fromLTRB(hInset, 0, hInset, watch ? 64 : 8),
             sliver: SliverToBoxAdapter(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                for (final row in newest) build(row),
-                _ListTail(ctl: ctl),
-              ]),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final row in newest) build(row),
+                  _ListTail(ctl: ctl),
+                ],
+              ),
             ),
           ),
         ),
@@ -482,17 +550,21 @@ class _MessageList extends ConsumerWidget {
                 // Top of the (reversed) list: fetch the previous page once it scrolls into view.
                 if (ctl.hasMore && !ctl.loadingOlder) WidgetsBinding.instance.addPostFrameCallback((_) => ctl.loadOlder());
                 final loaded = ctl.loadedChars > 0
-                    ? Text(t('已加载 ${fmtCount(ctl.loadedChars)} 字 · ${fmtBytes(ctl.loadedBytes)}', 'Loaded ${fmtCount(ctl.loadedChars)} chars · ${fmtBytes(ctl.loadedBytes)}'),
+                    ? Text(
+                        t('已加载 ${fmtCount(ctl.loadedChars)} 字 · ${fmtBytes(ctl.loadedBytes)}', 'Loaded ${fmtCount(ctl.loadedChars)} chars · ${fmtBytes(ctl.loadedBytes)}'),
                         textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.outline))
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.outline),
+                      )
                     : null;
                 return Padding(
                   padding: const EdgeInsets.all(12),
-                  child: Column(children: [
-                    if (ctl.hasMore) const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-                    if (ctl.hasMore && loaded != null) const SizedBox(height: 6),
-                    ?loaded,
-                  ]),
+                  child: Column(
+                    children: [
+                      if (ctl.hasMore) const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                      if (ctl.hasMore && loaded != null) const SizedBox(height: 6),
+                      ?loaded,
+                    ],
+                  ),
                 );
               }
               return build(older[m - 1 - i]);
@@ -506,17 +578,17 @@ class _MessageList extends ConsumerWidget {
   }
 
   Widget _swipeNav(BuildContext context, Message m) => SwipeNav(
-        index: m.swipeIndex,
-        count: m.swipeCount,
-        enabled: !ctl.generating,
-        onSwipe: (i) async {
-          try {
-            await ctl.swipe(m, i);
-          } catch (e) {
-            if (context.mounted) showError(context, e);
-          }
-        },
-      );
+    index: m.swipeIndex,
+    count: m.swipeCount,
+    enabled: !ctl.generating,
+    onSwipe: (i) async {
+      try {
+        await ctl.swipe(m, i);
+      } catch (e) {
+        if (context.mounted) showError(context, e);
+      }
+    },
+  );
 
   Widget _row(BuildContext context, WidgetRef ref, ChatRow row, TextStyle base, dynamic appearance, UserSettings? settings, List<ModelCfg> models, bool watch) {
     final m = row.msg;
@@ -539,16 +611,20 @@ class _MessageList extends ConsumerWidget {
         final name = model?.name ?? (m.modelName.isNotEmpty ? m.modelName : character.name);
         return Padding(
           padding: const EdgeInsets.only(top: 14, bottom: 4),
-          child: Row(children: [
-            if (appearance.showAvatars) ...[
-              ModelIcon(iconKey: model?.icon ?? m.modelIcon, name: name, size: 28),
-              const SizedBox(width: 10),
+          child: Row(
+            children: [
+              if (appearance.showAvatars) ...[ModelIcon(iconKey: model?.icon ?? m.modelIcon, name: name, size: 28), const SizedBox(width: 10)],
+              Flexible(
+                child: Text(name, style: Theme.of(context).textTheme.titleSmall, overflow: TextOverflow.ellipsis),
+              ),
             ],
-            Flexible(child: Text(name, style: Theme.of(context).textTheme.titleSmall, overflow: TextOverflow.ellipsis)),
-          ]),
+          ),
         );
       case StepsRow():
-        return Appear(enabled: row.live, child: StepsCard(steps: row.steps, live: row.live, compact: watch));
+        return Appear(
+          enabled: row.live,
+          child: StepsCard(steps: row.steps, live: row.live, compact: watch),
+        );
       case BlockRow():
         return Appear(
           enabled: m.id == ctl.streamingId,
@@ -570,8 +646,18 @@ class _MessageList extends ConsumerWidget {
         );
       case FooterRow():
         return Appear(
-            enabled: m.id == ctl.justFinishedId,
-            child: _AssistantFooter(ctl: ctl, msg: m, isLast: row.isLastAssistant, showTokens: appearance.showTokens && !watch, compact: watch, onEdit: () => onEdit(m), swipeNav: _swipeNav(context, m), onMore: (pos) => _messageMenu(context, ref, m, pos)));
+          enabled: m.id == ctl.justFinishedId,
+          child: _AssistantFooter(
+            ctl: ctl,
+            msg: m,
+            isLast: row.isLastAssistant,
+            showTokens: appearance.showTokens && !watch,
+            compact: watch,
+            onEdit: () => onEdit(m),
+            swipeNav: _swipeNav(context, m),
+            onMore: (pos) => _messageMenu(context, ref, m, pos),
+          ),
+        );
     }
   }
 
@@ -579,19 +665,49 @@ class _MessageList extends ConsumerWidget {
     if (ctl.isDraft) return;
     final scheme = Theme.of(context).colorScheme;
     final items = <PopupMenuEntry<String>>[
-      PopupMenuItem(value: 'copy', child: ListTile(dense: true, leading: const Icon(Icons.copy_rounded), title: Text(t('复制', 'Copy')))),
-      PopupMenuItem(value: 'edit', child: ListTile(dense: true, leading: const Icon(Icons.edit_outlined), title: Text(t('编辑', 'Edit')))),
       PopupMenuItem(
-          value: 'visible',
-          child: ListTile(dense: true, leading: Icon(m.visible ? Icons.visibility_off_outlined : Icons.visibility_outlined), title: Text(m.visible ? t('移出上下文', 'Exclude from context') : t('加入上下文', 'Include in context')))),
-      if (m.isAssistant && character.contextMode == 'instant')
-        PopupMenuItem(value: 'actual', child: ListTile(dense: true, leading: const Icon(Icons.compress_rounded), title: Text(t('查看/编辑压缩内容', 'View/edit compressed')))),
+        value: 'copy',
+        child: ListTile(dense: true, leading: const Icon(Icons.copy_rounded), title: Text(t('复制', 'Copy'))),
+      ),
+      PopupMenuItem(
+        value: 'edit',
+        child: ListTile(dense: true, leading: const Icon(Icons.edit_outlined), title: Text(t('编辑', 'Edit'))),
+      ),
+      PopupMenuItem(
+        value: 'visible',
+        child: ListTile(
+          dense: true,
+          leading: Icon(m.visible ? Icons.visibility_off_outlined : Icons.visibility_outlined),
+          title: Text(m.visible ? t('移出上下文', 'Exclude from context') : t('加入上下文', 'Include in context')),
+        ),
+      ),
+      if (m.isAssistant && character.instant)
+        PopupMenuItem(
+          value: 'actual',
+          child: ListTile(dense: true, leading: const Icon(Icons.compress_rounded), title: Text(t('查看/编辑压缩内容', 'View/edit compressed'))),
+        ),
       if (m.isAssistant && m.usage != null && context.isWatch)
-        PopupMenuItem(value: 'usage', child: ListTile(dense: true, leading: const Icon(Icons.data_usage), title: Text(t('Token 用量', 'Token usage')))),
+        PopupMenuItem(
+          value: 'usage',
+          child: ListTile(dense: true, leading: const Icon(Icons.data_usage), title: Text(t('Token 用量', 'Token usage'))),
+        ),
       if (m.swipeCount > 1 && !ctl.generating)
-        PopupMenuItem(value: 'del_swipe', child: ListTile(dense: true, leading: const Icon(Icons.layers_clear_outlined), title: Text(t('删除当前版本', 'Delete this version')))),
-      PopupMenuItem(value: 'branch', child: ListTile(dense: true, leading: const Icon(Icons.call_split_rounded), title: Text(t('从这里分支', 'Branch from here')))),
-      PopupMenuItem(value: 'delete', child: ListTile(dense: true, leading: Icon(Icons.delete_outline, color: scheme.error), title: Text(t('删除', 'Delete'), style: TextStyle(color: scheme.error)))),
+        PopupMenuItem(
+          value: 'del_swipe',
+          child: ListTile(dense: true, leading: const Icon(Icons.layers_clear_outlined), title: Text(t('删除当前版本', 'Delete this version'))),
+        ),
+      PopupMenuItem(
+        value: 'branch',
+        child: ListTile(dense: true, leading: const Icon(Icons.call_split_rounded), title: Text(t('从这里分支', 'Branch from here'))),
+      ),
+      PopupMenuItem(
+        value: 'delete',
+        child: ListTile(
+          dense: true,
+          leading: Icon(Icons.delete_outline, color: scheme.error),
+          title: Text(t('删除', 'Delete'), style: TextStyle(color: scheme.error)),
+        ),
+      ),
     ];
     final v = await showMenu<String>(context: context, position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy), items: items);
     if (v == null || !context.mounted) return;
@@ -607,7 +723,10 @@ class _MessageList extends ConsumerWidget {
           await showActualDialog(context, ctl, m);
         case 'usage':
           final u = m.usage!;
-          await showDialog(context: context, builder: (c) => AlertDialog(content: TokenIndicator(usage: u)));
+          await showDialog(
+            context: context,
+            builder: (c) => AlertDialog(content: TokenIndicator(usage: u)),
+          );
         case 'del_swipe':
           await ctl.deleteSwipe(m);
         case 'branch':
@@ -634,17 +753,26 @@ Future<void> showActualDialog(BuildContext context, ChatController ctl, Message 
       title: Text(t('压缩内容（发送给模型）', 'Compressed content (sent to the model)')),
       content: SizedBox(
         width: 560,
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (m.actualStatus == 'failed')
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: scheme.errorContainer, borderRadius: BorderRadius.circular(8)),
-              child: Text('${t('摘要生成失败，已回退发送完整内容。', 'Summary failed; the full message is sent instead.')}\n${m.actualError ?? ''}', style: TextStyle(color: scheme.onErrorContainer)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (m.actualStatus == 'failed')
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: scheme.errorContainer, borderRadius: BorderRadius.circular(8)),
+                child: Text('${t('摘要生成失败，已回退发送完整内容。', 'Summary failed; the full message is sent instead.')}\n${m.actualError ?? ''}', style: TextStyle(color: scheme.onErrorContainer)),
+              ),
+            TextField(
+              controller: ctlText,
+              maxLines: 10,
+              minLines: 3,
+              decoration: InputDecoration(hintText: t('（空）', '(empty)')),
             ),
-          TextField(controller: ctlText, maxLines: 10, minLines: 3, decoration: InputDecoration(hintText: t('（空）', '(empty)'))),
-        ]),
+          ],
+        ),
       ),
       actions: [
         TextButton(
@@ -693,24 +821,30 @@ class _ListTail extends StatelessWidget {
       duration: const Duration(milliseconds: 250),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
-      transitionBuilder: (child, a) => FadeTransition(opacity: a, child: SizeTransition(sizeFactor: a, axisAlignment: -1, child: child)),
+      transitionBuilder: (child, a) => FadeTransition(
+        opacity: a,
+        child: SizeTransition(sizeFactor: a, axisAlignment: -1, child: child),
+      ),
       child: !busy
           ? const SizedBox(key: ValueKey('idle'), height: 4, width: double.infinity)
           : Padding(
               key: const ValueKey('busy'),
               padding: const EdgeInsets.fromLTRB(0, 10, 0, 8),
-              child: Row(mainAxisAlignment: watch ? MainAxisAlignment.center : MainAxisAlignment.start, children: [
-                LoadingBlob(size: watch ? 22 : 30),
-                AnimatedSize(
-                  duration: const Duration(milliseconds: 200),
-                  child: status == null
-                      ? const SizedBox.shrink()
-                      : Padding(
-                          padding: const EdgeInsets.only(left: 10),
-                          child: Text(status, style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                        ),
-                ),
-              ]),
+              child: Row(
+                mainAxisAlignment: watch ? MainAxisAlignment.center : MainAxisAlignment.start,
+                children: [
+                  LoadingBlob(size: watch ? 22 : 30),
+                  AnimatedSize(
+                    duration: const Duration(milliseconds: 200),
+                    child: status == null
+                        ? const SizedBox.shrink()
+                        : Padding(
+                            padding: const EdgeInsets.only(left: 10),
+                            child: Text(status, style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                          ),
+                  ),
+                ],
+              ),
             ),
     );
   }
@@ -725,7 +859,16 @@ class _AssistantFooter extends StatelessWidget {
   final VoidCallback onEdit;
   final Widget swipeNav;
   final void Function(Offset) onMore;
-  const _AssistantFooter({required this.ctl, required this.msg, required this.isLast, required this.showTokens, required this.compact, required this.onEdit, required this.swipeNav, required this.onMore});
+  const _AssistantFooter({
+    required this.ctl,
+    required this.msg,
+    required this.isLast,
+    required this.showTokens,
+    required this.compact,
+    required this.onEdit,
+    required this.swipeNav,
+    required this.onMore,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -734,52 +877,71 @@ class _AssistantFooter extends StatelessWidget {
     final usage = msg.usage;
     return Opacity(
       opacity: msg.visible ? 1 : 0.6,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (msg.error != null)
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.only(top: 6),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(border: Border.all(color: scheme.error), borderRadius: BorderRadius.circular(12)),
-            child: Row(children: [
-              Icon(Icons.error_outline, color: scheme.error, size: 18),
-              const SizedBox(width: 8),
-              Expanded(child: Text(msg.error!, style: TextStyle(color: scheme.error, fontSize: 12.5))),
-              if (isLast) TextButton(onPressed: ctl.generating ? null : () => ctl.send(regenerate: true), child: Text(t('重试', 'Retry'))),
-            ]),
-          ),
-        for (final n in notices)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(n, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
-          ),
-        if (compact)
-          Row(children: [
-            ActualStatusIcon(msg: msg, pending: ctl.actualPending.contains(msg.id), onTapFailed: () => showActualDialog(context, ctl, msg)),
-            const Spacer(),
-            if (ctl.isDraft) swipeNav else Builder(builder: (c) => MiniIconButton(Icons.more_horiz, t('更多', 'More'), () => onMore(_centerOf(c)))),
-          ])
-        else
-          Padding(
-            padding: const EdgeInsets.only(top: 2, bottom: 6),
-            child: Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: [
-              if (!msg.visible)
-                Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: Text(t('不在上下文中', 'Not in context'), style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
-                ),
-              if (showTokens && usage != null) Padding(padding: const EdgeInsets.only(right: 4), child: TokenIndicator(usage: usage)),
-              ActualStatusIcon(msg: msg, pending: ctl.actualPending.contains(msg.id), onTapFailed: () => showActualDialog(context, ctl, msg)),
-              MiniIconButton(Icons.copy_rounded, t('复制', 'Copy'), () => copyText(context, msg.content)),
-              swipeNav,
-              if (!ctl.isDraft) ...[
-                if (!compact) MiniIconButton(Icons.edit_outlined, t('编辑', 'Edit'), onEdit),
-                if (isLast) MiniIconButton(Icons.refresh_rounded, t('重新生成', 'Regenerate'), ctl.generating ? () {} : () => ctl.send(regenerate: true)),
-                Builder(builder: (c) => MiniIconButton(Icons.more_vert, t('更多', 'More'), () => onMore(_centerOf(c)))),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (msg.error != null)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                border: Border.all(color: scheme.error),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.error_outline, color: scheme.error, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(msg.error!, style: TextStyle(color: scheme.error, fontSize: 12.5)),
+                  ),
+                  if (isLast) TextButton(onPressed: ctl.generating ? null : () => ctl.send(regenerate: true), child: Text(t('重试', 'Retry'))),
+                ],
+              ),
+            ),
+          for (final n in notices)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(n, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
+            ),
+          if (compact)
+            Row(
+              children: [
+                ActualStatusIcon(msg: msg, pending: ctl.actualPending.contains(msg.id), onTapFailed: () => showActualDialog(context, ctl, msg)),
+                const Spacer(),
+                if (ctl.isDraft) swipeNav else Builder(builder: (c) => MiniIconButton(Icons.more_horiz, t('更多', 'More'), () => onMore(_centerOf(c)))),
               ],
-            ]),
-          ),
-      ]),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 6),
+              child: Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (!msg.visible)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: Text(t('不在上下文中', 'Not in context'), style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.outline)),
+                    ),
+                  if (showTokens && usage != null)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: TokenIndicator(usage: usage),
+                    ),
+                  ActualStatusIcon(msg: msg, pending: ctl.actualPending.contains(msg.id), onTapFailed: () => showActualDialog(context, ctl, msg)),
+                  MiniIconButton(Icons.copy_rounded, t('复制', 'Copy'), () => copyText(context, msg.content)),
+                  swipeNav,
+                  if (!ctl.isDraft) ...[
+                    if (!compact) MiniIconButton(Icons.edit_outlined, t('编辑', 'Edit'), onEdit),
+                    if (isLast) MiniIconButton(Icons.refresh_rounded, t('重新生成', 'Regenerate'), ctl.generating ? () {} : () => ctl.send(regenerate: true)),
+                    Builder(builder: (c) => MiniIconButton(Icons.more_vert, t('更多', 'More'), () => onMore(_centerOf(c)))),
+                  ],
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -891,9 +1053,9 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
     setState(() => _images.add('data:image/$mime;base64,${base64Encode(bytes)}'));
   }
 
-  Future<void> _setContextMode(ChatController ctl, String mode) async {
+  Future<void> _setCompression(ChatController ctl, {bool? instant, bool? summarize}) async {
     final ch = Character(jsonDecode(jsonEncode(widget.character.json)) as Map<String, dynamic>);
-    ch.context['mode'] = mode;
+    ch.setCompression(instant: instant, summarize: summarize);
     try {
       await ref.read(charactersProvider.notifier).save(ch);
       await ctl.refreshContext();
@@ -910,41 +1072,55 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
       builder: (ctx) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              ContextRing(info: c, size: 36, stroke: 4),
-              const SizedBox(width: 12),
-              Text('${c.estimated ? '~' : ''}${fmtTokens(c.tokens)} / ${fmtTokens(c.max)}  (${(c.ratio * 100).toStringAsFixed(0)}%)', style: Theme.of(ctx).textTheme.titleMedium),
-            ]),
-            const SizedBox(height: 12),
-            SegmentedButton<String>(
-              segments: [
-                ButtonSegment(value: 'traditional', label: Text(t('传统压缩', 'Traditional')), icon: const Icon(Icons.compress_rounded)),
-                ButtonSegment(value: 'instant', label: Text(t('即时压缩', 'Instant')), icon: const Icon(Icons.bolt_rounded)),
-              ],
-              selected: {c.mode == 'instant' ? 'instant' : 'traditional'},
-              onSelectionChanged: (v) async {
-                Navigator.pop(ctx);
-                await _setContextMode(ctl, v.first);
-              },
-            ),
-            const SizedBox(height: 8),
-            if (c.mode == 'traditional' && c.threshold > 0) Text('${t('压缩阈值', 'Threshold')}: ${fmtTokens(c.threshold)}'),
-            const SizedBox(height: 12),
-            if (c.mode == 'traditional')
-              FilledButton.tonalIcon(
-                onPressed: ctl.generating
-                    ? null
-                    : () {
-                        Navigator.pop(ctx);
-                        ctl.compressNow().catchError((e) {
-                          if (mounted) showError(context, e);
-                        });
-                      },
-                icon: const Icon(Icons.compress_rounded),
-                label: Text(t('立即压缩', 'Compress now')),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  ContextRing(info: c, size: 36, stroke: 4),
+                  const SizedBox(width: 12),
+                  Text('${c.estimated ? '~' : ''}${fmtTokens(c.tokens)} / ${fmtTokens(c.max)}  (${(c.ratio * 100).toStringAsFixed(0)}%)', style: Theme.of(ctx).textTheme.titleMedium),
+                ],
               ),
-          ]),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.compress_rounded),
+                title: Text(t('摘要压缩', 'Summary compression')),
+                subtitle: c.summarize && c.threshold > 0 ? Text('${t('压缩阈值', 'Threshold')}: ${fmtTokens(c.threshold)}') : null,
+                value: c.summarize,
+                onChanged: (v) async {
+                  Navigator.pop(ctx);
+                  await _setCompression(ctl, summarize: v);
+                },
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.bolt_rounded),
+                title: Text(t('即时压缩', 'Instant compression')),
+                value: c.instant,
+                onChanged: (v) async {
+                  Navigator.pop(ctx);
+                  await _setCompression(ctl, instant: v);
+                },
+              ),
+              const SizedBox(height: 8),
+              if (c.summarize)
+                FilledButton.tonalIcon(
+                  onPressed: ctl.generating
+                      ? null
+                      : () {
+                          Navigator.pop(ctx);
+                          ctl.compressNow().catchError((e) {
+                            if (mounted) showError(context, e);
+                          });
+                        },
+                  icon: const Icon(Icons.compress_rounded),
+                  label: Text(t('立即压缩', 'Compress now')),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -981,78 +1157,92 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
           border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.6)),
         ),
         padding: const EdgeInsets.fromLTRB(6, 4, 6, 4),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          if (_editing != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(10, 4, 0, 0),
-              child: Row(children: [
-                Icon(Icons.edit_outlined, size: 14, color: scheme.primary),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    _editing!.isUser ? t('编辑消息 · 发送 = 保存并重新生成', 'Editing · Send = save & regenerate') : t('编辑回复', 'Editing reply'),
-                    style: Theme.of(context).textTheme.labelSmall,
-                  ),
-                ),
-                if (_editing!.isUser)
-                  TextButton(
-                    style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
-                    onPressed: _saveEditOnly,
-                    child: Text(t('仅保存', 'Save only')),
-                  ),
-                IconButton(iconSize: 16, tooltip: t('取消编辑', 'Cancel edit'), onPressed: () => setState(_endEdit), icon: const Icon(Icons.close)),
-              ]),
-            ),
-          if (_images.isNotEmpty)
-            SizedBox(
-              height: 64,
-              child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.all(4), children: [
-                for (var i = 0; i < _images.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 6),
-                    child: Stack(children: [
-                      ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.memory(base64Decode(_images[i].substring(_images[i].indexOf(',') + 1)), width: 56, height: 56, fit: BoxFit.cover)),
-                      Positioned(
-                        right: 0,
-                        top: 0,
-                        child: InkWell(onTap: () => setState(() => _images.removeAt(i)), child: const CircleAvatar(radius: 9, child: Icon(Icons.close, size: 12))),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_editing != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 4, 0, 0),
+                child: Row(
+                  children: [
+                    Icon(Icons.edit_outlined, size: 14, color: scheme.primary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(_editing!.isUser ? t('编辑消息 · 发送 = 保存并重新生成', 'Editing · Send = save & regenerate') : t('编辑回复', 'Editing reply'), style: Theme.of(context).textTheme.labelSmall),
+                    ),
+                    if (_editing!.isUser)
+                      TextButton(
+                        style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                        onPressed: _saveEditOnly,
+                        child: Text(t('仅保存', 'Save only')),
                       ),
-                    ]),
-                  ),
-              ]),
-            ),
-          CallbackShortcuts(
-            bindings: {
-              if (appearance.enterToSend) const SingleActivator(LogicalKeyboardKey.enter): _submit,
-            },
-            child: TextField(
-              controller: _text,
-              focusNode: _focus,
-              minLines: 1,
-              maxLines: 8,
-              keyboardType: TextInputType.multiline,
-              textInputAction: TextInputAction.newline,
-              decoration: InputDecoration(
-                hintText: t('和 ${ch.name} 聊天', 'Chat with ${ch.name}'),
-                border: InputBorder.none,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    IconButton(iconSize: 16, tooltip: t('取消编辑', 'Cancel edit'), onPressed: () => setState(_endEdit), icon: const Icon(Icons.close)),
+                  ],
+                ),
+              ),
+            if (_images.isNotEmpty)
+              SizedBox(
+                height: 64,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.all(4),
+                  children: [
+                    for (var i = 0; i < _images.length; i++)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: Stack(
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.memory(base64Decode(_images[i].substring(_images[i].indexOf(',') + 1)), width: 56, height: 56, fit: BoxFit.cover),
+                            ),
+                            Positioned(
+                              right: 0,
+                              top: 0,
+                              child: InkWell(
+                                onTap: () => setState(() => _images.removeAt(i)),
+                                child: const CircleAvatar(radius: 9, child: Icon(Icons.close, size: 12)),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            CallbackShortcuts(
+              bindings: {if (appearance.enterToSend) const SingleActivator(LogicalKeyboardKey.enter): _submit},
+              child: TextField(
+                controller: _text,
+                focusNode: _focus,
+                minLines: 1,
+                maxLines: 8,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                decoration: InputDecoration(hintText: t('和 ${ch.name} 聊天', 'Chat with ${ch.name}'), border: InputBorder.none, contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10)),
               ),
             ),
-          ),
-          Row(children: [
-            IconButton(
-              tooltip: t('切换模型', 'Switch model'),
-              onPressed: () => pickModelForCharacter(context, ref, ch),
-              icon: ModelIcon(iconKey: model?.icon ?? '', name: model?.name ?? '?', size: 26),
+            Row(
+              children: [
+                IconButton(
+                  tooltip: t('切换模型', 'Switch model'),
+                  onPressed: () => pickModelForCharacter(context, ref, ch),
+                  icon: ModelIcon(iconKey: model?.icon ?? '', name: model?.name ?? '?', size: 26),
+                ),
+                if (model?.reasoning ?? false) _ReasoningButton(character: ch),
+                const Spacer(),
+                IconButton(
+                  onPressed: () => _pickImage(vision),
+                  icon: Icon(Icons.add_rounded, color: vision ? null : scheme.outline),
+                  tooltip: t('添加图片', 'Add image'),
+                ),
+                ContextRing(info: info, onTap: ctl == null ? null : () => _contextCard(ctl)),
+                const SizedBox(width: 4),
+                sendBtn,
+              ],
             ),
-            if (model?.reasoning ?? false) _ReasoningButton(character: ch),
-            const Spacer(),
-            IconButton(onPressed: () => _pickImage(vision), icon: Icon(Icons.add_rounded, color: vision ? null : scheme.outline), tooltip: t('添加图片', 'Add image')),
-            ContextRing(info: info, onTap: ctl == null ? null : () => _contextCard(ctl)),
-            const SizedBox(width: 4),
-            sendBtn,
-          ]),
-        ]),
+          ],
+        ),
       ),
     );
   }
@@ -1099,23 +1289,26 @@ class _WatchInput extends StatelessWidget {
     return SizedBox(
       width: 52,
       height: 52,
-      child: Stack(alignment: Alignment.center, children: [
-        ContextRing(info: info, size: 48, stroke: 3),
-        Material(
-          color: busy ? scheme.errorContainer : scheme.primary,
-          shape: const CircleBorder(),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: busy
-                ? onStop
-                : () async {
-                    final s = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const _WatchComposer()));
-                    if (s != null && s.trim().isNotEmpty) onText(s.trim());
-                  },
-            child: SizedBox(width: 40, height: 40, child: Icon(busy ? Icons.stop_rounded : Icons.mic_none_rounded, color: busy ? scheme.onErrorContainer : scheme.onPrimary, size: 22)),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          ContextRing(info: info, size: 48, stroke: 3),
+          Material(
+            color: busy ? scheme.errorContainer : scheme.primary,
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: busy
+                  ? onStop
+                  : () async {
+                      final s = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const _WatchComposer()));
+                      if (s != null && s.trim().isNotEmpty) onText(s.trim());
+                    },
+              child: SizedBox(width: 40, height: 40, child: Icon(busy ? Icons.stop_rounded : Icons.mic_none_rounded, color: busy ? scheme.onErrorContainer : scheme.onPrimary, size: 22)),
+            ),
           ),
-        ),
-      ]),
+        ],
+      ),
     );
   }
 }
@@ -1134,22 +1327,27 @@ class _WatchComposerState extends State<_WatchComposer> {
     return Scaffold(
       body: Padding(
         padding: EdgeInsets.fromLTRB(inset, inset * 0.6, inset, 8),
-        child: Column(children: [
-          Expanded(
-            child: TextField(
-              controller: _c,
-              autofocus: true,
-              maxLines: null,
-              expands: true,
-              style: const TextStyle(fontSize: 13),
-              decoration: InputDecoration(hintText: t('说点什么…', 'Say something…'), border: InputBorder.none),
+        child: Column(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _c,
+                autofocus: true,
+                maxLines: null,
+                expands: true,
+                style: const TextStyle(fontSize: 13),
+                decoration: InputDecoration(hintText: t('说点什么…', 'Say something…'), border: InputBorder.none),
+              ),
             ),
-          ),
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
-            IconButton.filled(onPressed: () => Navigator.pop(context, _c.text), icon: const Icon(Icons.send_rounded, size: 18)),
-          ]),
-        ]),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
+                IconButton.filled(onPressed: () => Navigator.pop(context, _c.text), icon: const Icon(Icons.send_rounded, size: 18)),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1161,4 +1359,3 @@ class AppScrollBehavior extends MaterialScrollBehavior {
   @override
   Set<PointerDeviceKind> get dragDevices => {PointerDeviceKind.touch, PointerDeviceKind.stylus, PointerDeviceKind.trackpad};
 }
-
