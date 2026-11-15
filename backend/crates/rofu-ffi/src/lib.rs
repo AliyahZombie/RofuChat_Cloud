@@ -150,6 +150,37 @@ mod tests {
             .json()
             .unwrap();
         assert_eq!(health["embedded"], true);
+        // The embedded server exposes the same authenticated binary image path.
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let base = format!("http://127.0.0.1:{}/api", value["port"]);
+        let login: serde_json::Value = client
+            .post(format!("{base}/auth/login"))
+            .json(&json!({"username":"root","password":"test-secret"}))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        let token = login["token"].as_str().unwrap();
+        let image: serde_json::Value = client
+            .post(format!("{base}/attachments"))
+            .bearer_auth(token)
+            .json(&json!({"data_url":"data:image/png;base64,eA=="}))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        let response = client
+            .get(format!(
+                "{base}/attachments/{}?token={token}",
+                image["id"].as_str().unwrap()
+            ))
+            .send()
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.bytes().unwrap().as_ref(), b"x");
         let again = unsafe { rofu_start(config.as_ptr()) };
         let repeated: serde_json::Value =
             serde_json::from_str(unsafe { CStr::from_ptr(again) }.to_str().unwrap()).unwrap();

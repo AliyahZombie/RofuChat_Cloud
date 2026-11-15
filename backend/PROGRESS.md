@@ -38,3 +38,11 @@ JuiceFS 曾在 mmap 链接和重用测试二进制时 SIGBUS。已将要求的 t
 
 - 当前环境已安装/启动 PostgreSQL 17，测试 URL：postgresql:///postgres?host=/var/run/postgresql（本机 peer 身份验证，无口令）；target 原符号链接目标丢失，已重建 /var/tmp/rofu-target 并完成 debug 编译。
 - 共享索引中有前端暂存，提交使用 git commit --only -- backend docs/api.md 保留前端索引、不带入前端文件。
+
+## Lazy image attachments / phone menus（2026-11-15）
+- Backend 已完成：schema v2 独立用户图片 blob、SHA-256 去重、鉴权 GET /api/attachments/{id}（ETag / Cache-Control）和可选 POST 上传；消息/分页/SSE 返回引用，头像返回 blob 路径；保留 data URL 上传兼容。
+- 升级按主键逐行迁移旧消息（含 inactive swipes / archived tails）与角色头像，完成后标记版本，可中断重试；不改写角色卡扩展字段。
+- OpenAI Chat Completions / Responses 的 vision 上下文在服务端恢复 data URL；非 vision 和历史 API 不加载 blob。regenerate 保持忽略提交 content/images 的既有规则。
+- SQLite / PostgreSQL 17 实际集成覆盖：512KiB 上传→引用→精确二进制取回、token URL、ETag 304/跨用户 404、去重、PNG 尺寸、分页无图片字节、SSE 无内联数据、两种 provider 还原、旧数据迁移与二次启动；FFI 测试覆盖启动后鉴权上传并获取图片。
+- 最终 backend 检查：cargo fmt --all、cargo clippy --all-targets -- -D warnings、cargo test 均通过；35 项（29 core + 2 SQLite/PG 集成入口 + 3 storage/auth + 1 FFI），0 failed / ignored。
+- 本任务同时获授权修改 app/；前端菜单/图片实现与 docs/api.md 等文档分开本地提交。结果记录在 /workspace/work/rofu-sol/result_lazyimg.md，不 push。

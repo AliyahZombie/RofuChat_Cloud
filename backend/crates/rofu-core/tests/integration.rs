@@ -1532,9 +1532,267 @@ fn upstream_user(request: &Value) -> String {
     }
 }
 
+async fn attachment_contract(h: &Harness, mock: &MockServer) {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    // A large image proves the JSON page transfers references, not encoded bytes.
+    let bytes = vec![7u8; 512 * 1024];
+    let data_url = format!("data:image/png;base64,{}", STANDARD.encode(&bytes));
+    let reference = h.post("/attachments", json!({"data_url":data_url})).await;
+    assert_eq!(reference["bytes"], bytes.len());
+    let path = format!("/attachments/{}", text(&reference, "id"));
+    let response = h.request(Method::GET, &path, json!({})).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers()["cache-control"],
+        "private, max-age=31536000, immutable"
+    );
+    let etag = response.headers()["etag"].clone();
+    assert_eq!(response.bytes().await.unwrap().as_ref(), bytes);
+    let cached = h
+        .client
+        .get(format!("{}{path}", h.base))
+        .bearer_auth(&h.token)
+        .header("if-none-match", etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cached.status(), 304);
+    assert_eq!(
+        h.client
+            .get(format!("{}{path}", h.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let other = rofu_core::auth::create(
+        &h.server.state.db,
+        &format!("blob-{}", id()),
+        "secret",
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(h
+        .server
+        .state
+        .db
+        .attachment(&text(&other, "id"), &text(&reference, "id"))
+        .await
+        .unwrap()
+        .is_none());
+    let other_login = rofu_core::auth::login(
+        &h.server.state.db,
+        &json!({"username":other["username"],"password":"secret"}),
+    )
+    .await
+    .unwrap();
+    let denied = h
+        .client
+        .get(format!("{}{path}", h.base))
+        .bearer_auth(text(&other_login, "token"))
+        .header("if-none-match", "*")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        denied.status(),
+        404,
+        "conditional requests must still check ownership"
+    );
+    assert_eq!(
+        h.client
+            .get(format!("{}{path}?token={}", h.base, h.token))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+            .as_ref(),
+        bytes
+    );
+    let duplicate = h.post("/attachments", json!({"data_url":data_url})).await;
+    assert_eq!(duplicate, reference);
+    let mut png_bytes = Vec::new();
+    {
+        let encoder = png::Encoder::new(&mut png_bytes, 2, 1);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[0, 0]).unwrap();
+    }
+    let png_url = format!("data:image/png;base64,{}", STANDARD.encode(&png_bytes));
+    let png_ref = h.post("/attachments", json!({"data_url":png_url})).await;
+    assert_eq!(png_ref["width"], 2);
+    assert_eq!(png_ref["height"], 1);
+    let (mut model, mut character, _) = h.fixture(mock, "openai", "http").await;
+    model["vision"] = json!(true);
+    h.json(
+        Method::PUT,
+        &format!("/models/{}", text(&model, "id")),
+        model,
+    )
+    .await;
+    character["tool_ids"] = json!([]);
+    character["mcp"] = json!([]);
+    character["memory"] = json!({"enabled":false});
+    character["context"] = json!({"summarize":false,"instant":false});
+    character["avatar"] = json!(data_url);
+    let character = h
+        .json(
+            Method::PUT,
+            &format!("/characters/{}", text(&character, "id")),
+            character,
+        )
+        .await;
+    assert!(text(&character, "avatar").starts_with("/api/attachments/"));
+    assert!(!h
+        .get("/characters")
+        .await
+        .to_string()
+        .contains("data:image"));
+    for kind in ["openai", "responses"] {
+        let model = h
+            .get(&format!("/models/{}", text(&character, "model_id")))
+            .await;
+        let mut provider = h
+            .get(&format!("/providers/{}", text(&model, "provider_id")))
+            .await;
+        provider["kind"] = json!(kind);
+        h.json(
+            Method::PUT,
+            &format!("/providers/{}", text(&provider, "id")),
+            provider,
+        )
+        .await;
+        let conv = h
+            .post("/conversations", json!({"character_id":character["id"]}))
+            .await;
+        let cid = text(&conv, "id");
+        h.json(
+            Method::PATCH,
+            &format!("/conversations/{cid}"),
+            json!({"title":"Images"}),
+        )
+        .await;
+        let start = mock.state.requests.lock().await.len();
+        let events = h
+            .events(
+                &cid,
+                json!({"content":"Look","images":[reference.clone(),data_url]}),
+            )
+            .await;
+        h.idle(&cid).await;
+        assert!(!json!(events).to_string().contains("data:image"));
+        assert!(mock.state.requests.lock().await[start..]
+            .iter()
+            .any(|r| r.to_string().contains(&data_url)));
+        let full = h.get(&format!("/conversations/{cid}/messages")).await;
+        let page = h
+            .get(&format!("/conversations/{cid}/messages?max_chars=1"))
+            .await;
+        assert!(!full.to_string().contains("data:image"));
+        assert!(!page.to_string().contains("data:image"));
+        assert!(page["bytes"].as_u64().unwrap() < 20000);
+        assert_eq!(
+            page["bytes"].as_u64().unwrap() as usize,
+            serde_json::to_vec(&page["messages"]).unwrap().len()
+        );
+        assert!(page["chars"].as_u64().unwrap() < 10000);
+        assert_eq!(full[1]["parts"]["images"][0], reference);
+        let unknown = h
+            .request(
+                Method::POST,
+                &format!("/conversations/{cid}/chat"),
+                json!({"content":"Invalid reference","images":[{"id":"missing"}]}),
+            )
+            .await;
+        assert_eq!(unknown.status(), 400);
+        let retry = h
+            .events(
+                &cid,
+                json!({"regenerate":true,"images":[{"id":"ignored-missing"},"data:invalid"]}),
+            )
+            .await;
+        assert!(!retry.iter().any(|e| e["type"] == "error"));
+        assert!(retry.iter().any(|e| e["type"] == "assistant_done"));
+    }
+}
+
+async fn legacy_image_migration(database: &str) {
+    use rofu_core::db::Db;
+    let db = Db::connect(database).await.unwrap();
+    let uid = "legacy-owner";
+    let mut m = rofu_core::chat::message("legacy-conv", 1000, "user", "legacy text");
+    m["parts"]["images"] = json!(["data:image/png;base64,eA=="]);
+    m["swipes"] = json!([{"parts":{"images":["data:image/png;base64,eA=="]},"tail":[m.clone()]}]);
+    sqlx::query(
+        "INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5)",
+    )
+    .bind(text(&m, "id"))
+    .bind(uid)
+    .bind("legacy-conv")
+    .bind(1000i64)
+    .bind(m.to_string())
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let c = db
+        .save(uid, "character", json!({"name":"Legacy"}))
+        .await
+        .unwrap();
+    let mut raw = c.clone();
+    // Unknown card extensions must survive migration untouched.
+    raw["card"] =
+        json!({"extensions":{"images":[{"arbitrary":"metadata"}],"avatar":"data:not-an-image"}});
+    raw["avatar"] = json!("data:image/png;base64,eA==");
+    sqlx::query("UPDATE entities SET data=$1 WHERE id=$2")
+        .bind(raw.to_string())
+        .bind(text(&c, "id"))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_version WHERE version=2")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.pool.close().await;
+    let db = Db::connect(database).await.unwrap();
+    let migrated = db.message(uid, &text(&m, "id")).await.unwrap().unwrap();
+    assert!(!migrated.to_string().contains("data:image"));
+    assert_eq!(migrated["content"], "legacy text");
+    assert_eq!(migrated["parts"]["images"][0]["bytes"], 1);
+    assert_eq!(
+        db.resolve_image(uid, &migrated["parts"]["images"][0])
+            .await
+            .unwrap(),
+        "data:image/png;base64,eA=="
+    );
+    let avatar = db
+        .get(uid, "character", &text(&c, "id"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(text(&avatar, "avatar").starts_with("/api/attachments/"));
+    assert_eq!(avatar["card"], raw["card"]);
+    db.pool.close().await;
+    let db = Db::connect(database).await.unwrap();
+    assert_eq!(
+        db.message(uid, &text(&m, "id")).await.unwrap().unwrap(),
+        migrated
+    );
+    db.pool.close().await;
+}
+
 async fn run_suite(database: Option<String>) {
+    let migration_dir = tempfile::tempdir().unwrap();
+    let migration_url = database
+        .clone()
+        .unwrap_or_else(|| format!("sqlite://{}/legacy.db", migration_dir.path().display()));
+    legacy_image_migration(&migration_url).await;
     let mock = MockServer::start().await;
     let h = Harness::new(database).await;
+    attachment_contract(&h, &mock).await;
     instant_summary_contract(&h, &mock).await;
     title_generation(&h, &mock).await;
     character_pagination(&h).await;

@@ -27,7 +27,8 @@ fn binary(bytes: Vec<u8>, mime: &str) -> ApiResult<Response> {
         .body(Body::from(bytes))
         .map_err(|e| ApiError::bad(e.to_string()))
 }
-async fn export_png(s: &AppState, mut c: Value) -> ApiResult<Vec<u8>> {
+async fn export_png(s: &AppState, uid: &str, mut c: Value) -> ApiResult<Vec<u8>> {
+    c["avatar"] = s.db.resolve_image(uid, &c["avatar"]).await?;
     let avatar = text(&c, "avatar");
     if avatar.starts_with("https://") || avatar.starts_with("http://") {
         let response = s
@@ -139,7 +140,7 @@ pub async fn dispatch(
         if parts[2] == "export" {
             return Ok(Some(
                 if q.get("format").map(String::as_str).unwrap_or("json") == "png" {
-                    binary(export_png(s, c.clone()).await?, "image/png")?
+                    binary(export_png(s, uid, c.clone()).await?, "image/png")?
                 } else {
                     ok(card::export_json(&c))
                 },
@@ -150,6 +151,8 @@ pub async fn dispatch(
             if url.starts_with("https://") || url.starts_with("http://") {
                 return Ok(Some(Redirect::temporary(&url).into_response()));
             }
+            let mut c = c;
+            c["avatar"] = s.db.resolve_image(uid, &c["avatar"]).await?;
             let (bytes, mime) = card::avatar(&c).map_err(|e| ApiError::bad(e.to_string()))?;
             return Ok(Some(binary(bytes, &mime)?));
         }

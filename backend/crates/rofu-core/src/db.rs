@@ -66,7 +66,51 @@ impl Db {
                 "INSERT INTO schema_version(version) VALUES (1)",
             ] { sqlx::query(q).execute(&mut *tx).await?; }
         }
+        // BYTEA accepts binary bindings on both SQLite and PostgreSQL.
+        sqlx::query("CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, mime TEXT NOT NULL, data BYTEA NOT NULL, metadata TEXT NOT NULL)").execute(&mut *tx).await?;
         tx.commit().await?;
+        if version.unwrap_or(0) < 2 {
+            // Idempotent migration, including inactive swipes and archived branches. Mark
+            // complete only after every row is persisted; interruption safely retries.
+            for table in ["messages", "entities"] {
+                let filter = if table == "entities" {
+                    " AND kind='character'"
+                } else {
+                    ""
+                };
+                let mut cursor = String::new();
+                // Keep one row in memory, even when upgrading large image histories.
+                while let Some(row) = sqlx::query(&format!(
+                    "SELECT id,user_id,data FROM {table} WHERE id>$1{filter} ORDER BY id LIMIT 1"
+                ))
+                .bind(&cursor)
+                .fetch_optional(&self.pool)
+                .await?
+                {
+                    cursor = row.try_get("id")?;
+                    let uid: String = row.try_get("user_id")?;
+                    let original: String = row.try_get("data")?;
+                    let mut value: Value = serde_json::from_str(&original)?;
+                    self.externalize_images(&uid, &mut value).await?;
+                    let serialized = value.to_string();
+                    if serialized != original {
+                        sqlx::query(&format!(
+                            "UPDATE {table} SET data=$1 WHERE id=$2 AND user_id=$3"
+                        ))
+                        .bind(serialized)
+                        .bind(row.try_get::<String, _>("id")?)
+                        .bind(&uid)
+                        .execute(&self.pool)
+                        .await?;
+                    }
+                }
+            }
+            sqlx::query(
+                "INSERT INTO schema_version(version) VALUES (2) ON CONFLICT(version) DO NOTHING",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
         Ok(())
     }
     pub async fn registration(&self) -> Result<bool> {
@@ -119,6 +163,7 @@ impl Db {
     pub async fn save(&self, uid: &str, kind: &str, mut data: Value) -> Result<Value> {
         if kind == "character" {
             normalize_context(&mut data);
+            self.externalize_images(uid, &mut data).await?;
         }
         if text(&data, "id").is_empty() {
             data["id"] = json!(if kind == "memory" {
@@ -277,6 +322,7 @@ impl Db {
     }
     pub async fn save_message(&self, uid: &str, v: &Value) -> Result<()> {
         let mut v = v.clone();
+        self.externalize_images(uid, &mut v).await?;
         crate::swipes::sync(&mut v);
         let v = &v;
         sqlx::query("INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET data=excluded.data,seq=excluded.seq WHERE messages.user_id=excluded.user_id")

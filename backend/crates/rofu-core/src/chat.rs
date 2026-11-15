@@ -378,6 +378,14 @@ struct Prepared {
     assistant: Option<Value>,
 }
 async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<Prepared> {
+    let mut body = body.clone();
+    // Regenerate ignores the supplied images, including malformed/foreign refs.
+    if !flag(&body, "regenerate", false) || !text(&body, "edit_message_id").is_empty() {
+        s.db.externalize_images(uid, &mut body)
+            .await
+            .map_err(|e| ApiError::bad(e.to_string()))?;
+    }
+    let body = &body;
     let messages = s.db.messages(uid, cid).await?;
     let edit = text(body, "edit_message_id");
     let regenerate = flag(body, "regenerate", false);
@@ -641,7 +649,8 @@ async fn run(
         let settings=api::settings(s,uid).await.map_err(|e|anyhow::anyhow!(e.message))?;let mut first_token=true;
         for turn in 0..16 {
             let history=s.db.messages(uid,cid).await?;let memories=memory::available(s,uid,c).await.map_err(|e|anyhow::anyhow!(e.message))?;
-            let messages=context::build(c,&settings,&history,&memories,flag(model,"vision",false));
+            let mut messages=context::build(c,&settings,&history,&memories,flag(model,"vision",false));
+            s.db.resolve_provider_images(uid, &mut messages).await?;
             let request=llm::Request{provider:provider.clone(),model:model.clone(),messages,params:c["params"].clone(),tools:toolbox.definitions.clone()};
             let (events_tx,mut events_rx)=mpsc::unbounded_channel();let client=s.client.clone();
             let mut worker=tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move{llm::stream(&client,request,events_tx).await}));

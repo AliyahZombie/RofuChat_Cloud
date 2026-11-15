@@ -115,6 +115,12 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
         .map(str::to_owned)
         .or_else(|| query.get("token").cloned())
         .unwrap_or_default();
+    let if_none_match = req
+        .headers()
+        .get("if-none-match")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
     let raw = axum::body::to_bytes(req.into_body(), 32 * 1024 * 1024)
         .await
         .map_err(|e| ApiError::bad(e.to_string()))?;
@@ -147,6 +153,39 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
     let user = auth::authenticate(&s.db, &token).await?;
     let uid = text(&user, "id");
     let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() == 2 && parts[0] == "attachments" && method == Method::GET {
+        let (bytes, mime) =
+            s.db.attachment(&uid, parts[1])
+                .await?
+                .ok_or_else(ApiError::not_found)?;
+        let etag = format!("\"{}\"", parts[1]);
+        let unchanged = if_none_match
+            .split(',')
+            .any(|tag| tag.trim().trim_start_matches("W/") == etag || tag.trim() == "*");
+        return Response::builder()
+            .status(if unchanged {
+                StatusCode::NOT_MODIFIED
+            } else {
+                StatusCode::OK
+            })
+            .header("content-type", mime)
+            .header("etag", etag)
+            .header("cache-control", "private, max-age=31536000, immutable")
+            .header("x-content-type-options", "nosniff")
+            .body(if unchanged {
+                axum::body::Body::empty()
+            } else {
+                axum::body::Body::from(bytes)
+            })
+            .map_err(|e| ApiError::bad(e.to_string()));
+    }
+    if path == "attachments" && method == Method::POST {
+        let reference =
+            s.db.put_attachment(&uid, &text(&body, "data_url"))
+                .await
+                .map_err(|e| ApiError::bad(e.to_string()))?;
+        return Ok(ok(reference));
+    }
     if path == "auth/me" && method == Method::GET {
         return Ok(ok(user));
     }
@@ -244,7 +283,13 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
                     }
                 }
                 let mut tx = s.db.pool.begin().await?;
-                for table in ["sessions", "entities", "conversations", "messages"] {
+                for table in [
+                    "attachments",
+                    "sessions",
+                    "entities",
+                    "conversations",
+                    "messages",
+                ] {
                     sqlx::query(&format!("DELETE FROM {table} WHERE user_id=$1"))
                         .bind(target)
                         .execute(&mut *tx)

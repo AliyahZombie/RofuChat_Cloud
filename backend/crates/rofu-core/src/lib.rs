@@ -18,3 +18,5 @@ mod routes;
 pub mod sse;
 
 mod swipes;
+
+pub mod attachments;
