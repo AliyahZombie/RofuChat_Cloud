@@ -283,6 +283,9 @@ pub async fn dispatch(
                             match api::required(s, uid, "character", &text(&conv, "character_id"))
                                 .await
                             {
+                                Ok(c) if !crate::model::summarize(&c) => Err(ApiError::bad(
+                                    "summary compression is disabled (context.summarize=false)",
+                                )),
                                 Ok(c) => chat::compress(s, uid, cid, &c)
                                     .await
                                     .map(|v| {

@@ -1,7 +1,7 @@
 use crate::{
     api::{self, ApiError, ApiResult},
     card, context, jstool, llm, mcp, memory,
-    model::{flag, id, normalized, now, number, text},
+    model::{flag, id, instant, normalized, now, number, summarize, text},
     server::AppState,
     swipes,
 };
@@ -124,7 +124,7 @@ fn fallback_title(input: &str) -> String {
     }
 }
 
-fn clean_title(input: &str) -> Option<String> {
+fn strip_think(input: &str) -> String {
     let mut output = input.to_owned();
     for tag in ["think", "thinking"] {
         let open = format!("<{tag}>");
@@ -136,7 +136,11 @@ fn clean_title(input: &str) -> Option<String> {
             output.replace_range(start..end, "");
         }
     }
-    let line = first_title_line(&output);
+    output
+}
+
+fn clean_title(input: &str) -> Option<String> {
+    let line = first_title_line(&strip_think(input));
     let mut title = line.as_str();
     loop {
         let stripped = title.trim_matches(|c: char| {
@@ -649,13 +653,14 @@ async fn run(
     }
     emit(tx, json!({"type":"assistant_done","message":assistant}));
     if !cancel.is_cancelled() && generation.is_ok() {
-        if c["context"]["mode"] == "instant" {
+        if instant(c) {
             emit(tx, json!({"type":"actual_pending","id":assistant["id"]}));
             match actual(s, uid, &mut assistant, c).await {
                 Ok(()) => emit(tx, json!({"type":"actual","message":assistant})),
                 Err(e) => emit(tx, json!({"type":"notice","message":e.to_string()})),
             }
-        } else {
+        }
+        if summarize(c) {
             let stat = context_info_with_tools(s, uid, cid, Some(&tool_definitions)).await?;
             if number(&stat, "tokens", 0) >= number(&stat, "threshold", i64::MAX) {
                 emit(tx, json!({"type":"compressing"}));
@@ -706,11 +711,145 @@ async fn run(
     }
     Ok(())
 }
+fn collapse_whitespace(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn actual_input(message: &Value) -> String {
+    let mut lines = vec![strip_think(&text(message, "content")).trim().to_owned()];
+    if let Some(segments) = message["parts"]["segments"].as_array() {
+        for tool in segments.iter().filter(|seg| seg["type"] == "tool") {
+            let name = collapse_whitespace(&strip_think(&text(tool, "name")));
+            let args: String = collapse_whitespace(&strip_think(&text(tool, "arguments")))
+                .chars()
+                .take(120)
+                .collect();
+            let result: String = collapse_whitespace(&strip_think(&text(tool, "result")))
+                .chars()
+                .take(200)
+                .collect();
+            lines.push(format!("[tool] {name}({args}) → {result}"));
+        }
+    }
+    lines
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn clean_actual(input: &str) -> String {
+    let output = strip_think(input);
+    let mut note = output.trim();
+    if note.starts_with("```") {
+        note = note.strip_prefix("```").unwrap();
+        if let Some((language, body)) = note.split_once('\n') {
+            if matches!(
+                language.trim(),
+                "" | "text" | "markdown" | "md" | "plaintext"
+            ) {
+                note = body;
+            }
+        }
+    }
+    loop {
+        let stripped = note.trim_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '\'' | '"'
+                        | '“'
+                        | '”'
+                        | '‘'
+                        | '’'
+                        | '「'
+                        | '」'
+                        | '《'
+                        | '》'
+                        | '#'
+                        | '*'
+                        | '_'
+                        | '`'
+                        | '>'
+                        | '-'
+                )
+        });
+        let stripped = if stripped
+            .get(..8)
+            .is_some_and(|s| s.eq_ignore_ascii_case("Summary:"))
+        {
+            &stripped[8..]
+        } else {
+            stripped
+                .strip_prefix("摘要：")
+                .or_else(|| stripped.strip_prefix("摘要:"))
+                .or_else(|| stripped.strip_prefix("压缩："))
+                .or_else(|| stripped.strip_prefix("压缩:"))
+                .unwrap_or(stripped)
+        };
+        if note == stripped {
+            break;
+        }
+        note = stripped;
+    }
+    collapse_whitespace(&note.replace(['*', '`'], ""))
+}
+
+async fn generate_actual(s: &AppState, uid: &str, message: &Value, c: &Value) -> Result<String> {
+    let input = actual_input(message);
+    let length = input.chars().count();
+    let settings = api::settings(s, uid)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    let instruction = format!(
+        "Condense one roleplay reply into a context note. Output only the note: no preamble, title, quotes, markdown or commentary. Use the reply's own language, third person and past tense. Keep only plot-relevant facts: actions, dialogue gist, state, location, items, relationship changes, promises, dice and tool results. Drop description, atmosphere and repetition. Include nothing absent from this reply; never invent facts. Use at most about one fifth of the original length, never more than 120 CJK characters or 80 English words. Usually write 1–3 short sentences; choose compact wording. Include the character's name ({}) and the user's name ({}) so pronouns stay clear. Names identify participants only; do not add events from their identities.",
+        text(c, "name"), text(&settings, "user_name"),
+    );
+    let limit = (length / 5).clamp(1, 120);
+    for attempt in 0..2 {
+        let prompt = if attempt == 0 {
+            instruction.clone()
+        } else {
+            format!("{instruction}\nToo long. Output at most {limit} characters.")
+        };
+        let output = match fast_for_conversation(
+            s,
+            uid,
+            c,
+            &text(message, "conversation_id"),
+            &prompt,
+            &input,
+        )
+        .await
+        {
+            Ok(output) => output,
+            Err(e) if e.downcast_ref::<llm::EmptyCompletion>().is_some() => String::new(),
+            Err(e) => return Err(e),
+        };
+        let note = clean_actual(&output);
+        if !note.is_empty() && note.chars().count() < length {
+            return Ok(note);
+        }
+    }
+    bail!("instant compression failed after two attempts: cleaned note was empty or not shorter than the input ({length} characters)")
+}
+
 pub async fn actual(s: &AppState, uid: &str, m: &mut Value, c: &Value) -> Result<()> {
     m["actual_status"] = json!("pending");
     m["actual_error"] = Value::Null;
+    m["actual"] = Value::Null;
     s.db.save_message(uid, m).await?;
-    match fast_for_conversation(s,uid,c,&text(m,"conversation_id"),"Compress this assistant reply faithfully for future conversation context. Preserve events, commitments, facts and tool results. Use the same language.",&format!("{}\n{}",text(m,"content"),m["parts"]["segments"])).await{Ok(v)=>{m["actual"]=json!(v);m["actual_status"]=json!("ok");},Err(e)=>{m["actual_status"]=json!("failed");m["actual_error"]=json!(e.to_string());}}
+    let result = generate_actual(s, uid, m, c).await;
+    match result {
+        Ok(note) => {
+            m["actual"] = json!(note);
+            m["actual_status"] = json!("ok");
+        }
+        Err(e) => {
+            m["actual_status"] = json!("failed");
+            m["actual_error"] = json!(e.to_string());
+        }
+    }
     s.db.save_message(uid, m).await?;
     Ok(())
 }
@@ -720,6 +859,9 @@ pub async fn compress(
     cid: &str,
     c: &Value,
 ) -> Result<Option<(Value, Vec<String>)>> {
+    if !summarize(c) {
+        bail!("summary compression is disabled (context.summarize=false)");
+    }
     let visible: Vec<Value> =
         s.db.messages(uid, cid)
             .await?
@@ -732,7 +874,31 @@ pub async fn compress(
     }
     let count = visible.len() - keep;
     let old = &visible[..count];
-    let summary=fast_for_conversation(s,uid,c,cid,"Summarize the earlier conversation in its language. Fully preserve events, decisions, commitments, relationship changes, current situation and unresolved threads. Merge previous summaries.",&serde_json::to_string(&old.iter().map(swipes::active_only).collect::<Vec<_>>())?).await?;
+    let input = old
+        .iter()
+        .map(|m| {
+            let has_actual = m["role"] == "assistant"
+                && m["actual_status"] == "ok"
+                && m["actual"].is_string();
+            let content = if has_actual {
+                text(m, "actual")
+            } else {
+                text(m, "content")
+            };
+            let mut projected = json!({"role":m["role"],"content":content});
+            if !has_actual {
+                if let Some(segments) = m["parts"]["segments"].as_array() {
+                    let tools: Vec<_> = segments.iter().filter(|seg| seg["type"] == "tool")
+                        .map(|seg| json!({"name":seg["name"],"arguments":seg["arguments"],"result":seg["result"]})).collect();
+                    if !tools.is_empty() {
+                        projected["tools"] = json!(tools);
+                    }
+                }
+            }
+            projected
+        })
+        .collect::<Vec<_>>();
+    let summary=fast_for_conversation(s,uid,c,cid,"Summarize the earlier conversation in its language. Fully preserve events, decisions, commitments, relationship changes, current situation and unresolved threads. Merge previous summaries.",&serde_json::to_string(&input)?).await?;
     let m = message(
         cid,
         number(&visible[count], "seq", 0) - 1,
@@ -812,6 +978,13 @@ async fn context_info_with_tools(
     if let Some(last) = history
         .last()
         .filter(|m| m["role"] == "assistant" && m["usage"]["estimated"] == false)
+        // Provider usage describes the request before actual/summary postprocessing.
+        .filter(|_| {
+            !instant(&c)
+                && !history
+                    .iter()
+                    .any(|m| m["role"] == "summary" && flag(m, "visible", true))
+        })
     {
         count = number(&last["usage"], "last_input", 0)
             + number(
@@ -824,7 +997,7 @@ async fn context_info_with_tools(
     let max = number(&model, "context_length", 32768).max(1);
     let threshold = number(&c["context"], "compress_threshold", 0);
     Ok(
-        json!({"tokens":count,"max":max,"estimated":estimated,"mode":c["context"]["mode"],"threshold":if threshold>0{threshold}else{max/4*3+(max%4)*3/4}}),
+        json!({"tokens":count,"max":max,"estimated":estimated,"mode":if instant(&c){"instant"}else{"traditional"},"instant":instant(&c),"summarize":summarize(&c),"threshold":if threshold>0{threshold}else{max/4*3+(max%4)*3/4}}),
     )
 }
 
@@ -860,6 +1033,47 @@ mod title_tests {
             ("<thinking>unfinished", None),
         ] {
             assert_eq!(clean_title(input).as_deref(), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod actual_tests {
+    use super::*;
+
+    #[test]
+    fn input_contains_only_visible_text_and_bounded_tool_lines() {
+        let message = json!({"content":"Rofu spoke.<think>private thought</think>","parts":{"segments":[
+            {"type":"reasoning","text":"secret reasoning"},
+            {"type":"text","text":"duplicated text"},
+            {"type":"tool","id":"raw-id","name":"dice","arguments":"骰".repeat(121),"result":"点".repeat(201)}
+        ]}});
+        assert_eq!(
+            actual_input(&message),
+            format!(
+                "Rofu spoke.\n[tool] dice({}) → {}",
+                "骰".repeat(120),
+                "点".repeat(200)
+            )
+        );
+    }
+
+    #[test]
+    fn sanitizer_removes_thought_labels_quotes_and_markdown() {
+        for input in [
+            "<think>secret</think>\n摘要： **“Rofu\t helped Alice.”**",
+            "<thinking>secret</thinking> # Summary: 'Rofu helped Alice.'",
+            "```text\n压缩： Rofu helped\nAlice.\n```",
+            "**summary: `Rofu helped Alice.`**",
+        ] {
+            assert_eq!(clean_actual(input), "Rofu helped Alice.");
+        }
+        for input in [
+            "<think>unfinished",
+            "摘要： **\"\"**",
+            "<thinking>secret</thinking>",
+        ] {
+            assert!(clean_actual(input).is_empty());
         }
     }
 }

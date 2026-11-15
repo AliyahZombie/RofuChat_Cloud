@@ -357,26 +357,33 @@ void rofu_free_string(char* s);
 5. 落库，发 `assistant_done`；之后执行：自动标题（异步）、上下文后处理（第 8 节）、发 `context`、`done`。
 6. 出错：写入 `parts.error`，保留已生成内容，发 `error`。
 
-## 8. 上下文管理（双模式，按角色配置）
+## 8. 上下文管理（独立开关，按角色配置）
 
-### 8.1 上下文组装（两种模式共用）
+`character.context` 使用两个独立布尔开关：`summarize` 默认 `true`，控制阈值/手动摘要压缩；`instant` 默认 `false`，控制每条回复的 actual 压缩与历史选择。两者可以同时开启或关闭。新字段缺失时按旧数据兼容：`mode="instant"` → `instant=true, summarize=true`，其他 mode → `instant=false, summarize=true`；显式的新字段优先。保存、GET/列表和导出均包含新字段，`mode` 始终镜像 instant（true 为 `"instant"`，false 为 `"traditional"`）。JSON/PNG 角色卡导出在顶层附加 `context`，导入时恢复它；无此字段的外部角色卡使用默认值。
+
+### 8.1 上下文组装（所有开关组合共用）
 1. 只生成一条 System，且必须是 messages 的第一条。内容顺序：角色卡 `system_prompt`（为空则用内置默认 RP 提示）→ description → personality → scenario → 用户 persona → 世界书命中条目 → mes_example → 长期记忆块（pinned 记忆 + 记忆工具使用说明）→ 可见压缩摘要（每条以 `[Summary of the earlier conversation]\n` 开头，多条按 seq 顺序）→ `post_history_instructions`。各块以空行分隔，全部做宏替换。兼容历史中已有的可见 system 行时，将其内容按 seq 合入长期记忆块之后、摘要之前。
 2. 历史：按 seq 遍历 `visible=true` 的 user/assistant/tool 消息（跳过内容为空且无 segments 的失败 assistant）；summary/system 不再作为独立历史消息发送。assistant 带工具片段时还原为 “assistant(tool_calls) → tool 结果 → assistant 文本” 的正确序列；user 图片仅在模型 vision 时附带。
-3. 角色卡、用户设置不变且世界书命中、记忆和摘要未变时，连续两轮的 System 内容保持一致，传统模式历史仅在末尾追加；即时模式仍按 display_recent 选择 display/actual。关键词触发的世界书条目改变时，System 内容随之变化，这是预期行为。token 估算（含 context 接口）使用上述合并后的结构，供应商 usage 的优先规则不变。
+3. 角色卡、用户设置不变且世界书命中、记忆和摘要未变时，连续两轮的 System 内容保持一致，关闭 instant 时历史仅在末尾追加（摘要压缩仍可隐藏旧消息）；开启时按 display_recent 选择 display/actual。关键词触发的世界书条目改变时，System 内容随之变化，这是预期行为。token 估算（含 context 接口）使用上述合并后的结构。开启 instant 或存在可见 summary 时，使用当前实际组装上下文的估算值（estimated=true），避免供应商压缩前的 usage 覆盖压缩后的结果；其他情况沿用最近 assistant 的供应商 usage 优先规则。GET context 与 SSE context 均附加 `instant`、`summarize` 布尔字段，并保留 mode/threshold/tokens/max/estimated。
 
-### 8.2 传统模式（`context.mode = "traditional"`）
-- 每轮结束后计算上下文 tokens；≥ 阈值（`compress_threshold`，0 表示模型 `context_length` 的 75%）时触发压缩；也可手动 `POST /compress`。
-- 压缩：取所有 `visible=true` 的消息，保留最后 `keep_recent` 条，其余（含旧摘要卡）交给 Fast model 生成摘要（提示：完整记录事件、决定、承诺、关系变化、当前处境、未完线索，合并旧摘要，与对话同语言）。
+### 8.2 摘要压缩（`context.summarize = true`）
+- 每轮结束后（开启 instant 时先生成 actual）计算上下文 tokens；≥ 阈值（`compress_threshold`，0 表示模型 `context_length` 的 75%）时触发压缩；也可手动 `POST /compress`。
+- 关闭 summarize 时不自动压缩，手动 `POST /api/conversations/{id}/compress` 返回 400，错误说明 `summary compression is disabled (context.summarize=false)`。开启时不受 instant 开关限制。
+- 压缩：取所有 `visible=true` 的消息，保留最后 `keep_recent` 条（至少 1 条），其余（含旧摘要卡）交给 Fast model 生成摘要（提示：完整记录事件、决定、承诺、关系变化、当前处境、未完线索，合并旧摘要，与对话同语言）。
+- 摘要输入只投影当前活动版本的 role/content：assistant 的 `actual_status=ok` 且 actual 为字符串时使用 actual，否则使用 content（并保留工具名、参数与结果）；使用 actual 时不附带完整 display 或 segments，避免重新膨胀。
 - 成功后：被压缩消息 `visible=false`（原文保留、用户可见）；插入 `role=summary` 消息，`seq = 第一条保留消息的 seq - 1`（保证在它们之前）；发 `summary` 事件。
 - 失败：不改动任何消息，发 `notice`。
 - 用户可在前端手动切换任一消息的 visible（PATCH）。
 
-### 8.3 即时模式（`context.mode = "instant"`）
+### 8.3 即时压缩（`context.instant = true`）
 - 每条 assistant 回复完成后，调用 Fast model 把该回复压缩后写入 `actual`（`actual_status: pending → ok/failed`，失败写 `actual_error`），`content`（display）不变。
+- Fast model 解析规则不变（用户 fast_model_id → 角色 model_id → 用户 default_model_id；选中配置后解析失败仍按原规则报错）。输入只使用 content 可见正文，删除 `<think>` / `<thinking>` 块；不输入 reasoning/text segments 或整个 segments JSON。每个 tool segment 仅追加一行 `[tool] name(args) → result`，参数最多 120 个 Unicode 字符，结果最多 200 个，行内空白折叠。
+- 系统提示要求：只输出一条角色扮演上下文笔记，无前言、标题、引号、Markdown 或评论；使用回复本身语言、第三人称、过去时，只保留情节相关的行为、对话大意、状态、地点、物品、关系变化、承诺及骰子/工具结果；删除描写、气氛、重复及回复以外的信息，禁止编造。目标不超过原文约 1/5，且不超过 120 个 CJK 字符或 80 个英文词，通常 1–3 个短句；提示中提供角色名和 persona 设置中的 user_name，要求用姓名消除代词歧义，不输入 persona 背景事实。
+- 输出清洗：删除 think/thinking 块、前缀 `摘要：` / `Summary:` / `压缩：`、外围引号和 Markdown 标记，折叠空白。清洗后为空或 Unicode 字符数不小于输入时，只重试一次，在原系统提示追加 `Too long. Output at most N characters.`（N = 输入字符数 / 5，限制在 1–120）。仍无效则 actual=null、actual_status=failed，actual_error 明确说明两次尝试未得到更短非空笔记；模型调用失败保留原错误。
 - 构建上下文时：可见 user/assistant/tool 历史中**最后 `display_recent` 条**用 display（content/完整 segments），已合入 System 的摘要/system 行不占此名额；更早的 assistant 消息若 `actual_status=ok` 用 actual（作为纯文本 assistant 消息，不含工具片段），否则**回退完整内容**。user 消息始终用原文。
 - 失败不弹任何东西，前端在消息上显示感叹号（据 `actual_status=failed`），点击后展示 `actual_error`，并可调用 `POST /api/messages/{id}/actual` 重试。
 - 允许用户 PATCH 手动编辑 actual。
-- 切换模式不改历史数据；从即时切回传统时 actual 被忽略。
+- 切换开关不改历史数据；关闭 instant 时已有 actual 不参与普通历史上下文选择，但摘要输入仍优先使用成功的 actual。关闭 instant 后新回复不自动生成 actual，手动 actual 重试端点保持可用。无论 instant 是否开启，visible=false 的消息均不进入上下文。
 
 ## 9. 本地工具（QuickJS）
 

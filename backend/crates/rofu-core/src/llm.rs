@@ -291,6 +291,15 @@ pub async fn stream(
     parser.emit(Event::Usage(usage));
     Ok(())
 }
+#[derive(Debug)]
+pub struct EmptyCompletion;
+impl std::fmt::Display for EmptyCompletion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("model returned no text")
+    }
+}
+impl std::error::Error for EmptyCompletion {}
+
 pub async fn complete(client: &reqwest::Client, request: Request) -> Result<String> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::time::timeout(
@@ -305,7 +314,7 @@ pub async fn complete(client: &reqwest::Client, request: Request) -> Result<Stri
         }
     }
     if output.is_empty() {
-        bail!("model returned no text");
+        return Err(EmptyCompletion.into());
     }
     Ok(output)
 }

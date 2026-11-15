@@ -1,4 +1,4 @@
-use crate::model::{id, now, text};
+use crate::model::{id, normalize_context, now, text};
 use anyhow::{bail, Result};
 use futures_util::TryStreamExt;
 use serde_json::{json, Value};
@@ -91,7 +91,13 @@ impl Db {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
-            .map(|r| Ok(serde_json::from_str(r.try_get::<&str, _>("data")?)?))
+            .map(|r| {
+                let mut data = serde_json::from_str(r.try_get::<&str, _>("data")?)?;
+                if kind == "character" {
+                    normalize_context(&mut data);
+                }
+                Ok(data)
+            })
             .collect()
     }
     pub async fn get(&self, uid: &str, kind: &str, eid: &str) -> Result<Option<Value>> {
@@ -101,10 +107,19 @@ impl Db {
             .bind(eid)
             .fetch_optional(&self.pool)
             .await?;
-        row.map(|r| Ok(serde_json::from_str(r.try_get::<&str, _>("data")?)?))
-            .transpose()
+        row.map(|r| {
+            let mut data = serde_json::from_str(r.try_get::<&str, _>("data")?)?;
+            if kind == "character" {
+                normalize_context(&mut data);
+            }
+            Ok(data)
+        })
+        .transpose()
     }
     pub async fn save(&self, uid: &str, kind: &str, mut data: Value) -> Result<Value> {
+        if kind == "character" {
+            normalize_context(&mut data);
+        }
         if text(&data, "id").is_empty() {
             data["id"] = json!(if kind == "memory" {
                 id()[..12].to_owned()

@@ -204,9 +204,7 @@ async fn retry_history(h: &Harness, mock: &MockServer) {
                 .collect();
             if instant {
                 assert_eq!(assistants.len(), 2);
-                assert!(assistants
-                    .iter()
-                    .all(|m| m["content"] == "compressed reply"));
+                assert!(assistants.iter().all(|m| m["content"] == "Rofu replied."));
             } else if tools {
                 assert_eq!(assistants.len(), 5); // three tool calls + final text, then second reply
                 assert_eq!(history.iter().filter(|m| m["role"] == "tool").count(), 3);
@@ -254,7 +252,7 @@ async fn retry_history(h: &Harness, mock: &MockServer) {
             }
             if instant {
                 assert_eq!(raw["actual_status"], "ok");
-                assert_eq!(raw["actual"], "compressed reply");
+                assert_eq!(raw["actual"], "Rofu replied.");
             }
         }
     }
@@ -1146,9 +1144,280 @@ async fn character_pagination(h: &Harness) {
     }
 }
 
+// Run these contracts against both databases and both provider wire formats.
+async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
+    h.json(
+        Method::PUT,
+        "/settings",
+        json!({"user_name":"Alice","user_persona":"A traveler named Alice"}),
+    )
+    .await;
+    let settings = h.get("/settings").await;
+    for mode in ["instant", "traditional", "unknown"] {
+        let mut legacy = h
+            .post("/characters", json!({"context":{"mode":mode}}))
+            .await;
+        let expected = mode == "instant";
+        assert_eq!(legacy["context"]["instant"], expected);
+        assert_eq!(legacy["context"]["summarize"], true);
+        // Simulate a record written before the new switches existed.
+        legacy["context"].as_object_mut().unwrap().remove("instant");
+        legacy["context"]
+            .as_object_mut()
+            .unwrap()
+            .remove("summarize");
+        sqlx::query("UPDATE entities SET data=$1 WHERE id=$2")
+            .bind(legacy.to_string())
+            .bind(text(&legacy, "id"))
+            .execute(&h.server.state.db.pool)
+            .await
+            .unwrap();
+        let read = h.get(&format!("/characters/{}", text(&legacy, "id"))).await;
+        assert_eq!(read["context"]["instant"], expected);
+        assert_eq!(read["context"]["summarize"], true);
+        let exported = h
+            .get(&format!("/characters/{}/export", text(&legacy, "id")))
+            .await;
+        assert_eq!(exported["context"], read["context"]);
+        let imported = h.post("/characters/import", json!({"json":exported})).await;
+        assert_eq!(imported["context"], read["context"]);
+        let listed = h.get("/characters").await;
+        assert_eq!(
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == legacy["id"])
+                .unwrap()["context"],
+            read["context"]
+        );
+    }
+    for kind in ["openai", "responses"] {
+        let (model, mut c, _) = h.fixture(mock, kind, "http").await;
+        c["card"] = json!({"system_prompt":"Switch contract"});
+        c["tool_ids"] = json!([]);
+        c["mcp"] = json!([]);
+        c["memory"] = json!({"enabled":false});
+        let character_path = format!("/characters/{}", text(&c, "id"));
+        for (instant, summarize) in [(false, false), (false, true), (true, false), (true, true)] {
+            c["context"] = json!({"instant":instant,"summarize":summarize,"mode":"traditional","keep_recent":1,"display_recent":0,"compress_threshold":1});
+            let saved = h.json(Method::PUT, &character_path, c.clone()).await;
+            assert_eq!(
+                saved["context"]["mode"],
+                if instant { "instant" } else { "traditional" }
+            );
+            let conv = h
+                .post("/conversations", json!({"character_id":c["id"]}))
+                .await;
+            let cid = text(&conv, "id");
+            let ev = h.events(&cid, json!({"content":"Alice arrived."})).await;
+            assert_eq!(ev.iter().any(|e| e["type"] == "actual"), instant);
+            assert_eq!(ev.iter().any(|e| e["type"] == "summary"), summarize);
+            let history = h.get(&format!("/conversations/{cid}/messages")).await;
+            let assistant = history
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["role"] == "assistant")
+                .unwrap();
+            assert_eq!(
+                assistant["actual_status"],
+                if instant { "ok" } else { "none" }
+            );
+            let stats = h.get(&format!("/conversations/{cid}/context")).await;
+            assert_eq!(stats["instant"], instant);
+            assert_eq!(stats["summarize"], summarize);
+            let built = rofu_core::context::build(
+                &saved,
+                &settings,
+                history.as_array().unwrap(),
+                &[],
+                false,
+            );
+            if instant || summarize {
+                assert_eq!(stats["estimated"], true);
+                assert_eq!(stats["tokens"], rofu_core::context::estimate(&built, &[]));
+            }
+            if summarize {
+                // Next round hides the previous actual; the summary input must use it.
+                mock.state.requests.lock().await.clear();
+                let ev = h.events(&cid, json!({"content":"Alice continued."})).await;
+                assert!(ev.iter().any(|e| e["type"] == "summary"));
+                let requests = mock.state.requests.lock().await.clone();
+                let summary = requests
+                    .iter()
+                    .find(|r| upstream_system(r).starts_with("Summarize"))
+                    .unwrap();
+                let input: Vec<Value> = serde_json::from_str(&upstream_user(summary)).unwrap();
+                let old_assistant = input.iter().find(|m| m["role"] == "assistant").unwrap();
+                assert_eq!(
+                    old_assistant["content"],
+                    if instant {
+                        "Rofu replied."
+                    } else {
+                        "Answer complete"
+                    }
+                );
+                let history = h.get(&format!("/conversations/{cid}/messages")).await;
+                assert_eq!(
+                    history
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|m| m["id"] == assistant["id"])
+                        .unwrap()["visible"],
+                    false
+                );
+                let context = rofu_core::context::build(
+                    &saved,
+                    &settings,
+                    history.as_array().unwrap(),
+                    &[],
+                    false,
+                );
+                assert_eq!(context.len(), 2); // merged system + retained assistant
+                assert!(!text(&context[0], "content").contains("Alice arrived"));
+                h.post(&format!("/conversations/{cid}/compress"), json!({}))
+                    .await;
+            } else {
+                let before = h.get(&format!("/conversations/{cid}/messages")).await;
+                let response = h
+                    .request(
+                        Method::POST,
+                        &format!("/conversations/{cid}/compress"),
+                        json!({}),
+                    )
+                    .await;
+                assert_eq!(response.status(), 400);
+                assert!(response
+                    .text()
+                    .await
+                    .unwrap()
+                    .contains("context.summarize=false"));
+                assert_eq!(
+                    h.get(&format!("/conversations/{cid}/messages")).await,
+                    before
+                );
+            }
+        }
+
+        // Feed a stored reply with private reasoning, duplicated segments, and oversized tools.
+        c["context"] = json!({"instant":true,"summarize":false,"display_recent":0});
+        h.json(Method::PUT, &character_path, c.clone()).await;
+        let conv = h
+            .post("/conversations", json!({"character_id":c["id"]}))
+            .await;
+        let cid = text(&conv, "id");
+        let ev = h.events(&cid, json!({"content":"Start."})).await;
+        let mut reply = ev.iter().find(|e| e["type"] == "actual").unwrap()["message"].clone();
+        let visible = "Rofu met Alice at the gate, returned her silver key, and promised to wait for her until dawn.";
+        reply["content"] = json!(format!("<think>PRIVATE THINK</think>{visible}"));
+        reply["parts"]["segments"] = json!([
+            {"type":"reasoning","text":"PRIVATE REASONING"},
+            {"type":"text","text":"DUPLICATE SEGMENT"},
+            {"type":"tool","id":"RAW TOOL ID","name":"dice","arguments":"骰".repeat(121),"result":"点".repeat(201)}
+        ]);
+        sqlx::query("UPDATE messages SET data=$1 WHERE id=$2")
+            .bind(reply.to_string())
+            .bind(text(&reply, "id"))
+            .execute(&h.server.state.db.pool)
+            .await
+            .unwrap();
+        let actual_path = format!("/messages/{}/actual", text(&reply, "id"));
+        mock.state.requests.lock().await.clear();
+        *mock.state.actual.lock().await =
+            ["<think>private output</think>摘要： **“Rofu\treturned Alice's key.”**".into()].into();
+        let cleaned = h.post(&actual_path, json!({})).await;
+        assert_eq!(cleaned["actual"], "Rofu returned Alice's key.");
+        assert_eq!(cleaned["actual_status"], "ok");
+        let requests = mock.state.requests.lock().await.clone();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            upstream_user(&requests[0]),
+            format!(
+                "{visible}\n[tool] dice({}) → {}",
+                "骰".repeat(120),
+                "点".repeat(200)
+            )
+        );
+        let system = upstream_system(&requests[0]);
+        for required in [
+            "Rofu",
+            "Alice",
+            "one fifth",
+            "120 CJK",
+            "80 English",
+            "never invent",
+            "third person",
+            "past tense",
+        ] {
+            assert!(system.contains(required), "missing {required}: {system}");
+        }
+        assert_eq!(requests[0]["model"], model["model_id"]); // unchanged character-model fallback
+
+        // An overlong or empty cleaned response retries once, using exactly the same input.
+        for first in [
+            "长".repeat(2000),
+            "<think>empty</think>摘要： **\"\"**".into(),
+            "<think>reasoning only</think>".into(),
+        ] {
+            mock.state.requests.lock().await.clear();
+            *mock.state.actual.lock().await =
+                [first, "Summary: 'Rofu waited for Alice.'".into()].into();
+            let retried = h.post(&actual_path, json!({})).await;
+            assert_eq!(retried["actual_status"], "ok");
+            assert_eq!(retried["actual"], "Rofu waited for Alice.");
+            let requests = mock.state.requests.lock().await.clone();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(upstream_user(&requests[0]), upstream_user(&requests[1]));
+            let limit = (upstream_user(&requests[0]).chars().count() / 5).clamp(1, 120);
+            assert!(upstream_system(&requests[1])
+                .contains(&format!("Too long. Output at most {limit} characters.")));
+        }
+        mock.state.requests.lock().await.clear();
+        *mock.state.actual.lock().await = ["长".repeat(2000), "<think>empty</think>".into()].into();
+        let failed = h.post(&actual_path, json!({})).await;
+        assert_eq!(failed["actual_status"], "failed");
+        assert!(failed["actual"].is_null());
+        assert!(text(&failed, "actual_error").contains("two attempts"));
+        assert_eq!(mock.state.requests.lock().await.len(), 2);
+        let history = h.get(&format!("/conversations/{cid}/messages")).await;
+        let built =
+            rofu_core::context::build(&c, &settings, history.as_array().unwrap(), &[], false);
+        assert!(!built
+            .iter()
+            .any(|m| text(m, "content") == "Rofu waited for Alice."));
+    }
+    h.json(Method::PUT, "/settings", json!({})).await;
+}
+
+fn upstream_system(request: &Value) -> String {
+    if request.get("input").is_some() {
+        text(request, "instructions")
+    } else {
+        text(&request["messages"][0], "content")
+    }
+}
+fn upstream_user(request: &Value) -> String {
+    if request.get("input").is_some() {
+        request["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "user")
+            .unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    } else {
+        text(&request["messages"][1], "content")
+    }
+}
+
 async fn run_suite(database: Option<String>) {
     let mock = MockServer::start().await;
     let h = Harness::new(database).await;
+    instant_summary_contract(&h, &mock).await;
     title_generation(&h, &mock).await;
     character_pagination(&h).await;
     retry_history(&h, &mock).await;
@@ -1345,7 +1614,7 @@ async fn run_suite(database: Option<String>) {
         let ev = h.events(&cid, json!({"content":"instant"})).await;
         let actual = &ev.iter().find(|e| e["type"] == "actual").unwrap()["message"];
         assert_eq!(actual["actual_status"], "ok");
-        assert_eq!(actual["actual"], "compressed reply");
+        assert_eq!(actual["actual"], "Rofu replied.");
         assert!(text(actual, "content").contains("Answer complete"));
         let fail = h
             .post(

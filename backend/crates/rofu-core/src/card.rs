@@ -78,7 +78,7 @@ pub fn import(body: &Value) -> Result<Value> {
     let card = parse_card(&raw);
     Ok(normalized(
         "character",
-        &json!({"name":card["name"],"card":card,"avatar":avatar}),
+        &json!({"name":card["name"],"card":card,"avatar":avatar,"context":raw.get("context").cloned().unwrap_or_else(|| json!({}))}),
     ))
 }
 pub fn export_json(character: &Value) -> Value {
@@ -86,7 +86,8 @@ pub fn export_json(character: &Value) -> Value {
     if text(&data, "name").is_empty() {
         data["name"] = json!(text(character, "name"));
     }
-    json!({"spec":"chara_card_v2","spec_version":"2.0","data":data})
+    let character = normalized("character", character);
+    json!({"spec":"chara_card_v2","spec_version":"2.0","data":data,"context":character["context"]})
 }
 pub fn avatar(character: &Value) -> Result<(Vec<u8>, String)> {
     let data = text(character, "avatar");

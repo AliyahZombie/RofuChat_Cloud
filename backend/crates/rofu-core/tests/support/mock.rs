@@ -8,7 +8,12 @@ use axum::{
 };
 use futures_util::{stream, StreamExt};
 use serde_json::{json, Value};
-use std::{collections::HashMap, convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    convert::Infallible,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{
     sync::{mpsc, Mutex},
     task::JoinHandle,
@@ -18,6 +23,7 @@ pub struct Mock {
     pub requests: Arc<Mutex<Vec<Value>>>,
     pub scan: Arc<Mutex<Value>>,
     pub title: Arc<Mutex<Option<String>>>,
+    pub actual: Arc<Mutex<VecDeque<String>>>,
     legacy: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Event>>>>,
 }
 pub struct MockServer {
@@ -67,8 +73,13 @@ async fn llm(State(state): State<Mock>, Json(body): Json<Value>) -> Response {
             .await
             .clone()
             .unwrap_or_else(|| "Mock title".into())
-    } else if instructions.starts_with("Compress this") {
-        "compressed reply".into()
+    } else if instructions.starts_with("Condense one") {
+        state
+            .actual
+            .lock()
+            .await
+            .pop_front()
+            .unwrap_or_else(|| "Rofu replied.".into())
     } else if instructions.starts_with("Summarize") {
         "Earlier summary".into()
     } else {

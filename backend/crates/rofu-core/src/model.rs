@@ -19,6 +19,26 @@ pub fn flag(v: &Value, k: &str, default: bool) -> bool {
 pub fn number(v: &Value, k: &str, default: i64) -> i64 {
     v[k].as_i64().unwrap_or(default)
 }
+pub fn instant(character: &Value) -> bool {
+    flag(
+        &character["context"],
+        "instant",
+        character["context"]["mode"] == "instant",
+    )
+}
+pub fn summarize(character: &Value) -> bool {
+    flag(&character["context"], "summarize", true)
+}
+pub fn normalize_context(character: &mut Value) {
+    let instant = instant(character);
+    let summarize = summarize(character);
+    if !character["context"].is_object() {
+        character["context"] = json!({});
+    }
+    character["context"]["instant"] = json!(instant);
+    character["context"]["summarize"] = json!(summarize);
+    character["context"]["mode"] = json!(if instant { "instant" } else { "traditional" });
+}
 pub fn defaults(kind: &str) -> Value {
     match kind {
         "provider" => {
@@ -28,7 +48,7 @@ pub fn defaults(kind: &str) -> Value {
             json!({"provider_id":"", "model_id":"", "name":"", "context_length":32768, "max_output":0, "vision":false, "tool_call":true, "reasoning":false, "icon":""})
         }
         "character" => {
-            json!({"name":"", "avatar":"", "model_id":"", "card":{}, "mcp":[], "tool_ids":[], "context":{"mode":"traditional","compress_threshold":0,"keep_recent":6,"display_recent":4}, "memory":{"enabled":true,"auto_scan":true,"share_global":true}, "params":{"temperature":null,"top_p":null,"max_tokens":null,"reasoning_effort":""}, "sort":0})
+            json!({"name":"", "avatar":"", "model_id":"", "card":{}, "mcp":[], "tool_ids":[], "context":{"mode":"traditional","summarize":true,"instant":false,"compress_threshold":0,"keep_recent":6,"display_recent":4}, "memory":{"enabled":true,"auto_scan":true,"share_global":true}, "params":{"temperature":null,"top_p":null,"max_tokens":null,"reasoning_effort":""}, "sort":0})
         }
         "tool" => {
             json!({"name":"", "description":"", "parameters":{"type":"object","properties":{}}, "code":"", "models":[], "enabled":true})
@@ -58,6 +78,15 @@ pub fn merge(dst: &mut Value, src: &Value) {
 pub fn normalized(kind: &str, input: &Value) -> Value {
     let mut v = defaults(kind);
     merge(&mut v, input);
+    if kind == "character" {
+        // Derive missing switches from the original input before defaults mask absence.
+        if !v["context"].is_object() {
+            v["context"] = defaults("character")["context"].clone();
+        }
+        v["context"]["instant"] = json!(instant(input));
+        v["context"]["summarize"] = json!(summarize(input));
+        normalize_context(&mut v);
+    }
     v
 }
 pub fn mask(key: &str) -> String {
@@ -73,4 +102,41 @@ pub fn mask(key: &str) -> String {
         chars[..4].iter().collect::<String>(),
         chars[chars.len() - 4..].iter().collect::<String>()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn independent_context_switches_and_legacy_defaults() {
+        for (input, expected_instant, expected_summarize) in [
+            (json!({}), false, true),
+            (json!({"mode":"instant"}), true, true),
+            (json!({"mode":"traditional"}), false, true),
+            (json!({"mode":"unknown"}), false, true),
+            (json!({"mode":"instant","instant":false}), false, true),
+            (
+                json!({"mode":"traditional","instant":true,"summarize":false}),
+                true,
+                false,
+            ),
+            (json!({"summarize":false}), false, false),
+            (Value::Null, false, true),
+        ] {
+            let c = normalized("character", &json!({"context":input}));
+            assert_eq!(c["context"]["instant"], expected_instant);
+            assert_eq!(c["context"]["summarize"], expected_summarize);
+            assert_eq!(
+                c["context"]["mode"],
+                if expected_instant {
+                    "instant"
+                } else {
+                    "traditional"
+                }
+            );
+        }
+        assert_eq!(defaults("character")["context"]["instant"], false);
+        assert_eq!(defaults("character")["context"]["summarize"], true);
+    }
 }

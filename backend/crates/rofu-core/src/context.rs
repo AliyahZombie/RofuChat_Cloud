@@ -1,6 +1,6 @@
 use crate::{
     card,
-    model::{flag, number, text},
+    model::{flag, instant, number, text},
 };
 use serde_json::{json, Value};
 
@@ -108,7 +108,7 @@ pub fn build(
                 && matches!(m["role"].as_str(), Some("user" | "assistant" | "tool"))
         })
         .collect();
-    let instant = character["context"]["mode"] == "instant";
+    let instant = instant(character);
     let recent = number(&character["context"], "display_recent", 4).max(0) as usize;
     for (index, m) in visible.iter().enumerate() {
         let role = text(m, "role");
@@ -279,5 +279,24 @@ mod tests {
             build(&traditional, &json!({}), &h, &[], true)[1]["content"],
             "display"
         );
+    }
+
+    #[test]
+    fn explicit_switch_wins_and_hidden_actual_never_enters_context() {
+        let history = vec![
+            json!({"role":"assistant","content":"hidden display","actual":"hidden actual","actual_status":"ok","visible":false}),
+            json!({"role":"summary","content":"summary"}),
+            json!({"role":"assistant","content":"display","actual":"note","actual_status":"ok"}),
+            json!({"role":"user","content":"recent"}),
+        ];
+        for summarize in [false, true] {
+            for instant in [false, true] {
+                let c = json!({"context":{"mode":"instant","instant":instant,"summarize":summarize,"display_recent":1},"memory":{"enabled":false}});
+                let out = build(&c, &json!({}), &history, &[], false);
+                assert_eq!(out.len(), 3);
+                assert_eq!(out[1]["content"], if instant { "note" } else { "display" });
+                assert!(!out.iter().any(|m| text(m, "content").contains("hidden")));
+            }
+        }
     }
 }

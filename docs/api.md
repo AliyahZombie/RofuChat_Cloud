@@ -7,7 +7,7 @@ Additive response fields:
 - Provider, Model, Character, LocalTool and Memory entities include server-managed `created_at` and `updated_at` in Unix milliseconds. IDs supplied during creation are ignored.
 - Settings responses may include server-managed `id`, `created_at`, and `updated_at`; clients can ignore these fields.
 - Assistant `usage` includes `estimated` (boolean), `last_input` and `last_output` (token counts for the last upstream request). `input`, `output`, `cached` and `reasoning` remain accumulated for the entire agent turn.
-- The SSE `context` event includes the same `estimated`, `mode`, and `threshold` fields as `GET /api/conversations/{id}/context`, in addition to `tokens` and `max`.
+- The SSE `context` event includes the same `estimated`, `mode`, `instant`, `summarize`, and `threshold` fields as `GET /api/conversations/{id}/context`, in addition to `tokens` and `max`.
 
 Operational details:
 
@@ -22,7 +22,25 @@ Normal sends and regenerate requests build exactly one system message at the sta
 
 Responses providers receive the merged system text in `instructions`, with no system or developer messages in `input`. With unchanged card/settings, worldbook matches, memory and summaries, consecutive turns keep the same system text. Traditional history grows by appending messages; instant mode still selects display/actual according to `display_recent`, counting only user/assistant/tool history. Keyword-triggered worldbook matches can change the system text as the conversation changes; this is expected.
 
-Token estimates, including `GET /api/conversations/{id}/context` and SSE `context`, use the merged structure, including one system message's overhead. The existing preference for the last assistant's authoritative `usage.last_input + usage.last_output` remains unchanged.
+Token estimates, including `GET /api/conversations/{id}/context` and SSE `context`, use the merged structure, including one system message's overhead. When instant compression is enabled or a visible summary exists, current context is estimated (`estimated:true`) so provider usage from before compression cannot override it. Otherwise the last assistant's authoritative `usage.last_input + usage.last_output` retains priority.
+
+## Independent compression switches
+
+Character `context` adds `summarize` (default `true`) and `instant` (default `false`). They work independently: summarize controls automatic threshold compression and manual `POST /api/conversations/{id}/compress`; instant controls per-reply actual generation and display/actual selection. Existing threshold, keep_recent and display_recent fields keep their meanings. Example with both enabled:
+
+```json
+{"context":{"summarize":true,"instant":true,"mode":"instant","compress_threshold":0,"keep_recent":6,"display_recent":4}}
+```
+
+For missing switches, legacy `mode:"instant"` means instant=true and summarize=true; all other modes mean instant=false and summarize=true. Explicit switches take priority. Reads (including lists), writes and exports expose both keys; `mode` mirrors instant for old clients. Character Card V2 JSON exports and embedded PNG JSON add a top-level `context` object, preserved on import. Cards without it use defaults.
+
+After a completed reply, actual compression runs first if enabled, then threshold summary compression if enabled. Summary input uses each active assistant's successful actual, otherwise content and available tool results, without inactive swipes/tails. A summary hides old messages with visible=false; hidden messages never reappear through actual selection. With instant disabled, new replies have no automatic actual; the manual actual endpoint and existing actual editing remain available. Summary input can still use existing successful actuals.
+
+With summarize=false, manual compression returns HTTP 400 and an error containing `summary compression is disabled (context.summarize=false)`. Successful compression still returns a summary Message, or 204 when there is nothing to compress. Existing routes and SSE event names are unchanged. `GET /api/conversations/{id}/context` and SSE `context` add the two boolean switches; mode and threshold remain available even with summarization disabled.
+
+Instant compression receives only visible content with think/thinking blocks removed, followed by one `[tool] name(args) → result` line per tool (arguments ≤120 Unicode characters, result ≤200, whitespace collapsed). It never receives reasoning segments, duplicate text segments or raw segments JSON. The system prompt supplies character/user names and requests a faithful third-person, past-tense note in the reply's language, only plot facts, no invented or unrelated material, no title/commentary/markdown, roughly ≤1/5 length and ≤120 CJK characters or 80 English words, usually 1–3 short sentences. Fast-model resolution is unchanged.
+
+Generated notes strip think/thinking blocks, leading Summary:/摘要：/压缩： labels, surrounding quotes/markdown and repeated whitespace. Empty notes or notes not shorter than input retry once with `Too long. Output at most N characters.` appended (N is input Unicode length / 5, clamped to 1–120). A second invalid result sets actual=null, actual_status=failed and an explanatory actual_error; context falls back to the full reply. HTTP/provider errors also retain the existing failed-status behavior.
 
 ## Conversation titles
 
