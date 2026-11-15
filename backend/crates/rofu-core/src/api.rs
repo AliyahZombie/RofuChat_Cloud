@@ -359,6 +359,13 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
         }
         if parts.len() == 1 {
             if method == Method::GET {
+                if kind == "tool"
+                    && query
+                        .get("summary")
+                        .is_some_and(|value| value == "1" || value == "true")
+                {
+                    return Ok(ok(json!(s.db.tool_summaries(&uid).await?)));
+                }
                 let mut values = s.db.list(&uid, kind).await?;
                 values.retain(|v| match kind {
                     "model" => query
@@ -448,6 +455,9 @@ async fn save_entity(
     let mut v = normalized(kind, input);
     v.as_object_mut().unwrap().remove("id");
     v.as_object_mut().unwrap().remove("created_at");
+    if kind == "tool" {
+        v.as_object_mut().unwrap().remove("code_chars");
+    }
     if let Some(ref old) = old {
         v["id"] = old["id"].clone();
         v["created_at"] = old["created_at"].clone();
@@ -456,6 +466,9 @@ async fn save_entity(
                 || text(&v, "api_key") == mask(&text(old, "api_key")))
         {
             v["api_key"] = old["api_key"].clone();
+        }
+        if kind == "tool" && input.get("code").is_none() {
+            v["code"] = old["code"].clone();
         }
     }
     if kind == "model" {

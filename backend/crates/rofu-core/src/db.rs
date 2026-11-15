@@ -144,6 +144,29 @@ impl Db {
             })
             .collect()
     }
+    pub async fn tool_summaries(&self, uid: &str) -> Result<Vec<Value>> {
+        let mut rows = sqlx::query(
+            "SELECT data FROM entities WHERE user_id=$1 AND kind='tool' ORDER BY created_at,id",
+        )
+        .bind(uid)
+        .fetch(&self.pool);
+        let mut summaries = Vec::new();
+        // The portable TEXT store requires reading JSON, but retain only one row's
+        // code at a time and count it without cloning the potentially large string.
+        while let Some(row) = rows.try_next().await? {
+            let mut data: Value = serde_json::from_str(row.try_get("data")?)?;
+            let code = data.as_object_mut().unwrap().remove("code");
+            let code_chars = code
+                .as_ref()
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .chars()
+                .count();
+            data["code_chars"] = json!(code_chars);
+            summaries.push(data);
+        }
+        Ok(summaries)
+    }
     pub async fn get(&self, uid: &str, kind: &str, eid: &str) -> Result<Option<Value>> {
         let row = sqlx::query("SELECT data FROM entities WHERE user_id=$1 AND kind=$2 AND id=$3")
             .bind(uid)

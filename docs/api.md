@@ -16,6 +16,12 @@ Operational details:
 - PNG export defaults to a generated solid-color image when the character does not have a PNG avatar. HTTP(S) avatars are fetched for PNG export (20-second timeout, 32MB limit). JSON export uses Character Card V2.
 - `POST /api/conversations/{id}/memory_scan` returns zero counts when no new messages are available. A failed scan advances the scan cursor as required by the specification.
 
+## Tool list summaries
+
+`GET /api/tools?summary=1` (also `summary=true`) returns the usual array with each tool's `code` omitted and `code_chars` added. `code_chars` counts Unicode scalar values (Rust `chars()`), not UTF-8 bytes or grapheme clusters. All other fields, including `id`, `name`, `description`, `parameters`, `models`, `enabled`, `created_at` and `updated_at`, are retained. Omitting `summary` or using another value keeps the full list response unchanged. `GET /api/tools/{id}` always returns the full tool, including code.
+
+`PUT /api/tools/{id}` preserves stored code when the request object has no `code` key, allowing summary objects to be saved when toggling `enabled`. An explicit `"code":""` clears it. `code_chars` is response-only and ignored on both tool creation and update; it is never persisted. Other missing fields retain their existing defaulting behavior. All reads and writes remain scoped to the authenticated user. Chat tool execution and `POST /api/tools/run` are unchanged.
+
 ## Upstream context and token estimates
 
 Normal sends and regenerate requests build exactly one system message at the start of the upstream context. Its blocks, separated by blank lines with character/user macros expanded, are ordered as follows: card `system_prompt` (or the built-in default), description, personality, scenario, user persona, matching worldbook entries, `mes_example`, long-term memory, visible compression summaries in seq order (each prefixed with `[Summary of the earlier conversation]\n`), then `post_history_instructions`. Legacy visible system rows are merged after memory and before summaries. The remaining history contains only user/assistant/tool messages; summaries remain available as Message objects through the HTTP API.

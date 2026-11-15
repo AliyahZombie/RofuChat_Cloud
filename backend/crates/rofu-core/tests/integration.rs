@@ -2083,6 +2083,175 @@ async fn legacy_image_migration(database: &str) {
     db.pool.close().await;
 }
 
+async fn tool_summary_contract(h: &Harness) {
+    assert_eq!(h.get("/tools?summary=1").await, json!([]));
+    let codes = [
+        format!(
+            "// {}\nfunction main(args) {{ return args; }}",
+            "long code ".repeat(10000)
+        ),
+        "function main() { return '中文工具😀e\u{301}'; }\n// \"quoted\" \\".into(),
+        String::new(),
+    ];
+    let mut full = Vec::new();
+    for (index, code) in codes.iter().enumerate() {
+        let tool = h
+            .post(
+                "/tools",
+                json!({
+                    "name":format!("summary-{index}"), "description":"工具说明",
+                    "parameters":{"type":"object","properties":{"n":{"type":"integer"}}},
+                    "models":["model-filter"], "enabled":true, "code":code,
+                    "code_chars":999999
+                }),
+            )
+            .await;
+        assert_eq!(tool["code"], *code);
+        assert!(tool.get("code_chars").is_none());
+        full.push(tool);
+    }
+    // Preserve the existing created_at/id ordering, including timestamp ties.
+    full.sort_by_key(|tool| (tool["created_at"].as_i64().unwrap(), text(tool, "id")));
+    assert_eq!(h.get("/tools").await, json!(full));
+    for query in ["summary=0", "summary=false", "summary=other"] {
+        assert_eq!(h.get(&format!("/tools?{query}")).await, json!(full));
+    }
+    let expected: Vec<_> = full
+        .iter()
+        .map(|tool| {
+            let mut summary = tool.clone();
+            let code = summary.as_object_mut().unwrap().remove("code").unwrap();
+            summary["code_chars"] = json!(code.as_str().unwrap().chars().count());
+            summary
+        })
+        .collect();
+    for query in ["summary=1", "summary=true"] {
+        assert_eq!(h.get(&format!("/tools?{query}")).await, json!(expected));
+    }
+    for tool in &full {
+        assert_eq!(
+            h.get(&format!("/tools/{}?summary=1", text(tool, "id")))
+                .await,
+            *tool
+        );
+    }
+    let index = full
+        .iter()
+        .position(|tool| tool["name"] == "summary-1")
+        .unwrap();
+    let path = format!("/tools/{}", text(&full[index], "id"));
+    let mut toggle = expected[index].clone();
+    toggle["enabled"] = json!(false);
+    toggle["code_chars"] = json!(12345);
+    let saved = h.json(Method::PUT, &path, toggle.clone()).await;
+    assert_eq!(saved["code"], full[index]["code"]);
+    assert_eq!(saved["enabled"], false);
+    assert_eq!(saved["created_at"], full[index]["created_at"]);
+    assert!(saved.get("code_chars").is_none());
+    assert_eq!(h.get(&path).await, saved);
+    let persisted = h
+        .server
+        .state
+        .db
+        .get(
+            &text(&h.get("/auth/me").await, "id"),
+            "tool",
+            &text(&saved, "id"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted, saved);
+    let run = h
+        .post("/tools/run", json!({"code":saved["code"],"args":{}}))
+        .await;
+    assert_eq!(run["is_error"], false);
+    assert_eq!(run["result"], "中文工具😀e\u{301}");
+
+    let other = rofu_core::auth::create(
+        &h.server.state.db,
+        &format!("tool-summary-{}", id()),
+        "secret",
+        false,
+    )
+    .await
+    .unwrap();
+    let login = rofu_core::auth::login(
+        &h.server.state.db,
+        &json!({"username":other["username"],"password":"secret"}),
+    )
+    .await
+    .unwrap();
+    for method in [Method::GET, Method::PUT, Method::DELETE] {
+        let response = h
+            .client
+            .request(method, format!("{}{path}", h.base))
+            .bearer_auth(text(&login, "token"))
+            .json(&toggle)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+    }
+    let foreign = h
+        .server
+        .state
+        .db
+        .save(
+            &text(&other, "id"),
+            "tool",
+            json!({"name":"foreign","code":"秘密"}),
+        )
+        .await
+        .unwrap();
+    for query in ["", "?summary=1", "?summary=true"] {
+        let ours = h.get(&format!("/tools{query}")).await;
+        assert_eq!(ours.as_array().unwrap().len(), full.len());
+        assert!(!ours
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["id"] == foreign["id"]));
+        let theirs: Value = h
+            .client
+            .get(format!("{}/tools{query}", h.base))
+            .bearer_auth(text(&login, "token"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(theirs.as_array().unwrap().len(), 1);
+        assert_eq!(theirs[0]["id"], foreign["id"]);
+        if !query.is_empty() {
+            assert!(theirs[0].get("code").is_none());
+            assert_eq!(theirs[0]["code_chars"], 2);
+        }
+    }
+    assert_eq!(h.get(&path).await, saved);
+    toggle["code"] = json!("");
+    let cleared = h.json(Method::PUT, &path, toggle).await;
+    assert_eq!(cleared["code"], "");
+    assert!(cleared.get("code_chars").is_none());
+    assert_eq!(h.get(&path).await, cleared);
+    let summaries = h.get("/tools?summary=1").await;
+    let cleared_summary = summaries
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["id"] == cleared["id"])
+        .unwrap();
+    assert_eq!(cleared_summary["code_chars"], 0);
+    let stored: String = sqlx::query_scalar("SELECT data FROM entities WHERE id=$1 AND user_id=$2")
+        .bind(text(&cleared, "id"))
+        .bind(text(&h.get("/auth/me").await, "id"))
+        .fetch_one(&h.server.state.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&stored).unwrap(), cleared);
+}
+
 async fn run_suite(database: Option<String>) {
     let is_postgres = database.is_some();
     let migration_dir = tempfile::tempdir().unwrap();
@@ -2092,6 +2261,7 @@ async fn run_suite(database: Option<String>) {
     legacy_image_migration(&migration_url).await;
     let mock = MockServer::start().await;
     let h = Harness::new(database).await;
+    tool_summary_contract(&h).await;
     attachment_contract(&h, &mock).await;
     instant_summary_contract(&h, &mock).await;
     title_generation(&h, &mock).await;
@@ -2654,5 +2824,12 @@ async fn postgres_contract_and_agent_suite() {
 async fn sqlite_conversation_map() {
     let h = Harness::new(None).await;
     conversation_map(&h).await;
+    h.server.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_tool_summaries() {
+    let h = Harness::new(None).await;
+    tool_summary_contract(&h).await;
     h.server.stop().await.unwrap();
 }
