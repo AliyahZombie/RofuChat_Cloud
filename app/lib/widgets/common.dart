@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -6,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/format.dart';
 import '../core/i18n.dart';
+import '../core/image_providers.dart';
 import '../core/theme.dart';
 import '../core/tokens.dart';
 import '../models/models.dart';
@@ -145,17 +145,14 @@ class CharacterAvatar extends ConsumerWidget {
     );
     final av = c?.avatar ?? '';
     if (av.isEmpty) return fallback;
-    Widget img;
-    if (av.startsWith('data:')) {
-      try {
-        img = Image.memory(base64Decode(av.substring(av.indexOf(',') + 1)), fit: BoxFit.cover, gaplessPlayback: true, errorBuilder: (_, _, _) => fallback);
-      } catch (_) {
-        return fallback;
-      }
-    } else {
-      final api = ref.watch(apiProvider);
-      img = Image.network(api.authedUrl(av), fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback);
-    }
+    final api = ref.watch(apiProvider);
+    final pixels = (size * MediaQuery.devicePixelRatioOf(context)).ceil();
+    final img = Image(
+      image: cachedImageProvider(api.authedUrl(av), width: pixels, height: pixels),
+      fit: BoxFit.cover,
+      gaplessPlayback: true,
+      errorBuilder: (_, _, _) => fallback,
+    );
     return ClipOval(child: SizedBox(width: size, height: size, child: img));
   }
 }
@@ -297,14 +294,27 @@ class SectionTitle extends StatelessWidget {
 Future<bool> confirm(BuildContext context, String title, {String? body, String? ok}) async {
   final r = await showDialog<bool>(
     context: context,
-    builder: (c) => AlertDialog(
-      title: Text(title),
-      content: body == null ? null : Text(body),
-      actions: [
+    builder: (c) {
+      final actions = [
         TextButton(onPressed: () => Navigator.pop(c, false), child: Text(t('取消', 'Cancel'))),
         TextButton(onPressed: () => Navigator.pop(c, true), child: Text(ok ?? t('确定', 'OK'))),
-      ],
-    ),
+      ];
+      if (MediaQuery.sizeOf(c).shortestSide < 300) {
+        return Dialog.fullscreen(
+          child: SafeArea(
+            child: ListView(
+              padding: const EdgeInsets.all(Insets.x4),
+              children: [
+                Text(title, style: Theme.of(c).textTheme.titleLarge),
+                if (body != null) Padding(padding: const EdgeInsets.symmetric(vertical: Insets.x4), child: Text(body)),
+                Wrap(alignment: WrapAlignment.end, children: actions),
+              ],
+            ),
+          ),
+        );
+      }
+      return AlertDialog(scrollable: true, title: Text(title), content: body == null ? null : Text(body), actions: actions);
+    },
   );
   return r ?? false;
 }
@@ -396,10 +406,11 @@ Future<String?> showActions(BuildContext context, List<MenuAction> actions, {Off
   final scheme = Theme.of(context).colorScheme;
   final text = Theme.of(context).textTheme;
   if (at != null) {
-    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    final overlay = Overlay.of(context, rootOverlay: true).context.findRenderObject() as RenderBox?;
     final size = overlay?.size ?? MediaQuery.sizeOf(context);
     return showMenu<String>(
       context: context,
+      useRootNavigator: true,
       position: RelativeRect.fromLTRB(at.dx, at.dy, size.width - at.dx, size.height - at.dy),
       items: [
         for (final a in actions)
@@ -436,15 +447,20 @@ Future<String?> showActions(BuildContext context, List<MenuAction> actions, {Off
 Future<T?> showActionSheet<T>(BuildContext context, List<Widget> Function(BuildContext) children, {EdgeInsetsGeometry? padding}) {
   return showModalBottomSheet<T>(
     context: context,
+    useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
     useSafeArea: true,
     builder: (ctx) => Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(ctx).bottom),
-      child: ListView(
-        shrinkWrap: true,
-        padding: padding ?? const EdgeInsets.only(bottom: 16),
-        children: children(ctx),
+      child: SafeArea(
+        top: false,
+        child: ListView(
+          shrinkWrap: true,
+          primary: false,
+          padding: padding ?? const EdgeInsets.only(bottom: Insets.x4),
+          children: children(ctx),
+        ),
       ),
     ),
   );

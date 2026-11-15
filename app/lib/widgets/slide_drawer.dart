@@ -64,7 +64,7 @@ class SlideDrawerState extends State<SlideDrawer> with SingleTickerProviderState
       if (f != null && f.context?.findAncestorWidgetOfExactType<EditableText>() == null) _restore = f;
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && isOpen) _drawerScope.requestFocus();
+      if (mounted && isOpen && (ModalRoute.of(context)?.isCurrent ?? true)) _drawerScope.requestFocus();
     });
   }
 
@@ -122,7 +122,9 @@ class SlideDrawerState extends State<SlideDrawer> with SingleTickerProviderState
         if (!_ignore) _settle(d.primaryVelocity ?? 0);
       },
       onHorizontalDragCancel: () {
-        if (!_ignore) _settle(0);
+        // Cancellation also happens when a child long press wins before a drag
+        // starts. Settling then would schedule drawer focus over its new sheet.
+        if (!_ignore && _dragging) _settle(0);
       },
       child: Stack(
         children: [

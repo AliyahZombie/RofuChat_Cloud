@@ -11,6 +11,7 @@ import '../../core/tokens.dart';
 import '../../models/models.dart';
 import '../../core/form_factor.dart';
 import '../../widgets/motion.dart';
+import '../../widgets/async_image.dart';
 
 /// A chat list item. Messages are flattened into rows so that every markdown block is its
 /// own ListView item (md_single_block_renderer: only visible blocks get built).
@@ -196,7 +197,7 @@ class UserBubble extends StatelessWidget {
                   alignment: WrapAlignment.end,
                   spacing: 4,
                   runSpacing: 4,
-                  children: [for (final img in msg.images) _Thumb(dataUrl: img)],
+                  children: [for (final img in msg.images) _Thumb(source: img)],
                 ),
               ),
             if (msg.content.isNotEmpty)
@@ -259,24 +260,14 @@ class ContextTag extends StatelessWidget {
 }
 
 class _Thumb extends StatelessWidget {
-  final String dataUrl;
-  const _Thumb({required this.dataUrl});
+  final Object source;
+  const _Thumb({required this.source});
   @override
   Widget build(BuildContext context) {
-    Widget img;
-    try {
-      img = dataUrl.startsWith('data:')
-          ? Image.memory(base64Decode(dataUrl.substring(dataUrl.indexOf(',') + 1)), fit: BoxFit.cover)
-          : Image.network(dataUrl, fit: BoxFit.cover);
-    } catch (_) {
-      img = const Icon(Icons.broken_image_rounded);
-    }
     // A real button: focusable, keyboard-activatable and named for screen readers.
     return Material(
       type: MaterialType.transparency,
       child: Ink(
-        width: 96,
-        height: 96,
         child: InkWell(
           borderRadius: Corners.rSm,
           onTap: () => showDialog(
@@ -284,7 +275,11 @@ class _Thumb extends StatelessWidget {
             builder: (c) => Dialog(
               clipBehavior: Clip.antiAlias,
               child: Stack(children: [
-                InteractiveViewer(child: img),
+                LayoutBuilder(
+                  builder: (c, box) => InteractiveViewer(
+                    child: AsyncImage(source: source, width: box.maxWidth, height: box.maxHeight, fit: BoxFit.contain),
+                  ),
+                ),
                 PositionedDirectional(
                   top: 4,
                   end: 4,
@@ -299,7 +294,7 @@ class _Thumb extends StatelessWidget {
           ),
           child: Semantics(
             label: t('查看图片', 'View image'),
-            child: ClipRRect(borderRadius: Corners.rSm, child: SizedBox(width: 96, height: 96, child: img)),
+            child: ClipRRect(borderRadius: Corners.rSm, child: AsyncImage(source: source)),
           ),
         ),
       ),

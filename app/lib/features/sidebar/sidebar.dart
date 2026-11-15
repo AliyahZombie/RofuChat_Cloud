@@ -287,45 +287,48 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 ],
               ),
             ),
-            Collapsible(
-              open: _charsOpen,
-              child: ConstrainedBox(
-                constraints: BoxConstraints(maxHeight: h * 0.45),
-                child: ListView(
-                  shrinkWrap: true,
-                  padding: EdgeInsets.symmetric(horizontal: inset + Insets.x2),
-                  children: [
-                    for (final c in chars)
-                      ListTile(
-                        minTileHeight: 48,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
-                        shape: const StadiumBorder(),
-                        selected: c.id == current?.id,
-                        selectedTileColor: scheme.secondaryContainer,
-                        selectedColor: scheme.onSecondaryContainer,
-                        leading: CharacterAvatar(character: c, size: watch ? 24 : 32),
-                        title: Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        trailing: c.id == current?.id ? const Icon(Icons.check_rounded) : null,
-                        onTap: () {
-                          ref.read(selectedCharacterIdProvider.notifier).select(c.id);
-                          ref.read(selectedConversationIdProvider.notifier).select(null);
-                          setState(() => _charsOpen = false);
-                        },
-                        onLongPress: () => _charMenu(c),
-                      ),
-                    if (!watch)
-                      ListTile(
-                        minTileHeight: 48,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
-                        shape: const StadiumBorder(),
-                        leading: CircleAvatar(radius: 16, backgroundColor: scheme.surfaceContainerHighest, child: const Icon(Icons.add_rounded, size: 20)),
-                        title: Text(t('添加角色', 'Add character')),
-                        onTap: () {
-                          setState(() => _charsOpen = false);
-                          _addCharacter();
-                        },
-                      ),
-                  ],
+            Flexible(
+              fit: FlexFit.loose,
+              child: Collapsible(
+                open: _charsOpen,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: h * 0.45),
+                  child: ListView(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.symmetric(horizontal: inset + Insets.x2),
+                    children: [
+                      for (final c in chars)
+                        ListTile(
+                          minTileHeight: 48,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
+                          shape: const StadiumBorder(),
+                          selected: c.id == current?.id,
+                          selectedTileColor: scheme.secondaryContainer,
+                          selectedColor: scheme.onSecondaryContainer,
+                          leading: CharacterAvatar(character: c, size: watch ? 24 : 32),
+                          title: Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                          trailing: c.id == current?.id ? const Icon(Icons.check_rounded) : null,
+                          onTap: () {
+                            ref.read(selectedCharacterIdProvider.notifier).select(c.id);
+                            ref.read(selectedConversationIdProvider.notifier).select(null);
+                            setState(() => _charsOpen = false);
+                          },
+                          onLongPress: () => _charMenu(c),
+                        ),
+                      if (!watch)
+                        ListTile(
+                          minTileHeight: 48,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
+                          shape: const StadiumBorder(),
+                          leading: CircleAvatar(radius: 16, backgroundColor: scheme.surfaceContainerHighest, child: const Icon(Icons.add_rounded, size: 20)),
+                          title: Text(t('添加角色', 'Add character')),
+                          onTap: () {
+                            setState(() => _charsOpen = false);
+                            _addCharacter();
+                          },
+                        ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -412,7 +415,12 @@ class _SidebarState extends ConsumerState<Sidebar> {
           }
         case 'del':
           if (await confirm(context, t('删除角色「${c.name}」？', 'Delete "${c.name}"?'), body: t('该角色的所有对话和专属记忆都会被删除。', 'All of its chats and memories will be deleted.'), ok: t('删除', 'Delete'))) {
+            final wasCurrent = ref.read(currentCharacterProvider)?.id == c.id;
             await ctl.remove(c.id);
+            if (mounted && wasCurrent) {
+              ref.read(selectedCharacterIdProvider.notifier).select(ref.read(charactersProvider).value?.firstOrNull?.id);
+              ref.read(selectedConversationIdProvider.notifier).select(null);
+            }
           }
       }
     } catch (e) {

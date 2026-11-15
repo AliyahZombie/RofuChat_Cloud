@@ -245,7 +245,7 @@ class Message extends JsonModel {
   set visible(bool v) => json['visible'] = v;
   Json get parts => _m(json, 'parts');
   List<Segment> get segments => ((parts['segments'] as List?) ?? const []).map((e) => Segment(Map<String, dynamic>.from(e as Map))).toList();
-  List<String> get images => _ls(parts, 'images');
+  List<Object> get images => ((parts['images'] as List?) ?? const []).whereType<Object>().toList();
   String? get error => parts['error'] as String?;
   String get model => _s(json, 'model');
   String get modelName => _s(json, 'model_name');

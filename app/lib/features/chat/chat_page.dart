@@ -16,6 +16,7 @@ import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/back_guard.dart';
 import '../../widgets/common.dart';
+import '../../widgets/async_image.dart';
 import '../../widgets/slide_drawer.dart';
 import '../../core/theme.dart';
 import '../../widgets/motion.dart';
@@ -1643,17 +1644,8 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                         child: Stack(
                           children: [
                             ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Image.memory(
-                                base64Decode(
-                                  _images[i].substring(
-                                    _images[i].indexOf(',') + 1,
-                                  ),
-                                ),
-                                width: 56,
-                                height: 56,
-                                fit: BoxFit.cover,
-                              ),
+                              borderRadius: Corners.rSm,
+                              child: AsyncImage(source: _images[i], width: 56, height: 56),
                             ),
                             // A 48dp target around the small remove glyph.
                             Positioned(
