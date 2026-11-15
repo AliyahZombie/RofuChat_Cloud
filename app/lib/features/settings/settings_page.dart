@@ -208,6 +208,13 @@ class SettingsPage extends ConsumerWidget {
       ),
       if (!watch) SwitchListTile(title: Text(t('聊天铺满宽度（桌面）', 'Full-width chat (desktop)')), value: a.fullWidth, onChanged: (v) => setA(a.copyWith(fullWidth: v))),
       _LoadCharsTile(value: a.loadChars, onChanged: (v) => setA(a.copyWith(loadChars: v))),
+      SwitchListTile(
+        title: Text(t('后台自动加载历史', 'Load history in the background')),
+        subtitle: Text(t('打开对话后继续加载更早的消息', 'Keep loading earlier messages after a chat opens')),
+        value: a.autoLoadHistory,
+        onChanged: (v) => setA(a.copyWith(autoLoadHistory: v)),
+      ),
+      _WindowTile(value: a.windowMessages, onChanged: (v) => setA(a.copyWith(windowMessages: v))),
       if (!watch && !context.isDesktop) _SwipeZoneTile(value: a.swipeZone, onChanged: (v) => setA(a.copyWith(swipeZone: v))),
       SwitchListTile(title: Text(t('显示头像', 'Show avatars')), value: a.showAvatars, onChanged: (v) => setA(a.copyWith(showAvatars: v))),
       SwitchListTile(title: Text(t('显示 Token 用量', 'Show token usage')), value: a.showTokens, onChanged: (v) => setA(a.copyWith(showTokens: v))),
@@ -301,6 +308,37 @@ class _LoadCharsTile extends StatelessWidget {
           divisions: steps.length - 1,
           label: fmtCount(steps[i]),
           semanticFormatterCallback: (v) => t('每次加载 ${fmtCount(steps[v.round()])} 字', '${fmtCount(steps[v.round()])} characters per load'),
+          onChanged: (v) => onChanged(steps[v.round()]),
+        ),
+      ]),
+    );
+  }
+}
+
+/// Most messages kept live in memory; the rest stay cached and load as you scroll.
+class _WindowTile extends StatelessWidget {
+  final int value;
+  final ValueChanged<int> onChanged;
+  const _WindowTile({required this.value, required this.onChanged});
+
+  static const steps = [200, 500, 1000, 2000, 5000, 10000];
+
+  @override
+  Widget build(BuildContext context) {
+    var i = steps.indexWhere((s) => s >= value);
+    if (i < 0) i = steps.length - 1;
+    return ListTile(
+      title: Text(t('内存中保留的消息', 'Messages kept in memory')),
+      subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(t('最多 ${steps[i]} 条；更早的消息压缩缓存，向上滑动时再载入',
+            'Up to ${steps[i]}; earlier ones are cached compactly and load as you scroll up')),
+        Slider(
+          value: i.toDouble(),
+          min: 0,
+          max: (steps.length - 1).toDouble(),
+          divisions: steps.length - 1,
+          label: '${steps[i]}',
+          semanticFormatterCallback: (v) => t('保留 ${steps[v.round()]} 条', '${steps[v.round()]} messages'),
           onChanged: (v) => onChanged(steps[v.round()]),
         ),
       ]),

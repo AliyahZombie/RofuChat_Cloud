@@ -87,6 +87,12 @@ class BlockCache {
   }
 
   void clear() => _cache.clear();
+
+  /// Drops the parsed blocks of messages that left the live window.
+  void forget(Iterable<String> msgIds) {
+    final ids = msgIds.toSet();
+    _cache.removeWhere((k, _) => ids.contains(k.substring(0, k.indexOf(':'))));
+  }
 }
 
 List<ChatRow> buildRows(List<Message> messages, BlockCache cache, {String? streamingId, bool generating = false}) {

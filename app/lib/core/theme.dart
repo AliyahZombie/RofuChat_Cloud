@@ -24,6 +24,13 @@ class Appearance {
   /// in tenths of the screen width (1 to 10; 10 = anywhere).
   final int swipeZone;
 
+  /// Keep loading older history in the background after a chat opens.
+  final bool autoLoadHistory;
+
+  /// Most messages kept live in a chat; older loaded ones are cached compactly and brought
+  /// back as you scroll up.
+  final int windowMessages;
+
   const Appearance({
     this.themeMode = 'system',
     this.colorSource = 'seed',
@@ -37,6 +44,8 @@ class Appearance {
     this.language = '',
     this.loadChars = 20000,
     this.swipeZone = 6,
+    this.autoLoadHistory = true,
+    this.windowMessages = 1000,
   });
 
   factory Appearance.fromJson(Map<String, dynamic> j) => Appearance(
@@ -54,6 +63,8 @@ class Appearance {
     language: j['language'] as String? ?? '',
     loadChars: (j['load_chars'] as num?)?.toInt() ?? 20000,
     swipeZone: ((j['swipe_zone'] as num?)?.toInt() ?? 6).clamp(1, 10),
+    autoLoadHistory: j['auto_load_history'] as bool? ?? true,
+    windowMessages: ((j['window_messages'] as num?)?.toInt() ?? 1000).clamp(100, 10000),
   );
 
   Map<String, dynamic> toJson() => {
@@ -69,6 +80,8 @@ class Appearance {
     'language': language,
     'load_chars': loadChars,
     'swipe_zone': swipeZone,
+    'auto_load_history': autoLoadHistory,
+    'window_messages': windowMessages,
   };
 
   Appearance copyWith({
@@ -84,6 +97,8 @@ class Appearance {
     String? language,
     int? loadChars,
     int? swipeZone,
+    bool? autoLoadHistory,
+    int? windowMessages,
   }) => Appearance(
     themeMode: themeMode ?? this.themeMode,
     colorSource: colorSource ?? this.colorSource,
@@ -97,6 +112,8 @@ class Appearance {
     language: language ?? this.language,
     loadChars: loadChars ?? this.loadChars,
     swipeZone: swipeZone ?? this.swipeZone,
+    autoLoadHistory: autoLoadHistory ?? this.autoLoadHistory,
+    windowMessages: windowMessages ?? this.windowMessages,
   );
 
   ThemeMode get mode => switch (themeMode) {

@@ -24,6 +24,7 @@ import '../characters/character_editor.dart';
 import '../memory/memory_page.dart';
 import '../sidebar/sidebar.dart';
 import 'chat_controller.dart';
+import 'conversation_map.dart';
 import 'message_rows.dart';
 import 'model_picker.dart';
 
@@ -48,7 +49,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     super.initState();
     _scroll.addListener(() {
       final at = _scroll.hasClients && _scroll.offset < 80;
-      if (at != _atBottom) setState(() => _atBottom = at);
+      if (at != _atBottom) {
+        setState(() => _atBottom = at);
+        // Back at the newest messages: older ones scrolled through go back to the compact cache.
+        if (at) _ctl?.trimToWindow();
+      }
     });
   }
 
@@ -57,6 +62,41 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     _ctl?.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  Future<void> _openMap(ChatController ctl) async {
+    final seq = await showConversationMap(context, ctl);
+    if (seq == null || !mounted) return;
+    await jumpToSeq(ctl, seq);
+  }
+
+  /// Scrolls the chat to the message with [seq]: makes it live (thawing the cache or fetching
+  /// older pages), then steps the reversed list toward its estimated position until the row
+  /// is built, and finally brings it into view and flashes it.
+  Future<void> jumpToSeq(ChatController ctl, int seq) async {
+    final id = await ctl.reveal(seq);
+    if (id == null || !mounted || ctl != _ctl) return;
+    ctl.focus(id);
+    for (var attempt = 0; attempt < 12; attempt++) {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || !_scroll.hasClients) return;
+      final target = chatFocusKey.currentContext;
+      if (target != null) {
+        await Scrollable.ensureVisible(
+          target,
+          alignment: 0.2,
+          duration: Motion.of(context, Motion.medium2),
+          curve: Motion.emphasized,
+        );
+        return;
+      }
+      // Rows run oldest to newest; the reversed list puts the newest at offset 0.
+      final i = ctl.messages.indexWhere((m) => m.id == id);
+      if (i < 0) return;
+      final frac = 1 - (i + 0.5) / ctl.messages.length;
+      final pos = _scroll.position;
+      _scroll.jumpTo((pos.maxScrollExtent * frac).clamp(0, pos.maxScrollExtent));
+    }
   }
 
   /// The controller for the selected conversation, or a draft for [ch] when none is selected:
@@ -76,7 +116,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         ref.read(apiProvider),
         convId,
         maxChars: ref.read(appearanceProvider).loadChars,
-      )..load();
+        windowMessages: ref.read(appearanceProvider).windowMessages,
+        autoLoad: ref.read(appearanceProvider).autoLoadHistory,
+      )
+        ..onEvict = _cache.forget
+        ..load();
     }
     return _ctl;
   }
@@ -103,6 +147,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         api,
         id,
         maxChars: ref.read(appearanceProvider).loadChars,
+        windowMessages: ref.read(appearanceProvider).windowMessages,
+        autoLoad: ref.read(appearanceProvider).autoLoadHistory,
       );
       await ctl.load();
       if (!mounted || _ctl != draft) {
@@ -221,6 +267,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         }
       },
       onNew: ch == null ? null : () => newConversation(ch),
+      onMap: ctl == null || ctl.isDraft ? null : () => _openMap(ctl),
     );
 
     if (ff == FormFactor.desktop) {
@@ -332,12 +379,14 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final Character? character;
   final VoidCallback onMenu;
   final VoidCallback? onNew;
+  final VoidCallback? onMap;
   const _ChatAppBar({
     required this.textScaler,
     required this.ctl,
     required this.character,
     required this.onMenu,
     required this.onNew,
+    this.onMap,
   });
 
   @override
@@ -410,6 +459,12 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
         ),
       ),
       actions: [
+        if (onMap != null)
+          IconButton(
+            onPressed: onMap,
+            icon: const Icon(Icons.toc_rounded),
+            tooltip: t('对话地图', 'Conversation map'),
+          ),
         if (onNew != null)
           IconButton(
             onPressed: onNew,
@@ -621,6 +676,29 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
   }
 }
 
+/// The row the list is asked to scroll to (one chat page is shown at a time).
+final chatFocusKey = GlobalKey(debugLabel: 'chat-focus');
+
+/// A brief highlight behind a row reached from the conversation map.
+class _Flash extends StatelessWidget {
+  final Widget child;
+  const _Flash({required this.child});
+  @override
+  Widget build(BuildContext context) {
+    final c = Theme.of(context).colorScheme.secondaryContainer;
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 1, end: 0),
+      duration: Motion.of(context, const Duration(milliseconds: 1600)),
+      curve: Motion.emphasizedAccelerate,
+      builder: (_, v, child) => DecoratedBox(
+        decoration: BoxDecoration(color: c.withValues(alpha: 0.7 * v), borderRadius: Corners.rMd),
+        child: child,
+      ),
+      child: child,
+    );
+  }
+}
+
 class _JumpToLatest extends StatelessWidget {
   final bool visible;
   final VoidCallback onPressed;
@@ -751,10 +829,14 @@ class _MessageList extends ConsumerWidget {
     final older = rows.sublist(0, split);
     final newest = rows.sublist(split);
     final m = older.length;
-    Widget build(ChatRow row) => KeyedSubtree(
-      key: ValueKey(row.key),
-      child: _row(context, ref, row, base, appearance, settings, models, watch),
-    );
+    Widget build(ChatRow row) {
+      Widget child = _row(context, ref, row, base, appearance, settings, models, watch);
+      // The first row of a message the conversation map jumped to: findable, and flashed.
+      if (row.msg.id == ctl.focusId && (row is UserRow || row is AssistantHeaderRow || row is SummaryRow)) {
+        child = KeyedSubtree(key: chatFocusKey, child: _Flash(child: child));
+      }
+      return KeyedSubtree(key: ValueKey(row.key), child: child);
+    }
     final list = CustomScrollView(
       controller: scroll,
       reverse: true,
@@ -780,7 +862,7 @@ class _MessageList extends ConsumerWidget {
             itemBuilder: (context, i) {
               if (i == m) {
                 // Top of the (reversed) list: fetch the previous page once it scrolls into view.
-                if (ctl.hasMore && !ctl.loadingOlder) {
+                if (ctl.canLoadOlder && !ctl.loadingOlder) {
                   WidgetsBinding.instance.addPostFrameCallback(
                     (_) => ctl.loadOlder(),
                   );
@@ -788,8 +870,8 @@ class _MessageList extends ConsumerWidget {
                 final loaded = ctl.loadedChars > 0
                     ? Text(
                         t(
-                          '已加载 ${fmtCount(ctl.loadedChars)} 字 · ${fmtBytes(ctl.loadedBytes)}',
-                          'Loaded ${fmtCount(ctl.loadedChars)} chars · ${fmtBytes(ctl.loadedBytes)}',
+                          '已加载 ${ctl.loadedCount} 条 · ${fmtCount(ctl.loadedChars)} 字 · ${fmtBytes(ctl.loadedBytes)}${ctl.hasMore ? ' · 后台加载中' : ''}',
+                          'Loaded ${ctl.loadedCount} messages · ${fmtCount(ctl.loadedChars)} chars · ${fmtBytes(ctl.loadedBytes)}${ctl.hasMore ? ' · loading' : ''}',
                         ),
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
@@ -801,14 +883,14 @@ class _MessageList extends ConsumerWidget {
                   padding: const EdgeInsets.all(Insets.x3),
                   child: Column(
                     children: [
-                      if (ctl.hasMore)
+                      if (ctl.canLoadOlder)
                         SizedBox.square(
                           dimension: 24,
                           child: CircularProgressIndicator(
                             semanticsLabel: t('正在加载更早的消息', 'Loading earlier messages'),
                           ),
                         ),
-                      if (ctl.hasMore && loaded != null)
+                      if (ctl.canLoadOlder && loaded != null)
                         const SizedBox(height: Insets.x2),
                       ?loaded,
                     ],

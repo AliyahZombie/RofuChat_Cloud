@@ -16,13 +16,22 @@ class ChatController extends ChangeNotifier {
 
   /// History budget per page, in characters (Appearance.loadChars).
   final int maxChars;
-  ChatController(this.api, this.conversationId, {this.maxChars = 20000});
+
+  /// Most messages kept live (parsed, rendered) at once (Appearance.windowMessages). Older
+  /// loaded messages are frozen into [_cold] as JSON text and thawed as the user scrolls up.
+  final int windowMessages;
+
+  /// Keep fetching older pages in the background after the first page.
+  final bool autoLoad;
+  ChatController(this.api, this.conversationId, {this.maxChars = 20000, this.windowMessages = 1000, this.autoLoad = true});
 
   /// A not-yet-created conversation: shows the character's greetings locally (switchable
   /// with the swipe arrows) and is created on the first send.
   ChatController.draft(this.api, Character character)
       : conversationId = '',
-        maxChars = 0 {
+        maxChars = 0,
+        windowMessages = 1000,
+        autoLoad = false {
     loading = false;
     final g = character.greetings;
     if (g.isNotEmpty) {
@@ -136,18 +145,127 @@ class ChatController extends ChangeNotifier {
     loadedBytes += bytes ?? utf8.encode(jsonEncode(page.map((m) => m.json).toList())).length;
   }
 
+  /// Loaded messages older than the live window, oldest first, frozen as JSON text (far
+  /// smaller than parsed maps, and never rendered or markdown-parsed).
+  final List<String> _cold = [];
+
+  /// Called when messages leave the live window (the page drops their parsed blocks).
+  void Function(Iterable<String> ids)? onEvict;
+
+  /// Older messages are available: frozen locally or still on the server.
+  bool get canLoadOlder => _cold.isNotEmpty || hasMore;
+
+  /// Messages loaded in total (live window plus the frozen cache).
+  int get loadedCount => messages.length + _cold.length;
+  int get coldCount => _cold.length;
+
+  /// Brings older messages into view: thaws a chunk from the frozen cache first, otherwise
+  /// fetches the previous page from the server.
   Future<void> loadOlder() async {
-    if (!hasMore || loadingOlder || messages.isEmpty) return;
+    if (loadingOlder) return;
+    if (_cold.isNotEmpty) {
+      _thaw(kThawChunk);
+      _notify();
+      return;
+    }
+    await _fetchOlder();
+  }
+
+  /// One server page before the oldest loaded message. While the user sits at the bottom
+  /// the page goes straight into the frozen cache once the window is full.
+  Future<bool> _fetchOlder({bool background = false}) async {
+    if (!hasMore || loadingOlder || messages.isEmpty) return false;
     loadingOlder = true;
-    _notify();
+    if (!background) _notify();
+    var got = false;
     try {
-      final (older, more) = await _page(beforeSeq: messages.first.seq);
-      final have = messages.map((m) => m.id).toSet();
-      messages.insertAll(0, older.where((m) => !have.contains(m.id)));
+      final oldest = _cold.isNotEmpty ? Message(Map<String, dynamic>.from(jsonDecode(_cold.first) as Map)).seq : messages.first.seq;
+      final (older, more) = await _page(beforeSeq: oldest);
+      if (_disposed) return false;
+      final have = {for (final m in messages) m.id};
+      final fresh = older.where((m) => !have.contains(m.id)).toList();
+      if (background && (_cold.isNotEmpty || messages.length + fresh.length > windowMessages)) {
+        // Fill the window up to its limit, freeze the rest.
+        final room = _cold.isEmpty ? (windowMessages - messages.length).clamp(0, fresh.length) : 0;
+        final live = fresh.sublist(fresh.length - room);
+        final frozen = fresh.sublist(0, fresh.length - room);
+        _cold.insertAll(0, frozen.map((m) => jsonEncode(m.json)));
+        messages.insertAll(0, live);
+      } else {
+        messages.insertAll(0, fresh);
+      }
       hasMore = more && older.isNotEmpty;
+      got = fresh.isNotEmpty;
     } catch (_) {}
     loadingOlder = false;
     _notify();
+    return got;
+  }
+
+  void _thaw(int n) {
+    final k = min(n, _cold.length);
+    if (k == 0) return;
+    final chunk = _cold.sublist(_cold.length - k);
+    _cold.removeRange(_cold.length - k, _cold.length);
+    messages.insertAll(0, chunk.map((e) => Message(Map<String, dynamic>.from(jsonDecode(e) as Map))));
+  }
+
+  /// Re-freezes the oldest live messages beyond the window. Call when the user is back at
+  /// the bottom (nothing on screen moves: the frozen messages are far above the viewport).
+  void trimToWindow() {
+    final extra = messages.length - windowMessages;
+    if (extra <= 0 || generating) return;
+    final out = messages.sublist(0, extra);
+    messages.removeRange(0, extra);
+    _cold.addAll(out.map((m) => jsonEncode(m.json)));
+    onEvict?.call(out.map((m) => m.id));
+    _notify();
+  }
+
+  /// Background history loading: keeps fetching older pages until the start of the
+  /// conversation, yielding between pages so the UI stays responsive.
+  Future<void> _autoLoadAll() async {
+    while (autoLoad && hasMore && !_disposed) {
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      if (_disposed || loadingOlder) continue;
+      if (!await _fetchOlder(background: true) && hasMore) {
+        await Future<void>.delayed(const Duration(seconds: 2)); // error: back off
+      }
+    }
+  }
+
+  /// Message the list should bring into view and flash (set by a conversation-map jump).
+  String? focusId;
+  Timer? _focusTimer;
+
+  void focus(String id) {
+    focusId = id;
+    _focusTimer?.cancel();
+    _focusTimer = Timer(const Duration(seconds: 2), () {
+      focusId = null;
+      _notify();
+    });
+    _notify();
+  }
+
+  /// Makes the message with [seq] live (thawing or fetching everything newer than it), so
+  /// the list can scroll to it. Returns its id, or null when it does not exist.
+  Future<String?> reveal(int seq) async {
+    while (true) {
+      final i = messages.indexWhere((m) => m.seq == seq);
+      if (i >= 0) return messages[i].id;
+      if (messages.isNotEmpty && messages.first.seq < seq) return null;
+      if (_cold.isNotEmpty) {
+        _thaw(kThawChunk);
+        _notify();
+        continue;
+      }
+      if (!hasMore) return null;
+      while (loadingOlder) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      if (!await _fetchOlder() && !hasMore) return null;
+    }
   }
 
   /// Merges the newest page into the loaded list (used while polling a generation).
@@ -169,8 +287,10 @@ class ChatController extends ChangeNotifier {
       final conv = Map<String, dynamic>.from(await api.get('/api/conversations/$conversationId') as Map);
       final (page, more) = await _page();
       messages = page;
+      _cold.clear();
       hasMore = more;
       loadError = null;
+      if (autoLoad && hasMore) unawaited(_autoLoadAll());
       if (conv['generating'] == true && _sub == null) {
         generating = true;
         _startPolling();
@@ -551,7 +671,10 @@ class ChatController extends ChangeNotifier {
     try {
       await api.post('/api/conversations/$conversationId/compress');
       messages = await api.list('/api/conversations/$conversationId/messages', Message.new);
+      _cold.clear();
+      hasMore = false;
       rev++;
+      trimToWindow();
     } finally {
       compressing = false;
       _notify();
@@ -562,12 +685,16 @@ class ChatController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _focusTimer?.cancel();
     _ticker?.cancel();
     _sub?.cancel();
     _poll?.cancel();
     super.dispose();
   }
 }
+
+/// Messages thawed from the frozen cache per step while scrolling up.
+const int kThawChunk = 150;
 
 class _Delta {
   final String type;
