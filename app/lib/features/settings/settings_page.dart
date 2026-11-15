@@ -120,7 +120,7 @@ class SettingsPage extends ConsumerWidget {
           title: Text(t('记忆整理：空闲分钟数', 'Memory extraction: idle minutes')),
           subtitle: Text('${s.memoryIdleMinutes}'),
           onTap: () async {
-            final v = await promptText(context, t('空闲多少分钟后整理记忆', 'Idle minutes before extraction'), initial: '${s.memoryIdleMinutes}');
+            final v = await promptText(context, t('空闲多少分钟后整理记忆', 'Idle minutes before extraction'), initial: '${s.memoryIdleMinutes}', keyboard: TextInputType.number);
             final n = int.tryParse(v ?? '');
             if (n != null && n > 0) await saveSettings((x) => x.memoryIdleMinutes = n);
           },
@@ -143,20 +143,8 @@ class SettingsPage extends ConsumerWidget {
       ),
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Wrap(spacing: 10, runSpacing: 10, children: [
-          for (final (zh, en, color) in seedPresets)
-            Tooltip(
-              message: t(zh, en),
-              child: InkWell(
-                customBorder: const CircleBorder(),
-                onTap: () => setA(a.copyWith(seed: color)),
-                child: CircleAvatar(
-                  radius: 16,
-                  backgroundColor: Color(color),
-                  child: a.seed == color ? const Icon(Icons.check, size: 16, color: Colors.white) : null,
-                ),
-              ),
-            ),
+        child: Wrap(spacing: 4, runSpacing: 4, children: [
+          for (final (zh, en, color) in seedPresets) _SeedSwatch(label: t(zh, en), color: Color(color), selected: a.seed == color, onTap: () => setA(a.copyWith(seed: color))),
         ]),
       ),
       ListTile(
@@ -299,6 +287,49 @@ class _SwipeZoneTile extends StatelessWidget {
           onChanged: (v) => onChanged(v.round()),
         ),
       ]),
+    );
+  }
+}
+
+/// A seed colour choice: a 48dp selectable cell around a 32dp swatch. The check mark picks
+/// black or white by the swatch's luminance so it stays visible on light seeds (amber).
+class _SeedSwatch extends StatelessWidget {
+  final String label;
+  final Color color;
+  final bool selected;
+  final VoidCallback onTap;
+  const _SeedSwatch({required this.label, required this.color, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final onColor = ThemeData.estimateBrightnessForColor(color) == Brightness.dark ? Colors.white : Colors.black;
+    return Tooltip(
+      message: label,
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: label,
+        excludeSemantics: true,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: SizedBox.square(
+            dimension: 48,
+            child: Center(
+              child: Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
+                  border: selected ? Border.all(color: Theme.of(context).colorScheme.onSurface, width: 2) : null,
+                ),
+                child: selected ? Icon(Icons.check, size: 18, color: onColor) : null,
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

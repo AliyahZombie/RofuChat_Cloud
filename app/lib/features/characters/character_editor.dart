@@ -94,7 +94,7 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
         canPop: !_dirty,
         onPopInvokedWithResult: (did, _) async {
           if (did) return;
-          if (await confirm(context, t('放弃未保存的修改？', 'Discard unsaved changes?'))) {
+          if (await confirm(context, t('放弃未保存的修改？', 'Discard unsaved changes?'), ok: t('放弃', 'Discard'))) {
             _dirty = false;
             if (context.mounted) Navigator.pop(context);
           }
@@ -200,10 +200,18 @@ class _BasicTab extends ConsumerWidget {
         Center(
           child: Stack(
             children: [
-              InkWell(
-                customBorder: const CircleBorder(),
-                onTap: () => _pickAvatar(context),
-                child: CharacterAvatar(character: c, size: 88),
+              Tooltip(
+                message: t('更换头像', 'Change avatar'),
+                child: Semantics(
+                  button: true,
+                  label: t('更换头像', 'Change avatar'),
+                  excludeSemantics: true,
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () => _pickAvatar(context),
+                    child: CharacterAvatar(character: c, size: 88),
+                  ),
+                ),
               ),
               Positioned(
                 right: 0,
@@ -297,7 +305,11 @@ class _CardTab extends StatelessWidget {
                   }),
                 ),
               ),
-              IconButton(onPressed: () => touch(() => c.setCard('alternate_greetings', [...greetings]..removeAt(i))), icon: const Icon(Icons.remove_circle_outline)),
+              IconButton(
+                tooltip: t('删除开场白 #${i + 2}', 'Remove greeting #${i + 2}'),
+                onPressed: () => touch(() => c.setCard('alternate_greetings', [...greetings]..removeAt(i))),
+                icon: const Icon(Icons.remove_circle_outline),
+              ),
             ],
           ),
         Align(
@@ -476,7 +488,10 @@ class _McpTileState extends ConsumerState<_McpTile> {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: ExpansionTile(
         initiallyExpanded: s.url.isEmpty,
-        leading: Switch(value: s.enabled, onChanged: (v) => widget.onChanged(_copy()..enabled = v)),
+        leading: Semantics(
+          label: t('启用 ${s.name.isEmpty ? 'MCP 服务器' : s.name}', 'Enable ${s.name.isEmpty ? 'MCP server' : s.name}'),
+          child: Switch(value: s.enabled, onChanged: (v) => widget.onChanged(_copy()..enabled = v)),
+        ),
         title: Text(s.name.isEmpty ? t('未命名', 'Unnamed') : s.name),
         subtitle: Text('${s.transport == 'sse' ? 'SSE' : 'Streamable HTTP'} · ${s.url}', maxLines: 1, overflow: TextOverflow.ellipsis),
         children: [

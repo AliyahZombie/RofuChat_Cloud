@@ -136,7 +136,8 @@ class CharacterAvatar extends ConsumerWidget {
   }
 }
 
-/// Ring showing context usage, sitting between the + and send buttons.
+/// Ring showing context usage, sitting between the + and send buttons. The ring itself is
+/// small (22dp by default); when it is tappable it sits in a 48dp target.
 class ContextRing extends StatelessWidget {
   final ContextInfo info;
   final double size;
@@ -144,30 +145,46 @@ class ContextRing extends StatelessWidget {
   final VoidCallback? onTap;
   const ContextRing({super.key, required this.info, this.size = 22, this.stroke = 3, this.onTap});
 
+  /// Spoken summary: "Context 12k of 128k tokens, 9 percent", plus the warning range.
+  static String describe(ContextInfo info) {
+    final pct = (info.ratio * 100).round();
+    final level = info.ratio > 0.85
+        ? t('，即将用尽', ', nearly full')
+        : info.ratio > 0.6
+            ? t('，偏高', ', high')
+            : '';
+    return t(
+      '上下文 ${info.estimated ? '约' : ''}${fmtTokens(info.tokens)} / ${fmtTokens(info.max)} token，$pct%$level',
+      'Context ${info.estimated ? 'about ' : ''}${fmtTokens(info.tokens)} of ${fmtTokens(info.max)} tokens, $pct percent$level',
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final r = info.ratio;
     final color = r > 0.85 ? scheme.error : (r > 0.6 ? Colors.orange : scheme.primary);
+    final ring = CustomPaint(
+      size: Size.square(size),
+      painter: _RingPainter(
+        ratio: r,
+        color: color,
+        track: scheme.outlineVariant.withValues(alpha: 0.5),
+        stroke: stroke,
+      ),
+    );
+    final box = onTap == null ? size + 8 : math.max(size + 8, kMinInteractiveDimension);
     return Tooltip(
       message: '${fmtTokens(info.tokens)} / ${fmtTokens(info.max)}',
-      child: InkResponse(
+      child: Semantics(
+        button: onTap != null,
+        label: describe(info),
+        excludeSemantics: true,
         onTap: onTap,
-        radius: size,
-        child: SizedBox(
-          width: size + 8,
-          height: size + 8,
-          child: Center(
-            child: CustomPaint(
-              size: Size.square(size),
-              painter: _RingPainter(
-                ratio: r,
-                color: color,
-                track: scheme.outlineVariant.withValues(alpha: 0.5),
-                stroke: stroke,
-              ),
-            ),
-          ),
+        child: InkResponse(
+          onTap: onTap,
+          radius: box / 2,
+          child: SizedBox.square(dimension: box, child: Center(child: ring)),
         ),
       ),
     );
@@ -222,10 +239,20 @@ class TokenIndicator extends StatelessWidget {
       '${t('总耗时', 'Total')}: ${fmtDuration(usage.durationMs)}',
       if (usage.estimated) t('（估算值）', '(estimated)'),
     ].join('\n');
+    final spoken = [
+      t('输入 ${usage.estimated ? '约' : ''}${fmtTokens(usage.input)} token', 'Input ${usage.estimated ? 'about ' : ''}${fmtTokens(usage.input)} tokens'),
+      t('输出 ${fmtTokens(usage.output)}', 'output ${fmtTokens(usage.output)}'),
+      if (usage.cached > 0) t('缓存 ${fmtTokens(usage.cached)}', 'cached ${fmtTokens(usage.cached)}'),
+      t('用时 ${fmtDuration(usage.durationMs)}', 'took ${fmtDuration(usage.durationMs)}'),
+    ].join(t('，', ', '));
     return Tooltip(
       message: tip,
       triggerMode: TooltipTriggerMode.longPress,
-      child: Text('${parts.join(' ')} · ${fmtDuration(usage.durationMs)}', style: style),
+      child: Semantics(
+        label: spoken,
+        excludeSemantics: true,
+        child: Text('${parts.join(' ')} · ${fmtDuration(usage.durationMs)}', style: style),
+      ),
     );
   }
 }
@@ -241,6 +268,8 @@ class SectionTitle extends StatelessWidget {
       );
 }
 
+/// A basic M3 dialog asking to confirm an action. [ok] names the outcome ("Delete",
+/// "Rename"); plain "OK" is only for acknowledgements.
 Future<bool> confirm(BuildContext context, String title, {String? body, String? ok}) async {
   final r = await showDialog<bool>(
     context: context,
@@ -249,38 +278,82 @@ Future<bool> confirm(BuildContext context, String title, {String? body, String? 
       content: body == null ? null : Text(body),
       actions: [
         TextButton(onPressed: () => Navigator.pop(c, false), child: Text(t('取消', 'Cancel'))),
-        FilledButton(onPressed: () => Navigator.pop(c, true), child: Text(ok ?? t('确定', 'OK'))),
+        TextButton(onPressed: () => Navigator.pop(c, true), child: Text(ok ?? t('确定', 'OK'))),
       ],
     ),
   );
   return r ?? false;
 }
 
-Future<String?> promptText(BuildContext context, String title, {String initial = '', int maxLines = 1, String? hint}) async {
+/// Asks for one text value. Short single-line prompts use a basic dialog; multi-line
+/// editing on a compact window uses a full-screen dialog so the keyboard and large text
+/// never squeeze the field (M3 full-screen dialog guidance).
+Future<String?> promptText(
+  BuildContext context,
+  String title, {
+  String initial = '',
+  int maxLines = 1,
+  String? hint,
+  String? label,
+  String? ok,
+  TextInputType? keyboard,
+}) async {
   final ctl = TextEditingController(text: initial);
+  final okLabel = ok ?? t('保存', 'Save');
+  final fullscreen = maxLines > 1 && MediaQuery.sizeOf(context).width < 600;
+  final field = TextField(
+    controller: ctl,
+    autofocus: true,
+    maxLines: fullscreen ? null : maxLines,
+    minLines: fullscreen ? 6 : 1,
+    keyboardType: keyboard ?? (maxLines > 1 ? TextInputType.multiline : null),
+    decoration: InputDecoration(hintText: hint, labelText: label),
+  );
   final r = await showDialog<String>(
     context: context,
-    builder: (c) => AlertDialog(
-      title: Text(title),
-      content: SizedBox(
-        width: 480,
-        child: TextField(controller: ctl, autofocus: true, maxLines: maxLines, minLines: 1, decoration: InputDecoration(hintText: hint)),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(c), child: Text(t('取消', 'Cancel'))),
-        FilledButton(onPressed: () => Navigator.pop(c, ctl.text), child: Text(t('确定', 'OK'))),
-      ],
-    ),
+    builder: (c) => fullscreen
+        ? Dialog.fullscreen(
+            child: Scaffold(
+              appBar: AppBar(
+                leading: IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: t('取消', 'Cancel'),
+                  onPressed: () => Navigator.pop(c),
+                ),
+                title: Text(title),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(c, ctl.text), child: Text(okLabel)),
+                  const SizedBox(width: 8),
+                ],
+              ),
+              body: ListView(padding: const EdgeInsets.all(16), children: [field]),
+            ),
+          )
+        : AlertDialog(
+            scrollable: true,
+            title: Text(title),
+            content: field,
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(c), child: Text(t('取消', 'Cancel'))),
+              TextButton(onPressed: () => Navigator.pop(c, ctl.text), child: Text(okLabel)),
+            ],
+          ),
   );
   return r;
 }
 
+/// Error feedback. Errors stay until dismissed or for the M3 long duration (10s) and carry
+/// a close button, so they are not missed.
 void showError(BuildContext context, Object e) {
-  ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('$e')));
+  final m = ScaffoldMessenger.maybeOf(context);
+  m
+    ?..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(content: Text('$e'), showCloseIcon: true, duration: const Duration(seconds: 10)));
 }
 
+/// Short informational feedback (M3 4s snackbar).
 void showInfo(BuildContext context, String msg) {
-  ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(msg)));
+  ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 4)));
 }
 
 /// One entry of an item's action menu.
@@ -292,39 +365,63 @@ class MenuAction {
   const MenuAction(this.value, this.icon, this.label, {this.danger = false});
 }
 
-/// An item's action menu: a popup at the pointer when [at] is given (right click, desktop),
-/// otherwise a bottom sheet (long press, touch).
+/// An item's action menu, dispatched by input origin (never by window width):
+/// a popup at the pointer when [at] is given (secondary click, or an anchored "More"
+/// button), otherwise a bottom sheet (long press, touch).
 Future<String?> showActions(BuildContext context, List<MenuAction> actions, {Offset? at}) {
   final scheme = Theme.of(context).colorScheme;
+  final text = Theme.of(context).textTheme;
   if (at != null) {
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    final size = overlay?.size ?? MediaQuery.sizeOf(context);
     return showMenu<String>(
       context: context,
-      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      position: RelativeRect.fromLTRB(at.dx, at.dy, size.width - at.dx, size.height - at.dy),
       items: [
         for (final a in actions)
           PopupMenuItem(
             value: a.value,
-            child: ListTile(
-              dense: true,
-              leading: Icon(a.icon, color: a.danger ? scheme.error : null),
-              title: Text(a.label, style: a.danger ? TextStyle(color: scheme.error) : null),
+            height: kMinInteractiveDimension,
+            // M3 menu item anatomy: 24dp leading icon, 12dp gap, labelLarge text.
+            child: Row(
+              children: [
+                Icon(a.icon, size: 24, color: a.danger ? scheme.error : scheme.onSurfaceVariant),
+                const SizedBox(width: 12),
+                Flexible(child: Text(a.label, style: text.labelLarge?.copyWith(color: a.danger ? scheme.error : scheme.onSurface))),
+              ],
             ),
           ),
       ],
     );
   }
-  return showModalBottomSheet<String>(
+  return showActionSheet<String>(
+    context,
+    (ctx) => [
+      for (final a in actions)
+        ListTile(
+          leading: Icon(a.icon, color: a.danger ? scheme.error : null),
+          title: Text(a.label, style: a.danger ? TextStyle(color: scheme.error) : null),
+          onTap: () => Navigator.pop(ctx, a.value),
+        ),
+    ],
+  );
+}
+
+/// A modal bottom sheet whose content always stays reachable: it scrolls when it is taller
+/// than the window (short windows, watches, large text) and clears the keyboard.
+Future<T?> showActionSheet<T>(BuildContext context, List<Widget> Function(BuildContext) children, {EdgeInsetsGeometry? padding}) {
+  return showModalBottomSheet<T>(
     context: context,
     showDragHandle: true,
-    builder: (ctx) => SafeArea(
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        for (final a in actions)
-          ListTile(
-            leading: Icon(a.icon, color: a.danger ? scheme.error : null),
-            title: Text(a.label, style: a.danger ? TextStyle(color: scheme.error) : null),
-            onTap: () => Navigator.pop(ctx, a.value),
-          ),
-      ]),
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (ctx) => Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(ctx).bottom),
+      child: ListView(
+        shrinkWrap: true,
+        padding: padding ?? const EdgeInsets.only(bottom: 16),
+        children: children(ctx),
+      ),
     ),
   );
 }

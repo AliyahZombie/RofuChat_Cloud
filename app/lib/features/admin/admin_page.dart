@@ -72,7 +72,7 @@ class _AdminPageState extends ConsumerState<AdminPage> {
     final users = _users;
     return Scaffold(
       appBar: AppBar(title: Text(t('用户管理', 'User management'))),
-      floatingActionButton: FloatingActionButton(onPressed: _create, child: const Icon(Icons.person_add_alt)),
+      floatingActionButton: FloatingActionButton(tooltip: t('新建用户', 'New user'), onPressed: _create, child: const Icon(Icons.person_add_alt)),
       body: _error != null
           ? Center(child: Text(_error!))
           : users == null
@@ -102,9 +102,9 @@ class _AdminPageState extends ConsumerState<AdminPage> {
                           final api = ref.read(apiProvider);
                           try {
                             if (v == 'pw') {
-                              final p = await promptText(context, t('重置 ${u.username} 的密码', 'Reset password for ${u.username}'));
+                              final p = await promptText(context, t('重置 ${u.username} 的密码', 'Reset password for ${u.username}'), label: t('新密码', 'New password'), ok: t('重置密码', 'Reset password'));
                               if (p != null && p.isNotEmpty) await api.post('/api/admin/users/${u.id}/password', {'password': p});
-                            } else if (v == 'del' && await confirm(context, t('删除用户 ${u.username} 及其全部数据？', 'Delete ${u.username} and all their data?'))) {
+                            } else if (v == 'del' && await confirm(context, t('删除用户 ${u.username} 及其全部数据？', 'Delete ${u.username} and all their data?'), ok: t('删除', 'Delete'))) {
                               await api.delete('/api/admin/users/${u.id}');
                               await _load();
                             }

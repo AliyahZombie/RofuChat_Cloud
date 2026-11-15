@@ -66,7 +66,11 @@ class _ConnectPageState extends ConsumerState<ConnectPage> {
                     title: Text(c.name),
                     subtitle: Text('${c.username.isEmpty ? '' : '${c.username} @ '}${c.url}', maxLines: 1, overflow: TextOverflow.ellipsis),
                     onTap: () => ctl.activate(c),
-                    trailing: IconButton(icon: const Icon(Icons.close), onPressed: () => ctl.removeConnection(c)),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.close),
+                      tooltip: t('移除 ${c.name}', 'Remove ${c.name}'),
+                      onPressed: () => ctl.removeConnection(c),
+                    ),
                   ),
               ],
             ]),
@@ -101,7 +105,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => ref.read(appProvider.notifier).showConnect()),
+        leading: BackButton(onPressed: () => ref.read(appProvider.notifier).showConnect()),
         title: Text(app.active?.name ?? ''),
       ),
       body: Center(

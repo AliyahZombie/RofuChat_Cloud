@@ -128,7 +128,7 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
   Future<void> _addManual() async {
     if (p.id.isEmpty && !await _save(pop: false)) return;
     if (!mounted) return;
-    final id = await promptText(context, t('模型 ID', 'Model ID'), hint: 'gpt-4o-mini');
+    final id = await promptText(context, t('手动添加模型', 'Add a model manually'), label: t('模型 ID', 'Model ID'), hint: 'gpt-4o-mini', ok: t('下一步', 'Next'));
     if (id == null || id.trim().isEmpty) return;
     try {
       final j = await ref.read(apiProvider).post('/api/models/detect', {'model_id': id.trim()});
@@ -208,8 +208,9 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
           if (p.id.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.delete_outline),
+              tooltip: t('删除供应商', 'Delete provider'),
               onPressed: () async {
-                if (await confirm(context, t('删除供应商及其所有模型？', 'Delete this provider and its models?'))) {
+                if (await confirm(context, t('删除供应商及其所有模型？', 'Delete this provider and its models?'), ok: t('删除', 'Delete'))) {
                   await ref.read(providersProvider.notifier).remove(p.id);
                   await ref.read(modelsProvider.notifier).refresh();
                   if (context.mounted) Navigator.pop(context);
@@ -235,7 +236,11 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
           obscureText: !_showKey,
           decoration: InputDecoration(
             labelText: 'API Key',
-            suffixIcon: IconButton(icon: Icon(_showKey ? Icons.visibility_off : Icons.visibility), onPressed: () => setState(() => _showKey = !_showKey)),
+            suffixIcon: IconButton(
+              icon: Icon(_showKey ? Icons.visibility_off : Icons.visibility),
+              tooltip: _showKey ? t('隐藏 API Key', 'Hide API key') : t('显示 API Key', 'Show API key'),
+              onPressed: () => setState(() => _showKey = !_showKey),
+            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -251,19 +256,14 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
             icon: const Icon(Icons.auto_fix_high_outlined),
           ),
           if (models.length > 1)
-            PopupMenuButton<ModelCfg>(
-              enabled: !_busy,
-              tooltip: t('选择模型测试', 'Pick a model to test'),
-              onSelected: _testProvider,
-              itemBuilder: (_) => [for (final m in models) PopupMenuItem(value: m, child: Text(m.name))],
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.network_check, size: 18, color: Theme.of(context).colorScheme.primary),
-                  const SizedBox(width: 6),
-                  Text(t('测试', 'Test'), style: TextStyle(color: Theme.of(context).colorScheme.primary)),
-                  Icon(Icons.arrow_drop_down, color: Theme.of(context).colorScheme.primary),
-                ]),
+            // A real button whose disabled state resolves through M3 roles while busy.
+            MenuAnchor(
+              menuChildren: [for (final m in models) MenuItemButton(onPressed: () => _testProvider(m), child: Text(m.name))],
+              builder: (context, menu, _) => TextButton.icon(
+                onPressed: _busy ? null : () => menu.isOpen ? menu.close() : menu.open(),
+                icon: const Icon(Icons.network_check),
+                label: Text(t('测试', 'Test')),
+                iconAlignment: IconAlignment.start,
               ),
             )
           else
@@ -285,6 +285,7 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
             ]),
             trailing: IconButton(
               icon: const Icon(Icons.delete_outline),
+              tooltip: t('删除 ${m.name}', 'Delete ${m.name}'),
               onPressed: () => ref.read(modelsProvider.notifier).remove(m.id),
             ),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ModelEditorPage(model: m))),
@@ -419,13 +420,25 @@ class _ModelEditorPageState extends ConsumerState<ModelEditorPage> {
         SectionTitle(t('图标', 'Icon')),
         Wrap(spacing: 8, runSpacing: 8, children: [
           for (final k in ['', ...modelIconKeys])
-            InkWell(
-              customBorder: const CircleBorder(),
-              onTap: () => setState(() => m.icon = k),
-              child: Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: m.icon == k ? Theme.of(context).colorScheme.primary : Colors.transparent, width: 2)),
-                child: Tooltip(message: k.isEmpty ? t('自动', 'Auto') : k, child: ModelIcon(iconKey: k.isEmpty ? '-' : k, name: k.isEmpty ? m.name : k, size: 34)),
+            // 48dp selectable cell; the visible icon and selection ring sit inside it.
+            Tooltip(
+              message: k.isEmpty ? t('自动', 'Auto') : k,
+              child: Semantics(
+                button: true,
+                selected: m.icon == k,
+                label: k.isEmpty ? t('自动', 'Auto') : k,
+                excludeSemantics: true,
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () => setState(() => m.icon = k),
+                  child: Container(
+                    width: 48,
+                    height: 48,
+                    padding: const EdgeInsets.all(3),
+                    decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: m.icon == k ? Theme.of(context).colorScheme.primary : Colors.transparent, width: 2)),
+                    child: ModelIcon(iconKey: k.isEmpty ? '-' : k, name: k.isEmpty ? m.name : k, size: 38),
+                  ),
+                ),
               ),
             ),
         ]),

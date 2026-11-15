@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/i18n.dart';
 import 'core/storage.dart';
 import 'core/theme.dart';
+import 'core/tokens.dart';
 import 'features/chat/chat_page.dart';
 import 'features/connect/connect_page.dart';
 import 'state/app_state.dart';
@@ -34,14 +36,21 @@ class RofuApp extends ConsumerWidget {
       darkTheme: buildTheme(a, Brightness.dark),
       themeMode: a.mode,
       locale: a.language.isEmpty ? null : Locale(a.language),
+      // English first: an unsupported system language falls back to English, matching t().
+      supportedLocales: const [Locale('en'), Locale('zh')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
       scrollBehavior: AppScrollBehavior(),
-      builder: (context, child) {
-        final mq = MediaQuery.of(context);
-        // Watches get a smaller base text size.
-        final watchScale = mq.size.shortestSide < 300 ? 0.85 : 1.0;
-        return MediaQuery(data: mq.copyWith(textScaler: TextScaler.linear(mq.textScaler.scale(1) * watchScale)), child: child!);
-      },
-      home: AnimatedSwitcher(duration: const Duration(milliseconds: 200), child: KeyedSubtree(key: ValueKey('$status${I18n.isZh}'), child: home)),
+      // The platform TextScaler is kept as is (it may be nonlinear); watches get a smaller
+      // base type scale through the theme instead.
+      builder: (context, child) => MediaQuery.sizeOf(context).shortestSide < 300
+          ? Theme(data: watchTheme(Theme.of(context)), child: child!)
+          : child!,
+      home: AnimatedSwitcher(
+        duration: Motion.medium2,
+        switchInCurve: Motion.emphasizedDecelerate,
+        switchOutCurve: Motion.emphasizedAccelerate,
+        child: KeyedSubtree(key: ValueKey('$status${I18n.isZh}'), child: home),
+      ),
     );
   }
 }
@@ -49,5 +58,7 @@ class RofuApp extends ConsumerWidget {
 class _Splash extends StatelessWidget {
   const _Splash();
   @override
-  Widget build(BuildContext context) => const Scaffold(body: Center(child: CircularProgressIndicator()));
+  Widget build(BuildContext context) => Scaffold(
+        body: Center(child: CircularProgressIndicator(semanticsLabel: t('正在加载', 'Loading'))),
+      );
 }

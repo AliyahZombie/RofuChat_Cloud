@@ -74,10 +74,19 @@ class _SidebarState extends ConsumerState<Sidebar> {
               padding: const EdgeInsets.symmetric(horizontal: 4),
               child: Column(
                 children: [
-                  InkWell(
-                    customBorder: const CircleBorder(),
-                    onTap: _addCharacter,
-                    child: CircleAvatar(radius: 24, backgroundColor: scheme.surfaceContainerHighest, child: const Icon(Icons.add)),
+                  Semantics(
+                    button: true,
+                    label: t('添加角色', 'Add character'),
+                    excludeSemantics: true,
+                    child: Material(
+                      color: scheme.surfaceContainerHighest,
+                      shape: const CircleBorder(),
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onTap: _addCharacter,
+                        child: const SizedBox.square(dimension: 48, child: Icon(Icons.add)),
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(t('添加', 'Add'), style: Theme.of(context).textTheme.labelSmall),
@@ -135,7 +144,9 @@ class _SidebarState extends ConsumerState<Sidebar> {
                         selectedTileColor: scheme.secondaryContainer.withValues(alpha: 0.6),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         title: Text(c.title.isEmpty ? t('新对话', 'New chat') : c.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        trailing: c.generating ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5)) : null,
+                        trailing: c.generating
+                            ? SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5, semanticsLabel: t('正在生成', 'Generating')))
+                            : null,
                         onTap: () {
                           ref.read(selectedConversationIdProvider.notifier).select(c.id);
                           _close();
@@ -219,10 +230,13 @@ class _SidebarState extends ConsumerState<Sidebar> {
   Widget _rikkaLayout(List<Character> chars, Character? current, Widget convs, AppState app, double inset, bool watch) {
     final scheme = Theme.of(context).colorScheme;
     final h = MediaQuery.sizeOf(context).height;
-    final btn = watch ? 38.0 : 46.0;
-    Widget round(IconData icon, String tip, VoidCallback onTap) => Padding(
-      padding: EdgeInsets.symmetric(horizontal: watch ? 3 : 5),
-      child: IconButton.filledTonal(tooltip: tip, onPressed: onTap, icon: Icon(icon, size: watch ? 18 : 22), constraints: BoxConstraints.tightFor(width: btn, height: btn), padding: EdgeInsets.zero),
+    // Standard tonal icon buttons: 40dp visual, 48dp target. On narrow windows (watch) the
+    // row wraps instead of shrinking the targets.
+    Widget round(IconData icon, String tip, VoidCallback onTap) => IconButton.filledTonal(
+      tooltip: tip,
+      onPressed: onTap,
+      icon: Icon(icon),
+      style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.padded, visualDensity: VisualDensity.standard),
     );
     return SafeArea(
       child: Material(
@@ -312,18 +326,15 @@ class _SidebarState extends ConsumerState<Sidebar> {
             ),
             Padding(
               padding: EdgeInsets.fromLTRB(inset + 4, 0, inset + 4, 8),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    round(Icons.psychology_alt_outlined, t('记忆', 'Memory'), () => _push(const MemoryPage())),
-                    round(Icons.code_rounded, t('本地工具', 'Local tools'), () => _push(const ToolsPage())),
-                    round(Icons.swap_horiz, t('连接', 'Connection'), () => ref.read(appProvider.notifier).showConnect()),
-                    const SizedBox(width: 10),
-                    round(Icons.settings_outlined, t('设置', 'Settings'), () => _push(const SettingsPage())),
-                  ],
-                ),
+              child: Wrap(
+                alignment: WrapAlignment.center,
+                spacing: watch ? 0 : 8,
+                children: [
+                  round(Icons.psychology_alt_outlined, t('记忆', 'Memory'), () => _push(const MemoryPage())),
+                  round(Icons.code_rounded, t('本地工具', 'Local tools'), () => _push(const ToolsPage())),
+                  round(Icons.swap_horiz, t('连接', 'Connection'), () => ref.read(appProvider.notifier).showConnect()),
+                  round(Icons.settings_outlined, t('设置', 'Settings'), () => _push(const SettingsPage())),
+                ],
               ),
             ),
           ],
@@ -388,7 +399,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
             await ctl.reorder(ids);
           }
         case 'del':
-          if (await confirm(context, t('删除角色「${c.name}」？', 'Delete "${c.name}"?'), body: t('该角色的所有对话和专属记忆都会被删除。', 'All of its chats and memories will be deleted.'))) {
+          if (await confirm(context, t('删除角色「${c.name}」？', 'Delete "${c.name}"?'), body: t('该角色的所有对话和专属记忆都会被删除。', 'All of its chats and memories will be deleted.'), ok: t('删除', 'Delete'))) {
             await ctl.remove(c.id);
           }
       }
@@ -403,9 +414,9 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final api = ref.read(apiProvider);
     try {
       if (v == 'rename') {
-        final s = await promptText(context, t('重命名对话', 'Rename chat'), initial: c.title);
+        final s = await promptText(context, t('重命名对话', 'Rename chat'), initial: c.title, ok: t('重命名', 'Rename'));
         if (s != null) await api.patch('/api/conversations/${c.id}', {'title': s});
-      } else if (await confirm(context, t('删除这个对话？', 'Delete this chat?'))) {
+      } else if (await confirm(context, t('删除这个对话？', 'Delete this chat?'), ok: t('删除', 'Delete'))) {
         await api.delete('/api/conversations/${c.id}');
         if (ref.read(selectedConversationIdProvider) == c.id) ref.read(selectedConversationIdProvider.notifier).select(null);
       }
@@ -438,7 +449,12 @@ class _CharChip extends StatelessWidget {
     final size = compact ? 36.0 : 48.0;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: InkWell(
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: character.name,
+        excludeSemantics: true,
+        child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
         onLongPress: () => onMenu(null),
@@ -467,6 +483,7 @@ class _CharChip extends StatelessWidget {
             ],
           ),
         ),
+      ),
       ),
     );
   }

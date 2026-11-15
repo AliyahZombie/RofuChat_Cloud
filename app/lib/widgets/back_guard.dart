@@ -5,13 +5,19 @@ import '../core/i18n.dart';
 
 /// Guards the root page against accidental exits on Back.
 ///
-/// Back first hides the keyboard (drops text focus), then lets [isBusy] handlers such as an
-/// open drawer consume it, and only then asks for a second Back within [window] to exit.
+/// Back priority is coordinated here, in this order:
+/// 1. hide the keyboard (drop text focus);
+/// 2. let a busy layer such as an open drawer consume it ([isBusy] / [onBusyBack]);
+/// 3. ask for a second Back within [window] to exit.
+/// Nested layers (SlideDrawer with `handleBack: false`) leave Back to this coordinator.
 class BackGuard extends StatefulWidget {
   final Widget child;
 
   /// True while something else on the page (an open drawer) will handle this Back itself.
   final bool Function()? isBusy;
+
+  /// Called when Back is consumed by the busy layer (e.g. closes the drawer).
+  final VoidCallback? onBusyBack;
   final Duration window;
 
   /// Called on the confirmed exit. Defaults to [SystemNavigator.pop].
@@ -20,6 +26,7 @@ class BackGuard extends StatefulWidget {
     super.key,
     required this.child,
     this.isBusy,
+    this.onBusyBack,
     this.window = const Duration(seconds: 2),
     this.onExit,
   });
@@ -32,10 +39,6 @@ class _BackGuardState extends State<BackGuard> {
   DateTime? _last;
 
   void _onBack() {
-    if (widget.isBusy?.call() ?? false) {
-      _last = null;
-      return;
-    }
     final focus = FocusManager.instance.primaryFocus;
     final editing =
         focus != null &&
@@ -43,6 +46,11 @@ class _BackGuardState extends State<BackGuard> {
     if (editing || MediaQuery.viewInsetsOf(context).bottom > 0) {
       focus?.unfocus();
       SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+      _last = null;
+      return;
+    }
+    if (widget.isBusy?.call() ?? false) {
+      widget.onBusyBack?.call();
       _last = null;
       return;
     }
@@ -58,6 +66,7 @@ class _BackGuardState extends State<BackGuard> {
       ..showSnackBar(
         SnackBar(
           content: Text(t('再按一次返回键退出', 'Press Back again to exit')),
+          // Intentionally as long as the exit window (user preference), not an M3 duration.
           duration: widget.window,
           behavior: SnackBarBehavior.floating,
         ),

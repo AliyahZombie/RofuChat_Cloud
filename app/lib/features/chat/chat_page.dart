@@ -11,6 +11,7 @@ import 'package:md_single_block_renderer/md_single_block_renderer.dart';
 import '../../core/form_factor.dart';
 import '../../core/format.dart';
 import '../../core/i18n.dart';
+import '../../core/tokens.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/back_guard.dart';
@@ -134,6 +135,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   @override
   Widget build(BuildContext context) => BackGuard(
     isBusy: () => _drawer.currentState?.isOpen ?? false,
+    onBusyBack: () => _drawer.currentState?.close(),
     child: _page(context),
   );
 
@@ -258,6 +260,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       key: _drawer,
       width: math.min(320, MediaQuery.sizeOf(context).width * 0.85),
       openZone: ref.watch(appearanceProvider.select((a) => a.swipeZone)) / 10,
+      handleBack: false, // BackGuard coordinates Back: keyboard, then drawer, then exit
+
       drawer: Sidebar(onNewConversation: newConversation, inDrawer: true),
       child: Scaffold(key: _scaffold, appBar: appBar, body: body),
     );
@@ -351,9 +355,12 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
             ? null
             : () => pickModelForCharacter(context, ref, ch),
         borderRadius: BorderRadius.circular(8),
-        child: Padding(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 48),
+          child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -373,6 +380,7 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
                   ),
                 ),
             ],
+          ),
           ),
         ),
       ),
@@ -436,6 +444,7 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
             context,
             t('重命名对话', 'Rename chat'),
             initial: conv!.title,
+            ok: t('重命名', 'Rename'),
           );
           if (s != null) {
             await api.patch('/api/conversations/${conv.id}', {'title': s});
@@ -471,7 +480,7 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
             ),
           );
         case 'delete':
-          if (await confirm(context, t('删除这个对话？', 'Delete this chat?'))) {
+          if (await confirm(context, t('删除这个对话？', 'Delete this chat?'), ok: t('删除', 'Delete'))) {
             await api.delete('/api/conversations/${conv!.id}');
             ref.read(selectedConversationIdProvider.notifier).select(null);
             ref.invalidate(conversationsProvider(ch.id));
@@ -512,12 +521,13 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
 
   void _toBottom() {
     final s = widget.scroll;
-    if (s.hasClients && s.offset > 0)
+    if (s.hasClients && s.offset > 0) {
       s.animateTo(
         0,
         duration: const Duration(milliseconds: 320),
         curve: Curves.easeOutCubic,
       );
+    }
   }
 
   Future<void> _send(String text, List<String> images) async {
@@ -578,16 +588,16 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
           child: Stack(
             children: [
               Positioned.fill(child: list),
-              if (!widget.atBottom && ctl != null && !ctl.isDraft)
-                Positioned(
-                  right: 12,
-                  bottom: 8,
-                  child: FloatingActionButton.small(
-                    heroTag: 'bottom',
-                    onPressed: _toBottom,
-                    child: const Icon(Icons.keyboard_double_arrow_down_rounded),
-                  ),
+              // Jump to latest: a secondary utility, so a tonal icon button rather than a
+              // FAB. It fades/scales in and out and takes no focus or taps while hidden.
+              Positioned(
+                right: 12,
+                bottom: 8,
+                child: _JumpToLatest(
+                  visible: !widget.atBottom && ctl != null && !ctl.isDraft,
+                  onPressed: _toBottom,
                 ),
+              ),
             ],
           ),
         ),
@@ -603,6 +613,41 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
       );
     }
     return content;
+  }
+}
+
+class _JumpToLatest extends StatelessWidget {
+  final bool visible;
+  final VoidCallback onPressed;
+  const _JumpToLatest({required this.visible, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final d = Motion.of(context, Motion.short4);
+    return IgnorePointer(
+      ignoring: !visible,
+      child: ExcludeFocus(
+        excluding: !visible,
+        child: ExcludeSemantics(
+          excluding: !visible,
+          child: AnimatedScale(
+            scale: visible ? 1 : 0.6,
+            duration: d,
+            curve: visible ? Motion.emphasizedDecelerate : Motion.emphasizedAccelerate,
+            child: AnimatedOpacity(
+              opacity: visible ? 1 : 0,
+              duration: d,
+              curve: Motion.standard,
+              child: IconButton.filledTonal(
+                tooltip: t('回到最新', 'Jump to latest'),
+                onPressed: onPressed,
+                icon: const Icon(Icons.keyboard_double_arrow_down_rounded),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -659,8 +704,9 @@ class _MessageList extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    if (ctl.loading && ctl.messages.isEmpty)
+    if (ctl.loading && ctl.messages.isEmpty) {
       return const Center(child: CircularProgressIndicator());
+    }
     if (ctl.loadError != null && ctl.messages.isEmpty) {
       return Center(
         child: Padding(
@@ -728,10 +774,11 @@ class _MessageList extends ConsumerWidget {
             itemBuilder: (context, i) {
               if (i == m) {
                 // Top of the (reversed) list: fetch the previous page once it scrolls into view.
-                if (ctl.hasMore && !ctl.loadingOlder)
+                if (ctl.hasMore && !ctl.loadingOlder) {
                   WidgetsBinding.instance.addPostFrameCallback(
                     (_) => ctl.loadOlder(),
                   );
+                }
                 final loaded = ctl.loadedChars > 0
                     ? Text(
                         t(
@@ -884,96 +931,32 @@ class _MessageList extends ConsumerWidget {
     }
   }
 
+  /// Message actions. [pos] is the pointer position for a secondary click or the anchor of
+  /// the "More" button (popup menu); null for a touch long press (bottom sheet).
   Future<void> _messageMenu(
     BuildContext context,
     WidgetRef ref,
     Message m,
-    Offset pos,
+    Offset? pos,
   ) async {
     if (ctl.isDraft) return;
-    final scheme = Theme.of(context).colorScheme;
-    final items = <PopupMenuEntry<String>>[
-      PopupMenuItem(
-        value: 'copy',
-        child: ListTile(
-          dense: true,
-          leading: const Icon(Icons.copy_rounded),
-          title: Text(t('复制', 'Copy')),
-        ),
-      ),
-      PopupMenuItem(
-        value: 'edit',
-        child: ListTile(
-          dense: true,
-          leading: const Icon(Icons.edit_outlined),
-          title: Text(t('编辑', 'Edit')),
-        ),
-      ),
-      PopupMenuItem(
-        value: 'visible',
-        child: ListTile(
-          dense: true,
-          leading: Icon(
-            m.visible
-                ? Icons.visibility_off_outlined
-                : Icons.visibility_outlined,
-          ),
-          title: Text(
-            m.visible
-                ? t('移出上下文', 'Exclude from context')
-                : t('加入上下文', 'Include in context'),
-          ),
-        ),
+    final v = await showActions(context, [
+      MenuAction('copy', Icons.copy_rounded, t('复制', 'Copy')),
+      MenuAction('edit', Icons.edit_outlined, t('编辑', 'Edit')),
+      MenuAction(
+        'visible',
+        m.visible ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+        m.visible ? t('移出上下文', 'Exclude from context') : t('加入上下文', 'Include in context'),
       ),
       if (m.isAssistant && character.instant)
-        PopupMenuItem(
-          value: 'actual',
-          child: ListTile(
-            dense: true,
-            leading: const Icon(Icons.compress_rounded),
-            title: Text(t('查看/编辑压缩内容', 'View/edit compressed')),
-          ),
-        ),
+        MenuAction('actual', Icons.compress_rounded, t('查看/编辑压缩内容', 'View/edit compressed')),
       if (m.isAssistant && m.usage != null && context.isWatch)
-        PopupMenuItem(
-          value: 'usage',
-          child: ListTile(
-            dense: true,
-            leading: const Icon(Icons.data_usage),
-            title: Text(t('Token 用量', 'Token usage')),
-          ),
-        ),
+        MenuAction('usage', Icons.data_usage_rounded, t('Token 用量', 'Token usage')),
       if (m.swipeCount > 1 && !ctl.generating)
-        PopupMenuItem(
-          value: 'del_swipe',
-          child: ListTile(
-            dense: true,
-            leading: const Icon(Icons.layers_clear_outlined),
-            title: Text(t('删除当前版本', 'Delete this version')),
-          ),
-        ),
-      PopupMenuItem(
-        value: 'branch',
-        child: ListTile(
-          dense: true,
-          leading: const Icon(Icons.call_split_rounded),
-          title: Text(t('从这里分支', 'Branch from here')),
-        ),
-      ),
-      PopupMenuItem(
-        value: 'delete',
-        child: ListTile(
-          dense: true,
-          leading: Icon(Icons.delete_outline, color: scheme.error),
-          title: Text(t('删除', 'Delete'), style: TextStyle(color: scheme.error)),
-        ),
-      ),
-    ];
-    final v = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
-      items: items,
-    );
+        MenuAction('del_swipe', Icons.layers_clear_outlined, t('删除当前版本', 'Delete this version')),
+      MenuAction('branch', Icons.call_split_rounded, t('从这里分支', 'Branch from here')),
+      MenuAction('delete', Icons.delete_outline, t('删除', 'Delete'), danger: true),
+    ], at: pos);
     if (v == null || !context.mounted) return;
     try {
       switch (v) {
@@ -989,7 +972,17 @@ class _MessageList extends ConsumerWidget {
           final u = m.usage!;
           await showDialog(
             context: context,
-            builder: (c) => AlertDialog(content: TokenIndicator(usage: u)),
+            builder: (c) => AlertDialog(
+              scrollable: true,
+              title: Text(t('Token 用量', 'Token usage')),
+              content: TokenIndicator(usage: u),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(c),
+                  child: Text(t('关闭', 'Close')),
+                ),
+              ],
+            ),
           );
         case 'del_swipe':
           await ctl.deleteSwipe(m);
@@ -1000,8 +993,13 @@ class _MessageList extends ConsumerWidget {
             ref.read(selectedConversationIdProvider.notifier).select(id);
           }
         case 'delete':
-          if (await confirm(context, t('删除这条消息？', 'Delete this message?')))
+          if (await confirm(
+            context,
+            t('删除这条消息？', 'Delete this message?'),
+            ok: t('删除', 'Delete'),
+          )) {
             await ctl.deleteMessage(m);
+          }
       }
     } catch (e) {
       if (context.mounted) showError(context, e);
@@ -1016,60 +1014,90 @@ Future<void> showActualDialog(
 ) async {
   final ctlText = TextEditingController(text: m.actual ?? '');
   final scheme = Theme.of(context).colorScheme;
-  await showDialog(
-    context: context,
-    builder: (c) => AlertDialog(
-      title: Text(t('压缩内容（发送给模型）', 'Compressed content (sent to the model)')),
-      content: SizedBox(
-        width: 560,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (m.actualStatus == 'failed')
-              Container(
-                width: double.infinity,
-                margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: scheme.errorContainer,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  '${t('摘要生成失败，已回退发送完整内容。', 'Summary failed; the full message is sent instead.')}\n${m.actualError ?? ''}',
-                  style: TextStyle(color: scheme.onErrorContainer),
-                ),
-              ),
-            TextField(
-              controller: ctlText,
-              maxLines: 10,
-              minLines: 3,
-              decoration: InputDecoration(hintText: t('（空）', '(empty)')),
-            ),
-          ],
+  final compact = MediaQuery.sizeOf(context).width < 600;
+  Widget content(BuildContext c) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      if (m.actualStatus == 'failed')
+        Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: scheme.errorContainer,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            '${t('摘要生成失败，已回退发送完整内容。', 'Summary failed; the full message is sent instead.')}\n${m.actualError ?? ''}',
+            style: Theme.of(c).textTheme.bodyMedium?.copyWith(color: scheme.onErrorContainer),
+          ),
+        ),
+      TextField(
+        controller: ctlText,
+        maxLines: compact ? null : 10,
+        minLines: compact ? 8 : 3,
+        decoration: InputDecoration(
+          labelText: t('压缩内容', 'Compressed content'),
+          hintText: t('（空）', '(empty)'),
+          alignLabelWithHint: true,
         ),
       ),
-      actions: [
-        TextButton(
+      const SizedBox(height: 8),
+      // A contextual action inside the content, so the dialog keeps two actions.
+      Align(
+        alignment: AlignmentDirectional.centerStart,
+        child: TextButton.icon(
           onPressed: () async {
             Navigator.pop(c);
             await ctl.retryActual(m);
           },
-          child: Text(t('重新生成', 'Regenerate')),
+          icon: const Icon(Icons.refresh_rounded),
+          label: Text(t('重新生成压缩内容', 'Regenerate compressed content')),
         ),
-        TextButton(
-          onPressed: () => Navigator.pop(c),
-          child: Text(t('取消', 'Cancel')),
-        ),
-        FilledButton(
-          onPressed: () async {
-            Navigator.pop(c);
-            await ctl.editActual(m, ctlText.text);
-          },
-          child: Text(t('保存', 'Save')),
-        ),
-      ],
-    ),
+      ),
+    ],
+  );
+  Future<void> save(BuildContext c) async {
+    Navigator.pop(c);
+    await ctl.editActual(m, ctlText.text);
+  }
+
+  final title = t('压缩内容（发送给模型）', 'Compressed content (sent to the model)');
+  await showDialog(
+    context: context,
+    builder: (c) => compact
+        ? Dialog.fullscreen(
+            child: Scaffold(
+              appBar: AppBar(
+                leading: IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: t('取消', 'Cancel'),
+                  onPressed: () => Navigator.pop(c),
+                ),
+                title: Text(title, maxLines: 2),
+                actions: [
+                  TextButton(onPressed: () => save(c), child: Text(t('保存', 'Save'))),
+                  const SizedBox(width: 8),
+                ],
+              ),
+              body: SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: content(c),
+              ),
+            ),
+          )
+        : AlertDialog(
+            scrollable: true,
+            title: Text(title),
+            content: content(c),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(c),
+                child: Text(t('取消', 'Cancel')),
+              ),
+              TextButton(onPressed: () => save(c), child: Text(t('保存', 'Save'))),
+            ],
+          ),
   );
 }
 
@@ -1085,8 +1113,9 @@ class _ListTail extends StatelessWidget {
     final segs = m?.segments ?? const <Segment>[];
     if (segs.isEmpty) return null;
     final last = segs.last;
-    if (last.type == 'tool' && last.result == null)
+    if (last.type == 'tool' && last.result == null) {
       return t('正在调用 ${last.name}…', 'Calling ${last.name}…');
+    }
     if (last.type == 'reasoning') return t('思考中…', 'Thinking…');
     return null;
   }
@@ -1151,7 +1180,7 @@ class _AssistantFooter extends StatelessWidget {
   final bool compact;
   final VoidCallback onEdit;
   final Widget swipeNav;
-  final void Function(Offset) onMore;
+  final void Function(Offset?) onMore;
   const _AssistantFooter({
     required this.ctl,
     required this.msg,
@@ -1275,7 +1304,7 @@ class _AssistantFooter extends StatelessWidget {
                         Icons.refresh_rounded,
                         t('重新生成', 'Regenerate'),
                         ctl.generating
-                            ? () {}
+                            ? null
                             : () => ctl.send(regenerate: true),
                       ),
                     Builder(
@@ -1377,8 +1406,9 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
   Future<void> _submit() async {
     final s = _text.text.trim();
     final editing = _editing;
-    if (editing != null && !editing.isUser)
+    if (editing != null && !editing.isUser) {
       return _saveEditOnly(); // assistant edits only save
+    }
     if (_busy) return;
     if (s.isEmpty && _images.isEmpty) return;
     final images = List<String>.from(_images);
@@ -1397,14 +1427,7 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
     await widget.onSend(s, images);
   }
 
-  Future<void> _pickImage(bool vision) async {
-    if (!vision) {
-      showError(
-        context,
-        t('当前模型不支持图片输入', 'The current model does not accept images'),
-      );
-      return;
-    }
+  Future<void> _pickImage() async {
     final f = await FilePicker.pickFile(type: FileType.image);
     if (f == null) return;
     final bytes = await f.readAsBytes();
@@ -1434,70 +1457,64 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
 
   void _contextCard(ChatController ctl) {
     final c = ctl.context;
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  ContextRing(info: c, size: 36, stroke: 4),
-                  const SizedBox(width: 12),
-                  Text(
-                    '${c.estimated ? '~' : ''}${fmtTokens(c.tokens)} / ${fmtTokens(c.max)}  (${(c.ratio * 100).toStringAsFixed(0)}%)',
-                    style: Theme.of(ctx).textTheme.titleMedium,
-                  ),
-                ],
+    showActionSheet<void>(
+      context,
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+      (ctx) => [
+        Row(
+          children: [
+            ContextRing(info: c, size: 36, stroke: 4),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                '${c.estimated ? '~' : ''}${fmtTokens(c.tokens)} / ${fmtTokens(c.max)}  (${(c.ratio * 100).toStringAsFixed(0)}%)',
+                style: Theme.of(ctx).textTheme.titleMedium,
               ),
-              const SizedBox(height: 12),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                secondary: const Icon(Icons.compress_rounded),
-                title: Text(t('摘要压缩', 'Summary compression')),
-                subtitle: c.summarize && c.threshold > 0
-                    ? Text(
-                        '${t('压缩阈值', 'Threshold')}: ${fmtTokens(c.threshold)}',
-                      )
-                    : null,
-                value: c.summarize,
-                onChanged: (v) async {
-                  Navigator.pop(ctx);
-                  await _setCompression(ctl, summarize: v);
-                },
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                secondary: const Icon(Icons.bolt_rounded),
-                title: Text(t('即时压缩', 'Instant compression')),
-                value: c.instant,
-                onChanged: (v) async {
-                  Navigator.pop(ctx);
-                  await _setCompression(ctl, instant: v);
-                },
-              ),
-              const SizedBox(height: 8),
-              if (c.summarize)
-                FilledButton.tonalIcon(
-                  onPressed: ctl.generating
-                      ? null
-                      : () {
-                          Navigator.pop(ctx);
-                          ctl.compressNow().catchError((e) {
-                            if (mounted) showError(context, e);
-                          });
-                        },
-                  icon: const Icon(Icons.compress_rounded),
-                  label: Text(t('立即压缩', 'Compress now')),
-                ),
-            ],
-          ),
+            ),
+          ],
         ),
-      ),
+        const SizedBox(height: 12),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          secondary: const Icon(Icons.compress_rounded),
+          title: Text(t('摘要压缩', 'Summary compression')),
+          subtitle: c.summarize && c.threshold > 0
+              ? Text('${t('压缩阈值', 'Threshold')}: ${fmtTokens(c.threshold)}')
+              : null,
+          value: c.summarize,
+          onChanged: (v) async {
+            Navigator.pop(ctx);
+            await _setCompression(ctl, summarize: v);
+          },
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          secondary: const Icon(Icons.bolt_rounded),
+          title: Text(t('即时压缩', 'Instant compression')),
+          value: c.instant,
+          onChanged: (v) async {
+            Navigator.pop(ctx);
+            await _setCompression(ctl, instant: v);
+          },
+        ),
+        const SizedBox(height: 8),
+        if (c.summarize)
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: FilledButton.tonalIcon(
+              onPressed: ctl.generating
+                  ? null
+                  : () {
+                      Navigator.pop(ctx);
+                      ctl.compressNow().catchError((e) {
+                        if (mounted) showError(context, e);
+                      });
+                    },
+              icon: const Icon(Icons.compress_rounded),
+              label: Text(t('立即压缩', 'Compress now')),
+            ),
+          ),
+      ],
     );
   }
 
@@ -1614,15 +1631,27 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                                 fit: BoxFit.cover,
                               ),
                             ),
+                            // A 48dp target around the small remove glyph.
                             Positioned(
                               right: 0,
                               top: 0,
-                              child: InkWell(
-                                onTap: () =>
+                              child: IconButton(
+                                style: IconButton.styleFrom(
+                                  minimumSize: const Size.square(48),
+                                  alignment: Alignment.topRight,
+                                  padding: const EdgeInsets.all(4),
+                                ),
+                                tooltip: t('移除图片 ${i + 1}', 'Remove image ${i + 1}'),
+                                onPressed: () =>
                                     setState(() => _images.removeAt(i)),
-                                child: const CircleAvatar(
-                                  radius: 9,
-                                  child: Icon(Icons.close, size: 12),
+                                icon: CircleAvatar(
+                                  radius: 10,
+                                  backgroundColor: scheme.inverseSurface,
+                                  child: Icon(
+                                    Icons.close,
+                                    size: 14,
+                                    color: scheme.onInverseSurface,
+                                  ),
                                 ),
                               ),
                             ),
@@ -1668,12 +1697,12 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 if (model?.reasoning ?? false) _ReasoningButton(character: ch),
                 const Spacer(),
                 IconButton(
-                  onPressed: () => _pickImage(vision),
-                  icon: Icon(
-                    Icons.add_rounded,
-                    color: vision ? null : scheme.outline,
-                  ),
-                  tooltip: t('添加图片', 'Add image'),
+                  // Disabled (M3 disabled roles) with the reason in the tooltip.
+                  onPressed: vision ? _pickImage : null,
+                  icon: const Icon(Icons.add_rounded),
+                  tooltip: vision
+                      ? t('添加图片', 'Add image')
+                      : t('当前模型不支持图片输入', 'The current model does not accept images'),
                 ),
                 ContextRing(
                   info: info,
@@ -1733,6 +1762,7 @@ class _ReasoningButton extends ConsumerWidget {
 }
 
 /// Watch: one round button opening a full-screen text input; context ring around it.
+/// The whole 52dp disc (ring included) is the target; the 40dp fill is its visual.
 class _WatchInput extends StatelessWidget {
   final ContextInfo info;
   final bool busy;
@@ -1748,40 +1778,52 @@ class _WatchInput extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return SizedBox(
-      width: 52,
-      height: 52,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          ContextRing(info: info, size: 48, stroke: 3),
-          Material(
-            color: busy ? scheme.errorContainer : scheme.primary,
-            shape: const CircleBorder(),
-            child: InkWell(
-              customBorder: const CircleBorder(),
-              onTap: busy
-                  ? onStop
-                  : () async {
-                      final s = await Navigator.of(context).push<String>(
-                        MaterialPageRoute(
-                          builder: (_) => const _WatchComposer(),
-                        ),
-                      );
-                      if (s != null && s.trim().isNotEmpty) onText(s.trim());
-                    },
-              child: SizedBox(
-                width: 40,
-                height: 40,
-                child: Icon(
-                  busy ? Icons.stop_rounded : Icons.mic_none_rounded,
-                  color: busy ? scheme.onErrorContainer : scheme.onPrimary,
-                  size: 22,
-                ),
+    final label = busy ? t('停止生成', 'Stop generating') : t('输入消息', 'Write a message');
+    return Tooltip(
+      message: label,
+      child: Semantics(
+        button: true,
+        label: label,
+        value: ContextRing.describe(info),
+        excludeSemantics: true,
+        child: Material(
+          type: MaterialType.transparency,
+          shape: const CircleBorder(),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: busy
+                ? onStop
+                : () async {
+                    final s = await Navigator.of(context).push<String>(
+                      MaterialPageRoute(builder: (_) => const _WatchComposer()),
+                    );
+                    if (s != null && s.trim().isNotEmpty) onText(s.trim());
+                  },
+            child: SizedBox.square(
+              dimension: 52,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  ContextRing(info: info, size: 48, stroke: 3),
+                  Ink(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: busy ? scheme.errorContainer : scheme.primary,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      busy ? Icons.stop_rounded : Icons.mic_none_rounded,
+                      color: busy ? scheme.onErrorContainer : scheme.onPrimary,
+                      size: 22,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1820,12 +1862,14 @@ class _WatchComposerState extends State<_WatchComposer> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 IconButton(
+                  tooltip: t('取消', 'Cancel'),
                   onPressed: () => Navigator.pop(context),
                   icon: const Icon(Icons.close),
                 ),
                 IconButton.filled(
+                  tooltip: t('发送', 'Send'),
                   onPressed: () => Navigator.pop(context, _c.text),
-                  icon: const Icon(Icons.send_rounded, size: 18),
+                  icon: const Icon(Icons.send_rounded),
                 ),
               ],
             ),

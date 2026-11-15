@@ -3,6 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
+import '../core/i18n.dart';
+import '../core/tokens.dart';
+
 /// Fades and slides its child in the first time it is built, and smoothly animates later
 /// size changes (a paragraph growing while it streams). With [enabled] false it is inert,
 /// so finished messages never re-animate when scrolled back into view.
@@ -15,13 +18,20 @@ class Appear extends StatefulWidget {
 }
 
 class _AppearState extends State<Appear> with SingleTickerProviderStateMixin {
-  late final AnimationController _a = AnimationController(vsync: this, duration: const Duration(milliseconds: 320), value: widget.enabled ? 0 : 1);
-  late final Animation<double> _curve = CurvedAnimation(parent: _a, curve: Curves.easeOutCubic);
+  late final AnimationController _a = AnimationController(vsync: this, duration: Motion.medium2, value: widget.enabled ? 0 : 1);
+  late final Animation<double> _curve = CurvedAnimation(parent: _a, curve: Motion.emphasizedDecelerate);
 
   @override
-  void initState() {
-    super.initState();
-    if (widget.enabled) _a.forward();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (widget.enabled && _a.isDismissed) {
+      // Reduced motion: appear at once.
+      if (Motion.reduced(context)) {
+        _a.value = 1;
+      } else {
+        _a.forward();
+      }
+    }
   }
 
   @override
@@ -42,23 +52,41 @@ class _AppearState extends State<Appear> with SingleTickerProviderStateMixin {
       },
     );
     if (widget.enabled) {
-      child = AnimatedSize(duration: const Duration(milliseconds: 160), curve: Curves.easeOut, alignment: Alignment.topCenter, child: child);
+      child = AnimatedSize(duration: Motion.of(context, Motion.short3), curve: Motion.standard, alignment: Alignment.topCenter, child: child);
     }
     return child;
   }
 }
 
-/// A Material 3 expressive style loading indicator: a soft scalloped shape inside a tinted
-/// disc that breathes between a circle and a flower while it spins.
+/// RofuChat's custom loading visual (not an M3 Expressive component): a soft scalloped shape
+/// inside a tinted disc that breathes between a circle and a flower while it turns. Every
+/// motion is eased (the turn follows the emphasized curve each cycle, the morph a sine), it
+/// is announced to screen readers as a progress indicator, and it holds still when the
+/// platform asks for reduced motion.
 class LoadingBlob extends StatefulWidget {
   final double size;
-  const LoadingBlob({super.key, this.size = 30});
+
+  /// Spoken label; defaults to "Generating".
+  final String? semanticsLabel;
+  const LoadingBlob({super.key, this.size = 30, this.semanticsLabel});
   @override
   State<LoadingBlob> createState() => _LoadingBlobState();
 }
 
 class _LoadingBlobState extends State<LoadingBlob> with SingleTickerProviderStateMixin {
-  late final AnimationController _a = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400))..repeat();
+  late final AnimationController _a = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (Motion.reduced(context)) {
+      _a
+        ..stop()
+        ..value = 0.25; // a still, half-scalloped shape
+    } else if (!_a.isAnimating) {
+      _a.repeat();
+    }
+  }
 
   @override
   void dispose() {
@@ -69,12 +97,15 @@ class _LoadingBlobState extends State<LoadingBlob> with SingleTickerProviderStat
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return RepaintBoundary(
-      child: SizedBox.square(
-        dimension: widget.size,
-        child: DecoratedBox(
-          decoration: BoxDecoration(color: scheme.primaryContainer, shape: BoxShape.circle),
-          child: CustomPaint(painter: _BlobPainter(_a, scheme.onPrimaryContainer)),
+    return Semantics(
+      label: widget.semanticsLabel ?? t('正在生成', 'Generating'),
+      child: RepaintBoundary(
+        child: SizedBox.square(
+          dimension: widget.size,
+          child: DecoratedBox(
+            decoration: BoxDecoration(color: scheme.primaryContainer, shape: BoxShape.circle),
+            child: CustomPaint(painter: _BlobPainter(_a, scheme.onPrimaryContainer)),
+          ),
         ),
       ),
     );
@@ -96,7 +127,10 @@ class _BlobPainter extends CustomPainter {
     final lobes = 7;
     final amp = base * 0.22 * morph;
     final scale = 0.9 + 0.1 * math.sin(v * 2 * math.pi * 2 + math.pi / 2);
-    final rot = v * 2 * math.pi;
+    // Two eased half-turns per cycle: the spin speeds up and settles instead of turning at a
+    // constant (linear) rate.
+    final half = (v * 2) % 1;
+    final rot = ((v * 2).floor() + Motion.emphasized.transform(half)) * math.pi;
     final path = Path();
     const steps = 96;
     for (var i = 0; i <= steps; i++) {
@@ -123,7 +157,7 @@ class Collapsible extends StatefulWidget {
   final bool open;
   final Widget child;
   final Duration duration;
-  const Collapsible({super.key, required this.open, required this.child, this.duration = const Duration(milliseconds: 260)});
+  const Collapsible({super.key, required this.open, required this.child, this.duration = Motion.medium2});
   @override
   State<Collapsible> createState() => _CollapsibleState();
 }
@@ -131,13 +165,23 @@ class Collapsible extends StatefulWidget {
 class _CollapsibleState extends State<Collapsible> with SingleTickerProviderStateMixin {
   late final AnimationController _a = AnimationController(vsync: this, duration: widget.duration, value: widget.open ? 1 : 0)
     ..addStatusListener((_) => setState(() {}));
-  late final Animation<double> _size = CurvedAnimation(parent: _a, curve: Curves.easeOutCubic, reverseCurve: Curves.easeInCubic);
-  late final Animation<double> _fade = CurvedAnimation(parent: _a, curve: const Interval(0.25, 1, curve: Curves.easeOut), reverseCurve: const Interval(0, 0.6));
+  late final Animation<double> _size = CurvedAnimation(parent: _a, curve: Motion.emphasizedDecelerate, reverseCurve: Motion.emphasizedAccelerate);
+  late final Animation<double> _fade = CurvedAnimation(
+    parent: _a,
+    curve: const Interval(0.25, 1, curve: Motion.standardDecelerate),
+    reverseCurve: const Interval(0, 0.6, curve: Motion.standardAccelerate),
+  );
 
   @override
   void didUpdateWidget(Collapsible old) {
     super.didUpdateWidget(old);
-    if (widget.open != old.open) widget.open ? _a.forward() : _a.reverse();
+    if (widget.open != old.open) {
+      if (Motion.reduced(context)) {
+        _a.value = widget.open ? 1 : 0;
+      } else {
+        widget.open ? _a.forward() : _a.reverse();
+      }
+    }
   }
 
   @override
@@ -169,8 +213,8 @@ class TurnChevron extends StatelessWidget {
   @override
   Widget build(BuildContext context) => AnimatedRotation(
         turns: open ? (sideways ? 0.25 : 0.5) : 0,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
+        duration: Motion.of(context, Motion.short4),
+        curve: Motion.standard,
         child: Icon(sideways ? Icons.chevron_right : Icons.expand_more, size: size, color: color),
       );
 }

@@ -23,6 +23,7 @@ class ToolsPage extends ConsumerWidget {
         ),
       ]),
       floatingActionButton: FloatingActionButton(
+        tooltip: t('新建工具', 'New tool'),
         onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ToolEditorPage(tool: LocalTool.blank()))),
         child: const Icon(Icons.add),
       ),
@@ -142,8 +143,9 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
           if (tool.id.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.delete_outline),
+              tooltip: t('删除工具', 'Delete tool'),
               onPressed: () async {
-                if (await confirm(context, t('删除这个工具？', 'Delete this tool?'))) {
+                if (await confirm(context, t('删除这个工具？', 'Delete this tool?'), ok: t('删除', 'Delete'))) {
                   await ref.read(toolsProvider.notifier).remove(tool.id);
                   if (context.mounted) Navigator.pop(context);
                 }

@@ -156,7 +156,9 @@ class UserBubble extends StatelessWidget {
   final double maxWidthFactor;
   final VoidCallback onCopy;
   final VoidCallback onEdit;
-  final void Function(Offset) onMore;
+  /// Opens the message actions: a pointer position for a secondary click or the "More"
+  /// anchor (popup menu), null for a touch long press (bottom sheet).
+  final void Function(Offset?) onMore;
   final Widget? swipeNav;
   const UserBubble({super.key, required this.msg, required this.userName, required this.showName, required this.onCopy, required this.onEdit, required this.onMore, this.compact = false, this.maxWidthFactor = 0.85, this.swipeNav});
 
@@ -164,7 +166,6 @@ class UserBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
-    final width = MediaQuery.sizeOf(context).width;
     return Opacity(
       opacity: msg.visible ? 1 : 0.5,
       child: Padding(
@@ -188,19 +189,27 @@ class UserBubble extends StatelessWidget {
                 ),
               ),
             if (msg.content.isNotEmpty)
-              GestureDetector(
-                onLongPressStart: (d) => onMore(d.globalPosition),
+              // The bubble's max width is a fraction of the message pane, not the window.
+              LayoutBuilder(
+                builder: (context, box) => GestureDetector(
+                onLongPress: () => onMore(null),
                 onSecondaryTapUp: (d) => onMore(d.globalPosition),
                 child: Container(
-                  constraints: BoxConstraints(maxWidth: width * maxWidthFactor),
+                  constraints: BoxConstraints(maxWidth: box.maxWidth * maxWidthFactor),
                   padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 16, vertical: compact ? 8 : 10),
                   decoration: BoxDecoration(color: scheme.primaryContainer, borderRadius: BorderRadius.circular(20)),
-                  child: SelectableText(msg.content, style: text.bodyLarge?.copyWith(color: scheme.onPrimaryContainer, height: 1.35)),
+                  // Plain Text: the chat's SelectionArea still selects it by dragging, while
+                  // long press / secondary click reach the bubble's action dispatch.
+                  child: Text(msg.content, style: text.bodyLarge?.copyWith(color: scheme.onPrimaryContainer, height: 1.35)),
                 ),
               ),
+              ),
             if (!compact)
-              Row(
-                mainAxisSize: MainAxisSize.min,
+              // Wraps instead of overflowing with long labels or large text; the swipe
+              // controls stay together.
+              Wrap(
+                alignment: WrapAlignment.end,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   if (!msg.visible) _NotInContext(),
                   _MiniIcon(Icons.copy_rounded, t('复制', 'Copy'), onCopy),
@@ -248,28 +257,61 @@ class _Thumb extends StatelessWidget {
     } catch (_) {
       img = const Icon(Icons.broken_image_outlined);
     }
-    return GestureDetector(
-      onTap: () => showDialog(context: context, builder: (c) => Dialog(child: InteractiveViewer(child: img))),
-      child: ClipRRect(borderRadius: BorderRadius.circular(10), child: SizedBox(width: 96, height: 96, child: img)),
+    // A real button: focusable, keyboard-activatable and named for screen readers.
+    return Material(
+      type: MaterialType.transparency,
+      child: Ink(
+        width: 96,
+        height: 96,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => showDialog(
+            context: context,
+            builder: (c) => Dialog(
+              clipBehavior: Clip.antiAlias,
+              child: Stack(children: [
+                InteractiveViewer(child: img),
+                PositionedDirectional(
+                  top: 4,
+                  end: 4,
+                  child: IconButton.filledTonal(
+                    tooltip: MaterialLocalizations.of(c).closeButtonTooltip,
+                    onPressed: () => Navigator.pop(c),
+                    icon: const Icon(Icons.close),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+          child: Semantics(
+            label: t('查看图片', 'View image'),
+            child: ClipRRect(borderRadius: BorderRadius.circular(8), child: SizedBox(width: 96, height: 96, child: img)),
+          ),
+        ),
+      ),
     );
   }
 }
 
+/// A message action: a small (20dp) glyph inside a standard 48dp target. A null [onTap]
+/// renders the M3 disabled state.
 class _MiniIcon extends StatelessWidget {
   final IconData icon;
   final String tip;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final Color? color;
   const _MiniIcon(this.icon, this.tip, this.onTap, {this.color});
   @override
   Widget build(BuildContext context) => IconButton(
         tooltip: tip,
         onPressed: onTap,
-        iconSize: 18,
-        visualDensity: VisualDensity.compact,
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-        color: color ?? Theme.of(context).colorScheme.onSurfaceVariant,
+        iconSize: 20,
+        style: IconButton.styleFrom(
+          visualDensity: VisualDensity.standard,
+          tapTargetSize: MaterialTapTargetSize.padded,
+          minimumSize: const Size.square(40),
+          foregroundColor: color ?? Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
         icon: Icon(icon),
       );
 }
@@ -330,9 +372,14 @@ class _StepsCardState extends State<StepsCard> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (folds)
-            InkWell(
+            Semantics(
+              button: true,
+              expanded: _expanded,
+              child: InkWell(
               onTap: () => setState(() => _expanded = !_expanded),
-              child: Padding(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                 child: Row(children: [
                   TurnChevron(open: _expanded, size: 20, color: scheme.primary),
@@ -343,6 +390,8 @@ class _StepsCardState extends State<StepsCard> {
                   ),
                 ]),
               ),
+              ),
+            ),
             ),
           for (var i = 0; i < steps.length; i++)
             if (folds && i < steps.length - 1)
@@ -364,13 +413,18 @@ class _StepsCardState extends State<StepsCard> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        InkWell(
+        Semantics(
+          button: true,
+          expanded: open,
+          child: InkWell(
           onTap: () => setState(() => open ? _open.remove(i) : _open.add(i)),
-          child: Padding(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 48),
+            child: Padding(
             padding: EdgeInsets.symmetric(horizontal: widget.compact ? 8 : 14, vertical: 6),
             child: Row(children: [
               if (running)
-                const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, semanticsLabel: t('工具运行中', 'Tool running')))
               else
                 Icon(isTool ? (s.isError ? Icons.error_outline : Icons.build_circle_outlined) : Icons.lightbulb_outline,
                     size: 18, color: s.isError ? scheme.error : scheme.onSurfaceVariant),
@@ -386,6 +440,8 @@ class _StepsCardState extends State<StepsCard> {
               TurnChevron(open: open, sideways: isTool, color: scheme.onSurfaceVariant),
             ]),
           ),
+          ),
+        ),
         ),
         Collapsible(
           open: open,
@@ -494,19 +550,28 @@ class ActualStatusIcon extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     if (pending || msg.actualStatus == 'pending') {
+      // Product status dot (frontend-spec §3.1: a tiny pending mark), not a loading row.
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6),
-        child: SizedBox(width: 10, height: 10, child: CircularProgressIndicator(strokeWidth: 1.5, color: scheme.outline)),
+        child: SizedBox(
+          width: 10,
+          height: 10,
+          child: CircularProgressIndicator(
+            strokeWidth: 1.5,
+            color: scheme.onSurfaceVariant,
+            semanticsLabel: t('正在压缩此消息', 'Compressing this message'),
+          ),
+        ),
       );
     }
     if (msg.actualStatus == 'failed') {
-      return InkResponse(
-        onTap: onTapFailed,
-        radius: 16,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Icon(Icons.error_rounded, size: 16, color: scheme.error),
-        ),
+      // The small red mark stays small; its target is a full 48dp button.
+      return IconButton(
+        tooltip: t('压缩失败，点按查看', 'Compression failed, tap for details'),
+        onPressed: onTapFailed,
+        iconSize: 16,
+        style: IconButton.styleFrom(minimumSize: const Size.square(40), tapTargetSize: MaterialTapTargetSize.padded, foregroundColor: scheme.error),
+        icon: const Icon(Icons.error_rounded),
       );
     }
     return const SizedBox.shrink();
@@ -515,7 +580,10 @@ class ActualStatusIcon extends StatelessWidget {
 
 void copyText(BuildContext context, String s) {
   Clipboard.setData(ClipboardData(text: s));
-  ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(t('已复制', 'Copied')), duration: const Duration(seconds: 1)));
+  // M3 short snackbar duration (4s), floating via the theme.
+  ScaffoldMessenger.maybeOf(context)
+    ?..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(content: Text(t('已复制', 'Copied')), duration: const Duration(seconds: 4)));
 }
 
 
@@ -531,16 +599,7 @@ class SwipeNav extends StatelessWidget {
   Widget build(BuildContext context) {
     if (count < 2) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
-    Widget arrow(IconData icon, String tip, int to) => IconButton(
-          tooltip: tip,
-          onPressed: enabled && to >= 0 && to < count ? () => onSwipe(to) : null,
-          iconSize: 18,
-          visualDensity: VisualDensity.compact,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
-          color: scheme.onSurfaceVariant,
-          icon: Icon(icon),
-        );
+    Widget arrow(IconData icon, String tip, int to) => _MiniIcon(icon, tip, enabled && to >= 0 && to < count ? () => onSwipe(to) : null);
     return Row(mainAxisSize: MainAxisSize.min, children: [
       arrow(Icons.chevron_left_rounded, t('上一个版本', 'Previous version'), index - 1),
       Text('${index + 1}/$count', style: Theme.of(context).textTheme.labelMedium?.copyWith(color: scheme.onSurfaceVariant, fontFeatures: const [FontFeature.tabularFigures()])),

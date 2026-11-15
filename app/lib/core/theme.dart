@@ -123,7 +123,10 @@ ThemeData buildTheme(Appearance a, Brightness b) {
   );
   return base.copyWith(
     scaffoldBackgroundColor: scheme.surface,
-    visualDensity: a.compact ? VisualDensity.compact : VisualDensity.standard,
+    // Compact mode tightens content spacing only (see AppDensity); controls keep standard
+    // density and padded 48dp targets on every platform.
+    visualDensity: VisualDensity.standard,
+    materialTapTargetSize: MaterialTapTargetSize.padded,
     appBarTheme: AppBarTheme(
       backgroundColor: scheme.surface,
       surfaceTintColor: Colors.transparent,
@@ -138,4 +141,14 @@ ThemeData buildTheme(Appearance a, Brightness b) {
       isDense: true,
     ),
   );
+}
+
+/// Watch theme: a smaller base type scale (frontend-spec §4) applied to the text roles,
+/// leaving the platform TextScaler untouched.
+ThemeData watchTheme(ThemeData base) {
+  // Theme.of() is already localized (sizes present); an unlocalized ThemeData gets the
+  // English-like geometry first so every role has a size to scale.
+  TextTheme sized(TextTheme t) => t.bodyLarge?.fontSize == null ? base.typography.englishLike.merge(t) : t;
+  TextTheme shrink(TextTheme t) => sized(t).apply(fontSizeFactor: 0.85);
+  return base.copyWith(textTheme: shrink(base.textTheme), primaryTextTheme: shrink(base.primaryTextTheme));
 }
