@@ -30,6 +30,15 @@ class _SidebarState extends ConsumerState<Sidebar> {
   String _q = '';
   bool _charsOpen = false;
 
+  @override
+  void initState() {
+    super.initState();
+    // Pre-cache the tool list so the tools page and character editor open without a spinner.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ref.read(toolsProvider.future).then((_) {}, onError: (_) {});
+    });
+  }
+
   void _close() {
     final drawer = SlideDrawer.maybeOf(context);
     if (drawer != null) {

@@ -75,6 +75,33 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
   Map<String, dynamic>? _run;
   bool _running = false;
 
+  /// The tool list is a summary without code (GET /api/tools?summary=1); the editor
+  /// fetches the full tool. Until it arrives, saving leaves the stored code untouched.
+  late bool _codeLoaded = tool.json.containsKey('code') || tool.id.isEmpty;
+  String? _codeError;
+
+  @override
+  void initState() {
+    super.initState();
+    tool.json.remove('code_chars');
+    if (!_codeLoaded) _loadCode();
+  }
+
+  Future<void> _loadCode() async {
+    try {
+      final j = await ref.read(apiProvider).get('/api/tools/${tool.id}');
+      if (!mounted) return;
+      final code = (j is Map ? j['code'] : null) as String? ?? '';
+      setState(() {
+        _code.text = code;
+        _codeLoaded = true;
+        _codeError = null;
+      });
+    } catch (e) {
+      if (mounted) setState(() => _codeError = '$e');
+    }
+  }
+
   @override
   void dispose() {
     for (final c in [_name, _desc, _params, _code, _args]) {
@@ -86,7 +113,11 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
   bool _collect() {
     tool.name = _name.text.trim();
     tool.description = _desc.text.trim();
-    tool.code = _code.text;
+    if (_codeLoaded) {
+      tool.code = _code.text;
+    } else {
+      tool.json.remove('code');
+    }
     try {
       tool.parameters = jsonDecode(_params.text);
       _paramsError = null;
@@ -173,10 +204,13 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
         // A conventional filled M3 field: focus, hover and error states come from the theme.
         TextField(
           controller: _code,
+          enabled: _codeLoaded,
           maxLines: null,
           minLines: 12,
           style: mono,
           decoration: InputDecoration(
+            hintText: _codeLoaded ? null : t('正在加载代码…', 'Loading code…'),
+            errorText: _codeError,
             filled: true,
             fillColor: scheme.surfaceContainerHigh,
             border: const UnderlineInputBorder(),

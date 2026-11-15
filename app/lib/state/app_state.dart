@@ -278,14 +278,17 @@ abstract class ListCtl<T extends JsonModel> extends AsyncNotifier<List<T>> {
   String get path;
   T make(Json j);
 
+  /// Extra query for the list request (e.g. the tools' code-less summary).
+  Map<String, String>? get listQuery => null;
+
   @override
   Future<List<T>> build() async {
     final api = ref.watch(apiProvider);
-    return api.list(path, make);
+    return api.list(path, make, query: listQuery);
   }
 
   Future<void> refresh() async {
-    state = AsyncData(await ref.read(apiProvider).list(path, make));
+    state = AsyncData(await ref.read(apiProvider).list(path, make, query: listQuery));
   }
 
   Future<T> save(T item) async {
@@ -362,12 +365,17 @@ class ToolsCtl extends ListCtl<LocalTool> {
   @override
   LocalTool make(Json j) => LocalTool(j);
 
+  /// List without code (older servers ignore it and send full tools); the editor fetches
+  /// the full tool, and a PUT without `code` keeps the stored code.
+  @override
+  Map<String, String>? get listQuery => const {'summary': '1'};
+
   @override
   Future<List<LocalTool>> build() async {
     final list = await super.build();
     try {
       final added = await _addBuiltins(list, onlyFirstTime: true);
-      if (added) return await ref.read(apiProvider).list(path, make);
+      if (added) return await ref.read(apiProvider).list(path, make, query: listQuery);
     } catch (_) {}
     return list;
   }
