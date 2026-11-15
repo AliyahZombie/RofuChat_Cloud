@@ -45,7 +45,7 @@ class SettingsPage extends ConsumerWidget {
     final children = <Widget>[
       SectionTitle(t('连接与账户', 'Connection & account')),
       ListTile(
-        leading: Icon(app.active?.isLocal == true ? Icons.phone_android_rounded : Icons.cloud_outlined),
+        leading: Icon(app.active?.isLocal == true ? Icons.phone_android_rounded : Icons.cloud_rounded),
         title: Text(app.active?.isLocal == true ? t('本地后端', 'Local backend') : (app.active?.url ?? '')),
         subtitle: Text('${app.user?.username ?? ''}${app.user?.isRoot == true ? ' (root)' : ''}'),
         trailing: TextButton(onPressed: () {
@@ -57,23 +57,23 @@ class SettingsPage extends ConsumerWidget {
         ListTile(leading: const Icon(Icons.password_rounded), title: Text(t('修改密码', 'Change password')), onTap: () => _changePassword(context, ref)),
       if (!watch && app.user?.isRoot == true)
         ListTile(
-          leading: const Icon(Icons.admin_panel_settings_outlined),
+          leading: const Icon(Icons.admin_panel_settings_rounded),
           title: Text(t('用户管理', 'User management')),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(Icons.chevron_right_rounded),
           onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AdminPage())),
         ),
       if (app.active?.isLocal != true)
-        ListTile(leading: const Icon(Icons.logout), title: Text(t('退出登录', 'Sign out')), onTap: () async {
+        ListTile(leading: const Icon(Icons.logout_rounded), title: Text(t('退出登录', 'Sign out')), onTap: () async {
           Navigator.of(context).popUntil((r) => r.isFirst);
           await ref.read(appProvider.notifier).logout();
         }),
       SectionTitle(t('模型', 'Models')),
       if (!watch)
         ListTile(
-          leading: const Icon(Icons.hub_outlined),
+          leading: const Icon(Icons.hub_rounded),
           title: Text(t('模型供应商', 'Model providers')),
           subtitle: Text(t('${(ref.watch(providersProvider).value ?? const []).length} 个供应商 · ${models.length} 个模型', '${(ref.watch(providersProvider).value ?? const []).length} providers · ${models.length} models')),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(Icons.chevron_right_rounded),
           onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ProvidersPage())),
         ),
       ListTile(
@@ -101,7 +101,7 @@ class SettingsPage extends ConsumerWidget {
       if (!watch && s != null) ...[
         SectionTitle(t('个人', 'Personal')),
         ListTile(
-          leading: const Icon(Icons.badge_outlined),
+          leading: const Icon(Icons.badge_rounded),
           title: Text(t('你的名字（{{user}}）', 'Your name ({{user}})')),
           subtitle: Text(s.userName),
           onTap: () async {
@@ -110,7 +110,7 @@ class SettingsPage extends ConsumerWidget {
           },
         ),
         ListTile(
-          leading: const Icon(Icons.description_outlined),
+          leading: const Icon(Icons.description_rounded),
           title: Text(t('你的人设（persona）', 'Your persona')),
           subtitle: Text(s.userPersona.isEmpty ? t('未填写', 'Empty') : s.userPersona, maxLines: 2, overflow: TextOverflow.ellipsis),
           onTap: () async {
@@ -119,7 +119,7 @@ class SettingsPage extends ConsumerWidget {
           },
         ),
         ListTile(
-          leading: const Icon(Icons.timer_outlined),
+          leading: const Icon(Icons.timer_rounded),
           title: Text(t('记忆整理：空闲分钟数', 'Memory extraction: idle minutes')),
           subtitle: Text('${s.memoryIdleMinutes}'),
           onTap: () async {
@@ -231,7 +231,7 @@ class SettingsPage extends ConsumerWidget {
       ),
       SectionTitle(t('关于', 'About')),
       ListTile(
-        leading: const Icon(Icons.info_outline),
+        leading: const Icon(Icons.info_outline_rounded),
         title: const Text('RofuChat'),
         subtitle: Text(t('Agent-Native 角色扮演引擎', 'Agent-native roleplay engine')),
         onTap: () => showLicensePage(context: context, applicationName: 'RofuChat'),
@@ -389,7 +389,7 @@ class _SeedSwatch extends StatelessWidget {
                   shape: BoxShape.circle,
                   border: selected ? Border.all(color: Theme.of(context).colorScheme.onSurface, width: 2) : null,
                 ),
-                child: selected ? Icon(Icons.check, size: 18, color: onColor) : (icon == null ? null : Icon(icon, size: 18, color: onColor)),
+                child: selected ? Icon(Icons.check_rounded, size: 18, color: onColor) : (icon == null ? null : Icon(icon, size: 18, color: onColor)),
               ),
             ),
           ),

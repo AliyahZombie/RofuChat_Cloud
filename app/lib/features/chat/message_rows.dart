@@ -225,8 +225,8 @@ class UserBubble extends StatelessWidget {
                   if (!msg.visible) const ContextTag(),
                   _MiniIcon(Icons.copy_rounded, t('复制', 'Copy'), onCopy),
                   ?swipeNav,
-                  _MiniIcon(Icons.edit_outlined, t('编辑', 'Edit'), onEdit),
-                  Builder(builder: (c) => _MiniIcon(Icons.more_vert, t('更多', 'More'), () => onMore(_center(c)))),
+                  _MiniIcon(Icons.edit_rounded, t('编辑', 'Edit'), onEdit),
+                  Builder(builder: (c) => _MiniIcon(Icons.more_vert_rounded, t('更多', 'More'), () => onMore(_center(c)))),
                 ],
               ),
           ],
@@ -269,7 +269,7 @@ class _Thumb extends StatelessWidget {
           ? Image.memory(base64Decode(dataUrl.substring(dataUrl.indexOf(',') + 1)), fit: BoxFit.cover)
           : Image.network(dataUrl, fit: BoxFit.cover);
     } catch (_) {
-      img = const Icon(Icons.broken_image_outlined);
+      img = const Icon(Icons.broken_image_rounded);
     }
     // A real button: focusable, keyboard-activatable and named for screen readers.
     return Material(
@@ -291,7 +291,7 @@ class _Thumb extends StatelessWidget {
                   child: IconButton.filledTonal(
                     tooltip: MaterialLocalizations.of(c).closeButtonTooltip,
                     onPressed: () => Navigator.pop(c),
-                    icon: const Icon(Icons.close),
+                    icon: const Icon(Icons.close_rounded),
                   ),
                 ),
               ]),
@@ -446,7 +446,7 @@ class _StepsCardState extends State<StepsCard> {
                 // Inline step glyph slot (20dp, a documented exception to the 24dp spinner).
                 SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, semanticsLabel: t('工具运行中', 'Tool running')))
               else
-                Icon(isTool ? (s.isError ? Icons.error_outline_rounded : Icons.build_circle_outlined) : Icons.lightbulb_outline_rounded,
+                Icon(isTool ? (s.isError ? Icons.error_outline_rounded : Icons.build_circle_rounded) : Icons.lightbulb_outline_rounded,
                     size: 20, color: s.isError ? scheme.error : scheme.onSurfaceVariant),
               const SizedBox(width: 12),
               Expanded(
@@ -539,7 +539,7 @@ class _SummaryCardState extends State<SummaryCard> {
               Icon(Icons.compress_rounded, size: 20, color: scheme.tertiary),
               const SizedBox(width: Insets.x2),
               Expanded(child: Text(t('上下文已压缩', 'Context compressed'), style: text.labelLarge?.copyWith(color: scheme.tertiary))),
-              MiniIconButton(Icons.edit_outlined, t('编辑摘要', 'Edit summary'), widget.onEdit),
+              MiniIconButton(Icons.edit_rounded, t('编辑摘要', 'Edit summary'), widget.onEdit),
               TurnChevron(open: _open, color: scheme.onSurfaceVariant),
               const SizedBox(width: Insets.x3),
             ]),
@@ -625,7 +625,7 @@ class SwipeNav extends StatelessWidget {
     Widget arrow(IconData icon, String tip, int to) => _MiniIcon(icon, tip, enabled && to >= 0 && to < count ? () => onSwipe(to) : null);
     return Row(mainAxisSize: MainAxisSize.min, children: [
       arrow(Icons.chevron_left_rounded, t('上一个版本', 'Previous version'), index - 1),
-      Text('${index + 1}/$count', style: Theme.of(context).textTheme.labelMedium?.copyWith(color: scheme.onSurfaceVariant, fontFeatures: const [FontFeature.tabularFigures()])),
+      Text('${index + 1}/$count', semanticsLabel: t('第 ${index + 1} 个版本，共 $count 个', 'Version ${index + 1} of $count'), style: Theme.of(context).textTheme.labelMedium?.copyWith(color: scheme.onSurfaceVariant, fontFeatures: const [FontFeature.tabularFigures()])),
       arrow(Icons.chevron_right_rounded, t('下一个版本', 'Next version'), index + 1),
     ]);
   }

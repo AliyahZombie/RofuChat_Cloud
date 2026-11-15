@@ -54,7 +54,7 @@ class _ConnectPageState extends ConsumerState<ConnectPage> {
                 ),
                 if (!context.isWatch)
                   Padding(
-                    padding: const EdgeInsets.only(top: 6, bottom: 16),
+                    padding: const EdgeInsets.only(top: 8, bottom: 16),
                     child: Text(t('数据保存在本机，内置后端随应用启动。', 'Data stays on this device; the built-in backend starts with the app.'), textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodySmall),
                   ),
                 Row(children: [const Expanded(child: Divider()), Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: Text(t('或', 'or'))), const Expanded(child: Divider())]),
@@ -63,7 +63,7 @@ class _ConnectPageState extends ConsumerState<ConnectPage> {
               TextField(
                 controller: _url,
                 keyboardType: TextInputType.url,
-                decoration: InputDecoration(labelText: t('服务器地址', 'Server URL'), hintText: 'https://rofu.example.com', prefixIcon: const Icon(Icons.dns_outlined), errorText: _urlError),
+                decoration: InputDecoration(labelText: t('服务器地址', 'Server URL'), hintText: 'https://rofu.example.com', prefixIcon: const Icon(Icons.dns_rounded), errorText: _urlError),
                 onSubmitted: (_) => _connect(ctl),
               ),
               const SizedBox(height: 12),
@@ -72,12 +72,12 @@ class _ConnectPageState extends ConsumerState<ConnectPage> {
                 SectionTitle(t('已保存的服务器', 'Saved servers')),
                 for (final c in remotes)
                   ListTile(
-                    leading: const Icon(Icons.cloud_outlined),
+                    leading: const Icon(Icons.cloud_rounded),
                     title: Text(c.name),
                     subtitle: Text('${c.username.isEmpty ? '' : '${c.username} @ '}${c.url}', maxLines: 1, overflow: TextOverflow.ellipsis),
                     onTap: () => ctl.activate(c),
                     trailing: IconButton(
-                      icon: const Icon(Icons.close),
+                      icon: const Icon(Icons.close_rounded),
                       tooltip: t('移除 ${c.name}', 'Remove ${c.name}'),
                       onPressed: () => ctl.removeConnection(c),
                     ),

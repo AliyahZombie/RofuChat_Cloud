@@ -122,7 +122,7 @@ class _MemoryPageState extends ConsumerState<MemoryPage> {
     String scopeName(String? id) => id == null ? t('全局', 'Global') : (chars.where((c) => c.id == id).firstOrNull?.name ?? id);
     return Scaffold(
       appBar: watch ? null : AppBar(title: Text(t('长期记忆', 'Long-term memory'))),
-      floatingActionButton: watch ? null : FloatingActionButton(tooltip: t('新增记忆', 'New memory'), onPressed: () => _edit(null), child: const Icon(Icons.add)),
+      floatingActionButton: watch ? null : FloatingActionButton(tooltip: t('新增记忆', 'New memory'), onPressed: () => _edit(null), child: const Icon(Icons.add_rounded)),
       body: Column(children: [
         if (!watch)
           // Search and scope: side by side when there is room (the scope menu bounded), stacked
@@ -132,7 +132,7 @@ class _MemoryPageState extends ConsumerState<MemoryPage> {
             child: LayoutBuilder(builder: (context, box) {
               final wide = box.maxWidth >= 600;
               final search = TextField(
-                decoration: InputDecoration(prefixIcon: const Icon(Icons.search), hintText: t('搜索记忆', 'Search memory')),
+                decoration: InputDecoration(prefixIcon: const Icon(Icons.search_rounded), hintText: t('搜索记忆', 'Search memory')),
                 textInputAction: TextInputAction.search,
                 onSubmitted: (v) {
                   _q = v.trim();
@@ -177,7 +177,7 @@ class _MemoryPageState extends ConsumerState<MemoryPage> {
                               return ListTile(
                                 onTap: watch ? null : () => _edit(m),
                                 leading: Icon(
-                                  m.source == 'agent' ? Icons.smart_toy_outlined : (m.source == 'scan' ? Icons.auto_awesome_outlined : Icons.person_outline),
+                                  m.source == 'agent' ? Icons.smart_toy_rounded : (m.source == 'scan' ? Icons.auto_awesome_rounded : Icons.person_outline_rounded),
                                   color: scheme.onSurfaceVariant,
                                 ),
                                 title: Text(m.content),
@@ -190,7 +190,7 @@ class _MemoryPageState extends ConsumerState<MemoryPage> {
                                           tooltip: m.pinned ? t('取消置顶', 'Unpin') : t('置顶', 'Pin'),
                                           isSelected: m.pinned,
                                           icon: const Icon(Icons.push_pin_outlined),
-                                          selectedIcon: const Icon(Icons.push_pin),
+                                          selectedIcon: const Icon(Icons.push_pin_rounded),
                                           onPressed: () async {
                                             await ref.read(apiProvider).put('/api/memories/${m.id}', {...m.json, 'pinned': !m.pinned});
                                             await _load();
@@ -198,7 +198,7 @@ class _MemoryPageState extends ConsumerState<MemoryPage> {
                                         ),
                                         IconButton(
                                           tooltip: t('删除', 'Delete'),
-                                          icon: const Icon(Icons.delete_outline),
+                                          icon: const Icon(Icons.delete_outline_rounded),
                                           onPressed: () async {
                                             if (await confirm(context, t('删除这条记忆？', 'Delete this memory?'), ok: t('删除', 'Delete'))) {
                                               await ref.read(apiProvider).delete('/api/memories/${m.id}');

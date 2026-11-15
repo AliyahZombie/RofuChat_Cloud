@@ -88,7 +88,7 @@ class _AdminPageState extends ConsumerState<AdminPage> {
     final users = _users;
     return Scaffold(
       appBar: AppBar(title: Text(t('用户管理', 'User management'))),
-      floatingActionButton: FloatingActionButton(tooltip: t('新建用户', 'New user'), onPressed: _create, child: const Icon(Icons.person_add_alt)),
+      floatingActionButton: FloatingActionButton(tooltip: t('新建用户', 'New user'), onPressed: _create, child: const Icon(Icons.person_add_alt_rounded)),
       body: _error != null
           ? Center(child: Text(_error!))
           : users == null
@@ -110,14 +110,14 @@ class _AdminPageState extends ConsumerState<AdminPage> {
                   const Divider(),
                   for (final u in users)
                     ListTile(
-                      leading: Icon(u.isRoot ? Icons.shield_outlined : Icons.person_outline),
+                      leading: Icon(u.isRoot ? Icons.shield_rounded : Icons.person_outline_rounded),
                       title: Text(u.username),
                       subtitle: Text(fmtTime(u.createdAt)),
                       trailing: OverflowMenu(
                         tooltip: t('${u.username} 的操作', 'Actions for ${u.username}'),
                         entries: [
                           MenuEntry(t('重置密码', 'Reset password'), icon: Icons.password_rounded, onPressed: () => _userAction(u, 'pw')),
-                          if (!u.isRoot) MenuEntry(t('删除', 'Delete'), icon: Icons.delete_outline, danger: true, onPressed: () => _userAction(u, 'del')),
+                          if (!u.isRoot) MenuEntry(t('删除', 'Delete'), icon: Icons.delete_outline_rounded, danger: true, onPressed: () => _userAction(u, 'del')),
                         ],
                       ),
                     ),

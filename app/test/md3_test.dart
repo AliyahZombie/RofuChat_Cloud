@@ -10,6 +10,7 @@ import 'package:rofuchat/features/chat/message_rows.dart';
 import 'package:rofuchat/models/models.dart';
 import 'package:rofuchat/widgets/back_guard.dart';
 import 'package:rofuchat/widgets/common.dart';
+import 'package:rofuchat/widgets/motion.dart';
 import 'package:rofuchat/widgets/slide_drawer.dart';
 
 Message _user({bool visible = true}) => Message({
@@ -42,6 +43,7 @@ void main() {
   foundationTests();
   screenTests();
   chatTests();
+  motionTests();
 
   for (final platform in [TargetPlatform.android, TargetPlatform.linux, TargetPlatform.windows]) {
     testWidgets('message action buttons are at least 48dp on $platform', (t) async {
@@ -390,4 +392,58 @@ void chatTests() {
       }
     });
   }
+}
+
+// ------------------------------------------------------------------ motion (phase 5)
+
+void motionTests() {
+  test('every implicit animation in lib/ names a non-linear curve', () {
+    final starts = RegExp(r'\b(AnimatedSwitcher|AnimatedSize|AnimatedOpacity|AnimatedScale|AnimatedContainer|AnimatedRotation|AnimatedAlign|AnimatedPadding|TweenAnimationBuilder<[^>]*>)\(');
+    final missing = <String>[];
+    for (final f in Directory('lib').listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart'))) {
+      final src = f.readAsStringSync();
+      for (final m in starts.allMatches(src)) {
+        // Look at the constructor's own arguments (until the child/builder starts).
+        final window = src.substring(m.end, (m.end + 600).clamp(0, src.length));
+        if (!RegExp(r'\b(curve|switchInCurve)\s*:').hasMatch(window)) {
+          missing.add('${f.path}:${'\n'.allMatches(src.substring(0, m.start)).length + 1} ${m.group(1)}');
+        }
+      }
+      expect(src.contains('Curves.linear'), isFalse, reason: f.path);
+    }
+    expect(missing, isEmpty);
+  });
+
+  testWidgets('reduced motion: the loading visual holds still and keeps its label', (t) async {
+    final handle = t.ensureSemantics();
+    await t.pumpWidget(const MaterialApp(
+      home: MediaQuery(data: MediaQueryData(disableAnimations: true), child: Center(child: LoadingBlob())),
+    ));
+    await t.pump(const Duration(milliseconds: 500));
+    expect(t.binding.hasScheduledFrame, isFalse, reason: 'no repeating animation');
+    expect(find.bySemanticsLabel(RegExp('Generating|正在生成')), findsOneWidget);
+    handle.dispose();
+  });
+
+  testWidgets('loading visual animates (eased) when motion is allowed', (t) async {
+    await t.pumpWidget(const MaterialApp(home: Center(child: LoadingBlob())));
+    await t.pump(const Duration(milliseconds: 100));
+    expect(t.binding.hasScheduledFrame, isTrue);
+  });
+
+  testWidgets('Collapsible eases open (past the linear midpoint)', (t) async {
+    Widget app(bool open) => MaterialApp(home: Scaffold(body: Column(children: [Collapsible(open: open, child: const SizedBox(height: 100))])));
+    await t.pumpWidget(app(false));
+    await t.pumpWidget(app(true));
+    await t.pump(const Duration(milliseconds: 150)); // half of medium2
+    expect(t.getSize(find.byType(Collapsible)).height, greaterThan(60));
+    await t.pumpAndSettle();
+  });
+
+  test('routes use M3 forward/back transitions per platform', () {
+    final b = buildTheme(const Appearance(), Brightness.light).pageTransitionsTheme.builders;
+    expect(b[TargetPlatform.linux], isA<FadeForwardsPageTransitionsBuilder>());
+    expect(b[TargetPlatform.windows], isA<FadeForwardsPageTransitionsBuilder>());
+    expect(b[TargetPlatform.android], isA<PredictiveBackPageTransitionsBuilder>());
+  });
 }

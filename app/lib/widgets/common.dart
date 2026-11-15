@@ -287,7 +287,7 @@ class SectionTitle extends StatelessWidget {
   const SectionTitle(this.text, {super.key});
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
         child: Text(text, style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Theme.of(context).colorScheme.primary)),
       );
 }
@@ -340,7 +340,7 @@ Future<String?> promptText(
             child: Scaffold(
               appBar: AppBar(
                 leading: IconButton(
-                  icon: const Icon(Icons.close),
+                  icon: const Icon(Icons.close_rounded),
                   tooltip: t('取消', 'Cancel'),
                   onPressed: () => Navigator.pop(c),
                 ),
@@ -492,7 +492,7 @@ Future<bool> showEditorDialog(
           return Dialog.fullscreen(
             child: Scaffold(
               appBar: AppBar(
-                leading: IconButton(icon: const Icon(Icons.close), tooltip: t('取消', 'Cancel'), onPressed: () => Navigator.pop(c, false)),
+                leading: IconButton(icon: const Icon(Icons.close_rounded), tooltip: t('取消', 'Cancel'), onPressed: () => Navigator.pop(c, false)),
                 title: Text(title),
                 actions: [TextButton(onPressed: submit, child: Text(ok)), const SizedBox(width: 8)],
               ),
@@ -530,7 +530,7 @@ class OverflowMenu extends StatelessWidget {
   final List<MenuEntry> entries;
   final IconData icon;
   final String? tooltip;
-  const OverflowMenu({super.key, required this.entries, this.icon = Icons.more_vert, this.tooltip});
+  const OverflowMenu({super.key, required this.entries, this.icon = Icons.more_vert_rounded, this.tooltip});
 
   @override
   Widget build(BuildContext context) {

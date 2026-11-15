@@ -140,6 +140,9 @@ function main(args) {
 - 设计令牌在 `lib/core/tokens.dart`：间距 4dp 栅格（`Insets`）、圆角 0/4/8/12/16/20/28/full（`Corners`，用户气泡 20 为 large-increased）、M3 动效时长 short1…extraLong4 与 standard / emphasized 缓动（`Motion`）；组件主题在 `lib/core/theme.dart`。
 - 文字只用 M3 TextTheme 角色；保留系统 TextScaler（不做截断/线性化）。手表通过主题缩小字号（基础 13sp），用户“字体大小”通过 `AppTypography.chatScale` 作用于所有聊天文字（回复、用户气泡、思考/工具、摘要、输入框）；代码字体由 `bodyMedium` 派生为等宽。
 - “紧凑布局”只压缩内容与文字间距，所有可交互目标保持 ≥ 48dp。
+- 动效：所有动画使用非线性 M3 缓动与时长令牌（手指拖动时直接跟手，松手后缓动落位）；系统开启“减少动态效果”时动画立即完成、加载形状静止。路由转场：Android 保留预测性返回，Linux/Windows 用 M3 fade-forwards，Apple 平台用 Cupertino。自定义加载形状（LoadingBlob）是产品插画，不是 M3 Expressive 组件，带“正在生成”无障碍标签。
+- 图标：系统操作图标统一用 Material Icons Rounded 家族，切换类图标未选中用 outlined、选中用 filled；模型/品牌图标保留原图。
+- 上下文菜单按输入方式分发：右键在光标处弹出菜单，长按弹出底部动作面板，“更多”按钮弹出锚定菜单，从不按窗口宽度判断。返回键顺序：先收起键盘，再关闭抽屉，最后两次返回退出。
 
 ## 11. 国际化
 

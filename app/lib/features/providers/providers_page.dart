@@ -20,7 +20,7 @@ class ProvidersPage extends ConsumerWidget {
       appBar: AppBar(title: Text(t('模型供应商', 'Model providers'))),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProviderEditorPage(provider: ProviderCfg.blank()))),
-        icon: const Icon(Icons.add),
+        icon: const Icon(Icons.add_rounded),
         label: Text(t('添加供应商', 'Add provider')),
       ),
       body: providers.when(
@@ -34,7 +34,7 @@ class ProvidersPage extends ConsumerWidget {
                     leading: ModelIcon(iconKey: p.icon, name: p.name, size: 36),
                     title: Text(p.name),
                     subtitle: Text('${p.kind == 'responses' ? 'Responses API' : 'OpenAI Compatible'} · ${models.where((m) => m.providerId == p.id).length} ${t('个模型', 'models')}'),
-                    trailing: p.enabled ? const Icon(Icons.chevron_right) : Text(t('已停用', 'Disabled')),
+                    trailing: p.enabled ? const Icon(Icons.chevron_right_rounded) : Text(t('已停用', 'Disabled')),
                     onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProviderEditorPage(provider: p))),
                   ),
               ]),
@@ -213,7 +213,7 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
         actions: [
           if (p.id.isNotEmpty)
             IconButton(
-              icon: const Icon(Icons.delete_outline),
+              icon: const Icon(Icons.delete_outline_rounded),
               tooltip: t('删除供应商', 'Delete provider'),
               onPressed: () async {
                 if (await confirm(context, t('删除供应商及其所有模型？', 'Delete this provider and its models?'), ok: t('删除', 'Delete'))) {
@@ -245,7 +245,7 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
           decoration: InputDecoration(
             labelText: 'API Key',
             suffixIcon: IconButton(
-              icon: Icon(_showKey ? Icons.visibility_off : Icons.visibility),
+              icon: Icon(_showKey ? Icons.visibility_off_rounded : Icons.visibility_rounded),
               tooltip: _showKey ? t('隐藏 API Key', 'Hide API key') : t('显示 API Key', 'Show API key'),
               onPressed: () => setState(() => _showKey = !_showKey),
             ),
@@ -269,7 +269,7 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
           IconButton(
             tooltip: t('从 models.dev 更新模型信息', 'Update model info from models.dev'),
             onPressed: _busy || models.isEmpty ? null : _syncCatalog,
-            icon: const Icon(Icons.auto_fix_high_outlined),
+            icon: const Icon(Icons.auto_fix_high_rounded),
           ),
           if (models.length > 1)
             // A real button whose disabled state resolves through M3 roles while busy.
@@ -277,17 +277,17 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
               menuChildren: [for (final m in models) MenuItemButton(onPressed: () => _testProvider(m), child: Text(m.name))],
               builder: (context, menu, _) => TextButton.icon(
                 onPressed: _busy ? null : () => menu.isOpen ? menu.close() : menu.open(),
-                icon: const Icon(Icons.network_check),
+                icon: const Icon(Icons.network_check_rounded),
                 label: Text(t('测试', 'Test')),
                 iconAlignment: IconAlignment.start,
               ),
             )
           else
-            TextButton.icon(onPressed: _busy ? null : () => _testProvider(), icon: const Icon(Icons.network_check), label: Text(t('测试', 'Test'))),
+            TextButton.icon(onPressed: _busy ? null : () => _testProvider(), icon: const Icon(Icons.network_check_rounded), label: Text(t('测试', 'Test'))),
         ]),
         Wrap(spacing: 8, runSpacing: 8, children: [
-          FilledButton.tonalIcon(onPressed: _busy ? null : _fetchModels, icon: const Icon(Icons.cloud_download_outlined), label: Text(t('获取模型列表', 'Fetch models'))),
-          OutlinedButton.icon(onPressed: _busy ? null : _addManual, icon: const Icon(Icons.add), label: Text(t('手动添加', 'Add manually'))),
+          FilledButton.tonalIcon(onPressed: _busy ? null : _fetchModels, icon: const Icon(Icons.cloud_download_rounded), label: Text(t('获取模型列表', 'Fetch models'))),
+          OutlinedButton.icon(onPressed: _busy ? null : _addManual, icon: const Icon(Icons.add_rounded), label: Text(t('手动添加', 'Add manually'))),
         ]),
         const SizedBox(height: 8),
         for (final m in models)
@@ -300,7 +300,7 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
               ModelTags(model: m),
             ]),
             trailing: IconButton(
-              icon: const Icon(Icons.delete_outline),
+              icon: const Icon(Icons.delete_outline_rounded),
               tooltip: t('删除 ${m.name}', 'Delete ${m.name}'),
               onPressed: () => ref.read(modelsProvider.notifier).remove(m.id),
             ),
@@ -338,7 +338,7 @@ class _RemoteModelsSheetState extends State<_RemoteModelsSheet> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(children: [
-            Expanded(child: TextField(decoration: InputDecoration(prefixIcon: const Icon(Icons.search), hintText: t('搜索（共 ${widget.models.length} 个）', 'Search (${widget.models.length})')), onChanged: (v) => setState(() => _q = v))),
+            Expanded(child: TextField(decoration: InputDecoration(prefixIcon: const Icon(Icons.search_rounded), hintText: t('搜索（共 ${widget.models.length} 个）', 'Search (${widget.models.length})')), onChanged: (v) => setState(() => _q = v))),
             const SizedBox(width: 8),
             FilledButton(
               onPressed: _sel.isEmpty ? null : () => Navigator.pop(context, widget.models.where((m) => _sel.contains(m.modelId)).toList()),
@@ -419,7 +419,7 @@ class _ModelEditorPageState extends ConsumerState<ModelEditorPage> {
       appBar: AppBar(
         title: Text(m.id.isEmpty ? t('添加模型', 'Add model') : m.name),
         actions: [
-          IconButton(tooltip: t('从 models.dev 填充', 'Fill from models.dev'), onPressed: _fromCatalog, icon: const Icon(Icons.auto_fix_high_outlined)),
+          IconButton(tooltip: t('从 models.dev 填充', 'Fill from models.dev'), onPressed: _fromCatalog, icon: const Icon(Icons.auto_fix_high_rounded)),
           Padding(padding: const EdgeInsets.only(right: 8), child: FilledButton(onPressed: _save, child: Text(t('保存', 'Save')))),
         ],
       ),
@@ -434,9 +434,9 @@ class _ModelEditorPageState extends ConsumerState<ModelEditorPage> {
           Expanded(child: TextField(controller: _out, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: t('最大输出（0=未知）', 'Max output (0=unknown)')))),
         ]),
         // Capabilities are saved with the form: checkboxes, not switches.
-        CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.image_outlined), title: Text(t('多模态（图片输入）', 'Vision (image input)')), value: m.vision, onChanged: (v) => setState(() => m.vision = v ?? false)),
-        CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.build_outlined), title: Text(t('工具调用', 'Tool calling')), value: m.toolCall, onChanged: (v) => setState(() => m.toolCall = v ?? false)),
-        CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.lightbulb_outline), title: Text(t('推理 / 思考', 'Reasoning')), value: m.reasoning, onChanged: (v) => setState(() => m.reasoning = v ?? false)),
+        CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.image_rounded), title: Text(t('多模态（图片输入）', 'Vision (image input)')), value: m.vision, onChanged: (v) => setState(() => m.vision = v ?? false)),
+        CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.build_rounded), title: Text(t('工具调用', 'Tool calling')), value: m.toolCall, onChanged: (v) => setState(() => m.toolCall = v ?? false)),
+        CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.lightbulb_outline_rounded), title: Text(t('推理 / 思考', 'Reasoning')), value: m.reasoning, onChanged: (v) => setState(() => m.reasoning = v ?? false)),
         SectionTitle(t('图标', 'Icon')),
         Wrap(spacing: 8, runSpacing: 8, children: [
           for (final k in ['', ...modelIconKeys])

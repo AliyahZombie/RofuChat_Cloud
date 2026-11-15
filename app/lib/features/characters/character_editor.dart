@@ -113,7 +113,7 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
                   icon: Icons.download_rounded,
                   tooltip: t('导出', 'Export'),
                   entries: [
-                    MenuEntry(t('导出 PNG 角色卡', 'Export PNG card'), icon: Icons.image_outlined, onPressed: () => _export('png')),
+                    MenuEntry(t('导出 PNG 角色卡', 'Export PNG card'), icon: Icons.image_rounded, onPressed: () => _export('png')),
                     MenuEntry(t('导出 JSON', 'Export JSON'), icon: Icons.data_object_rounded, onPressed: () => _export('json')),
                   ],
                 ),
@@ -229,7 +229,7 @@ class _BasicTab extends ConsumerWidget {
               Positioned(
                 right: 0,
                 bottom: 0,
-                child: CircleAvatar(radius: 14, child: Icon(Icons.edit, size: 14, color: Theme.of(context).colorScheme.onPrimaryContainer)),
+                child: CircleAvatar(radius: 14, child: Icon(Icons.edit_rounded, size: 14, color: Theme.of(context).colorScheme.onPrimaryContainer)),
               ),
             ],
           ),
@@ -243,7 +243,7 @@ class _BasicTab extends ConsumerWidget {
           leading: ModelIcon(iconKey: model?.icon ?? '', name: model?.name ?? '?', size: 32),
           title: Text(t('对话模型', 'Chat model')),
           subtitle: Text(c.modelId.isEmpty ? t('使用默认模型（${model?.name ?? '未设置'}）', 'Default model (${model?.name ?? 'not set'})') : (model?.name ?? c.modelId)),
-          trailing: const Icon(Icons.chevron_right),
+          trailing: const Icon(Icons.chevron_right_rounded),
           onTap: () async {
             final id = await showModelPicker(context, ref, selected: c.modelId, allowDefault: true);
             if (id != null) touch(() => c.modelId = id);
@@ -325,13 +325,13 @@ class _CardTab extends StatelessWidget {
               IconButton(
                 tooltip: t('删除开场白 #${i + 2}', 'Remove greeting #${i + 2}'),
                 onPressed: () => touch(() => c.setCard('alternate_greetings', [...greetings]..removeAt(i))),
-                icon: const Icon(Icons.remove_circle_outline),
+                icon: const Icon(Icons.remove_circle_outline_rounded),
               ),
             ],
           ),
         Align(
           alignment: Alignment.centerLeft,
-          child: TextButton.icon(onPressed: () => touch(() => c.setCard('alternate_greetings', [...greetings, ''])), icon: const Icon(Icons.add), label: Text(t('添加开场白', 'Add greeting'))),
+          child: TextButton.icon(onPressed: () => touch(() => c.setCard('alternate_greetings', [...greetings, ''])), icon: const Icon(Icons.add_rounded), label: Text(t('添加开场白', 'Add greeting'))),
         ),
         f('mes_example', t('示例对话 mes_example', 'Example dialogue'), lines: 8, hint: '<START>\n{{user}}: …\n{{char}}: …'),
         f('system_prompt', t('系统提示 system_prompt（留空使用内置）', 'System prompt (empty = built-in)'), lines: 6),
@@ -349,7 +349,7 @@ class _CardTab extends StatelessWidget {
           alignment: Alignment.centerLeft,
           child: TextButton.icon(
             onPressed: () => touch(() => _setEntry(-1, {'keys': <String>[], 'content': '', 'enabled': true, 'constant': false, 'insertion_order': 100})),
-            icon: const Icon(Icons.add),
+            icon: const Icon(Icons.add_rounded),
             label: Text(t('添加条目', 'Add entry')),
           ),
         ),
@@ -427,7 +427,7 @@ class _ToolsTab extends ConsumerWidget {
         if (model != null && !model.toolCall)
           Container(
             margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            padding: const EdgeInsets.all(10),
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(color: scheme.errorContainer, borderRadius: BorderRadius.circular(8)),
             child: Text(t('当前模型未标记为支持工具调用，工具不会发送给模型。', 'The current model is not marked as tool-capable; tools will not be sent.'), style: TextStyle(color: scheme.onErrorContainer)),
           ),
@@ -460,7 +460,7 @@ class _ToolsTab extends ConsumerWidget {
         for (var i = 0; i < mcp.length; i++) _McpTile(server: mcp[i], onChanged: (s) => touch(() => c.mcp = [...mcp]..[i] = s), onDelete: () => touch(() => c.mcp = [...mcp]..removeAt(i))),
         Align(
           alignment: Alignment.centerLeft,
-          child: TextButton.icon(onPressed: () => touch(() => c.mcp = [...mcp, McpServerCfg.blank()]), icon: const Icon(Icons.add), label: Text(t('添加 MCP 服务器', 'Add MCP server'))),
+          child: TextButton.icon(onPressed: () => touch(() => c.mcp = [...mcp, McpServerCfg.blank()]), icon: const Icon(Icons.add_rounded), label: Text(t('添加 MCP 服务器', 'Add MCP server'))),
         ),
       ],
     );
@@ -677,9 +677,9 @@ class _MemoryTab extends StatelessWidget {
         ),
         if (c.id.isNotEmpty)
           ListTile(
-            leading: const Icon(Icons.psychology_alt_outlined),
+            leading: const Icon(Icons.psychology_alt_rounded),
             title: Text(t('查看此角色的记忆', "View this character's memories")),
-            trailing: const Icon(Icons.chevron_right),
+            trailing: const Icon(Icons.chevron_right_rounded),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => MemoryPage(characterId: c.id))),
           ),
       ],

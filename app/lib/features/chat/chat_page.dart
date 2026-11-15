@@ -291,7 +291,7 @@ class _NoCharacter extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.theater_comedy_outlined,
+              Icons.theater_comedy_rounded,
               size: 56,
               color: Theme.of(context).colorScheme.primary,
             ),
@@ -305,7 +305,7 @@ class _NoCharacter extends ConsumerWidget {
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const CharacterEditorPage()),
               ),
-              icon: const Icon(Icons.add),
+              icon: const Icon(Icons.add_rounded),
               label: Text(t('新建或导入角色', 'Create or import a character')),
             ),
           ],
@@ -405,22 +405,22 @@ class _ChatAppBar extends ConsumerWidget implements PreferredSizeWidget {
         if (onNew != null)
           IconButton(
             onPressed: onNew,
-            icon: const Icon(Icons.add_comment_outlined),
+            icon: const Icon(Icons.add_comment_rounded),
             tooltip: t('新对话', 'New chat'),
           ),
         if (ch != null)
           OverflowMenu(
             entries: [
               if (conv != null)
-                MenuEntry(t('重命名', 'Rename'), icon: Icons.drive_file_rename_outline, onPressed: () => _menu(context, ref, 'rename', ch, conv)),
+                MenuEntry(t('重命名', 'Rename'), icon: Icons.drive_file_rename_outline_rounded, onPressed: () => _menu(context, ref, 'rename', ch, conv)),
               if (conv != null && ch.summarize)
                 MenuEntry(t('立即压缩上下文', 'Compress context now'), icon: Icons.compress_rounded, onPressed: () => _menu(context, ref, 'compress', ch, conv)),
               if (conv != null)
-                MenuEntry(t('立即整理记忆', 'Update memory now'), icon: Icons.auto_awesome_outlined, onPressed: () => _menu(context, ref, 'scan', ch, conv)),
-              MenuEntry(t('角色记忆', 'Character memory'), icon: Icons.psychology_alt_outlined, onPressed: () => _menu(context, ref, 'memory', ch, conv)),
+                MenuEntry(t('立即整理记忆', 'Update memory now'), icon: Icons.auto_awesome_rounded, onPressed: () => _menu(context, ref, 'scan', ch, conv)),
+              MenuEntry(t('角色记忆', 'Character memory'), icon: Icons.psychology_alt_rounded, onPressed: () => _menu(context, ref, 'memory', ch, conv)),
               MenuEntry(t('角色设置', 'Character settings'), icon: Icons.tune_rounded, onPressed: () => _menu(context, ref, 'edit', ch, conv)),
               if (conv != null)
-                MenuEntry(t('删除对话', 'Delete chat'), icon: Icons.delete_outline, danger: true, onPressed: () => _menu(context, ref, 'delete', ch, conv)),
+                MenuEntry(t('删除对话', 'Delete chat'), icon: Icons.delete_outline_rounded, danger: true, onPressed: () => _menu(context, ref, 'delete', ch, conv)),
             ],
           ),
       ],
@@ -516,7 +516,9 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
 
   void _toBottom() {
     final s = widget.scroll;
-    if (s.hasClients && s.offset > 0) {
+    if (s.hasClients && s.offset > 0 && Motion.reduced(context)) {
+      s.jumpTo(0);
+    } else if (s.hasClients && s.offset > 0) {
       s.animateTo(
         0,
         duration: Motion.of(context, Motion.medium2),
@@ -945,10 +947,10 @@ class _MessageList extends ConsumerWidget {
     if (ctl.isDraft) return;
     final v = await showActions(context, [
       MenuAction('copy', Icons.copy_rounded, t('复制', 'Copy')),
-      MenuAction('edit', Icons.edit_outlined, t('编辑', 'Edit')),
+      MenuAction('edit', Icons.edit_rounded, t('编辑', 'Edit')),
       MenuAction(
         'visible',
-        m.visible ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+        m.visible ? Icons.visibility_off_rounded : Icons.visibility_rounded,
         m.visible ? t('移出上下文', 'Exclude from context') : t('加入上下文', 'Include in context'),
       ),
       if (m.isAssistant && character.instant)
@@ -956,9 +958,9 @@ class _MessageList extends ConsumerWidget {
       if (m.isAssistant && m.usage != null && context.isWatch)
         MenuAction('usage', Icons.data_usage_rounded, t('Token 用量', 'Token usage')),
       if (m.swipeCount > 1 && !ctl.generating)
-        MenuAction('del_swipe', Icons.layers_clear_outlined, t('删除当前版本', 'Delete this version')),
+        MenuAction('del_swipe', Icons.layers_clear_rounded, t('删除当前版本', 'Delete this version')),
       MenuAction('branch', Icons.call_split_rounded, t('从这里分支', 'Branch from here')),
-      MenuAction('delete', Icons.delete_outline, t('删除', 'Delete'), danger: true),
+      MenuAction('delete', Icons.delete_outline_rounded, t('删除', 'Delete'), danger: true),
     ], at: pos);
     if (v == null || !context.mounted) return;
     try {
@@ -1073,7 +1075,7 @@ Future<void> showActualDialog(
             child: Scaffold(
               appBar: AppBar(
                 leading: IconButton(
-                  icon: const Icon(Icons.close),
+                  icon: const Icon(Icons.close_rounded),
                   tooltip: t('取消', 'Cancel'),
                   onPressed: () => Navigator.pop(c),
                 ),
@@ -1264,7 +1266,7 @@ class _AssistantFooter extends StatelessWidget {
                 else
                   Builder(
                     builder: (c) => MiniIconButton(
-                      Icons.more_horiz,
+                      Icons.more_horiz_rounded,
                       t('更多', 'More'),
                       () => onMore(_centerOf(c)),
                     ),
@@ -1297,7 +1299,7 @@ class _AssistantFooter extends StatelessWidget {
                   if (!ctl.isDraft) ...[
                     if (!compact)
                       MiniIconButton(
-                        Icons.edit_outlined,
+                        Icons.edit_rounded,
                         t('编辑', 'Edit'),
                         onEdit,
                       ),
@@ -1311,7 +1313,7 @@ class _AssistantFooter extends StatelessWidget {
                       ),
                     Builder(
                       builder: (c) => MiniIconButton(
-                        Icons.more_vert,
+                        Icons.more_vert_rounded,
                         t('更多', 'More'),
                         () => onMore(_centerOf(c)),
                       ),
@@ -1601,7 +1603,7 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                 padding: const EdgeInsets.fromLTRB(Insets.x3, Insets.x1, 0, 0),
                 child: Row(
                   children: [
-                    Icon(Icons.edit_outlined, size: 16, color: scheme.primary),
+                    Icon(Icons.edit_rounded, size: 16, color: scheme.primary),
                     const SizedBox(width: Insets.x2),
                     Expanded(
                       child: Text(
@@ -1623,7 +1625,7 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                       iconSize: 20,
                       tooltip: t('取消编辑', 'Cancel edit'),
                       onPressed: () => setState(_endEdit),
-                      icon: const Icon(Icons.close),
+                      icon: const Icon(Icons.close_rounded),
                     ),
                   ],
                 ),
@@ -1670,7 +1672,7 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
                                   radius: 10,
                                   backgroundColor: scheme.inverseSurface,
                                   child: Icon(
-                                    Icons.close,
+                                    Icons.close_rounded,
                                     size: 14,
                                     color: scheme.onInverseSurface,
                                   ),
@@ -1892,7 +1894,7 @@ class _WatchComposerState extends State<_WatchComposer> {
                 IconButton(
                   tooltip: t('取消', 'Cancel'),
                   onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close),
+                  icon: const Icon(Icons.close_rounded),
                 ),
                 IconButton.filled(
                   tooltip: t('发送', 'Send'),

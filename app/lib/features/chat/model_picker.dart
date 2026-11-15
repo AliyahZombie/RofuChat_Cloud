@@ -51,17 +51,17 @@ class _ModelListState extends ConsumerState<_ModelList> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           if (widget.title != null) Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(widget.title!, style: Theme.of(context).textTheme.titleMedium)),
           TextField(
-            decoration: InputDecoration(prefixIcon: const Icon(Icons.search), hintText: t('搜索模型', 'Search models')),
+            decoration: InputDecoration(prefixIcon: const Icon(Icons.search_rounded), hintText: t('搜索模型', 'Search models')),
             onChanged: (v) => setState(() => _q = v),
           ),
         ]),
       ),
       if (widget.allowDefault)
         ListTile(
-          leading: const Icon(Icons.settings_suggest_outlined),
+          leading: const Icon(Icons.settings_suggest_rounded),
           title: Text(t('使用默认模型', 'Use default model')),
           selected: (widget.selected ?? '').isEmpty,
-          trailing: (widget.selected ?? '').isEmpty ? Icon(Icons.check, color: scheme.primary) : null,
+          trailing: (widget.selected ?? '').isEmpty ? Icon(Icons.check_rounded, color: scheme.primary) : null,
           onTap: () => Navigator.pop(context, ''),
         ),
     ];
@@ -75,7 +75,7 @@ class _ModelListState extends ConsumerState<_ModelList> {
           leading: ModelIcon(iconKey: m.icon, name: m.name, size: 40),
           title: Text(m.name, maxLines: 1, overflow: TextOverflow.ellipsis),
           subtitle: ModelTags(model: m),
-          trailing: m.id == widget.selected ? Icon(Icons.check, color: scheme.primary) : null,
+          trailing: m.id == widget.selected ? Icon(Icons.check_rounded, color: scheme.primary) : null,
           onTap: () => Navigator.pop(context, m.id),
         ));
       }
@@ -104,10 +104,10 @@ class ModelTags extends StatelessWidget {
           ]),
         );
     return Wrap(children: [
-      if (model.contextLength > 0) tag(Icons.notes, model.contextLength >= 1000 ? '${(model.contextLength / 1000).round()}k' : '${model.contextLength}'),
-      if (model.vision) tag(Icons.image_outlined, t('视觉', 'Vision')),
-      if (model.toolCall) tag(Icons.build_outlined, t('工具', 'Tools')),
-      if (model.reasoning) tag(Icons.lightbulb_outline, t('推理', 'Reasoning')),
+      if (model.contextLength > 0) tag(Icons.notes_rounded, model.contextLength >= 1000 ? '${(model.contextLength / 1000).round()}k' : '${model.contextLength}'),
+      if (model.vision) tag(Icons.image_rounded, t('视觉', 'Vision')),
+      if (model.toolCall) tag(Icons.build_rounded, t('工具', 'Tools')),
+      if (model.reasoning) tag(Icons.lightbulb_outline_rounded, t('推理', 'Reasoning')),
     ]);
   }
 }

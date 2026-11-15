@@ -25,7 +25,7 @@ class ToolsPage extends ConsumerWidget {
       floatingActionButton: FloatingActionButton(
         tooltip: t('新建工具', 'New tool'),
         onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ToolEditorPage(tool: LocalTool.blank()))),
-        child: const Icon(Icons.add),
+        child: const Icon(Icons.add_rounded),
       ),
       body: tools.when(
         loading: () => const Center(child: CircularProgressIndicator()),
@@ -40,7 +40,7 @@ class ToolsPage extends ConsumerWidget {
             : ListView(children: [
                 for (final tool in list)
                   ListTile(
-                    leading: Icon(builtinToolNames.contains(tool.name) ? Icons.casino_outlined : Icons.code_rounded, color: tool.enabled ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.onSurfaceVariant),
+                    leading: Icon(builtinToolNames.contains(tool.name) ? Icons.casino_rounded : Icons.code_rounded, color: tool.enabled ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.onSurfaceVariant),
                     title: Text(tool.name),
                     subtitle: Text(tool.description, maxLines: 1, overflow: TextOverflow.ellipsis),
                     // Immediate setting: a switch is the right control here.
@@ -145,7 +145,7 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
         actions: [
           if (tool.id.isNotEmpty)
             IconButton(
-              icon: const Icon(Icons.delete_outline),
+              icon: const Icon(Icons.delete_outline_rounded),
               tooltip: t('删除工具', 'Delete tool'),
               onPressed: () async {
                 if (await confirm(context, t('删除这个工具？', 'Delete this tool?'), ok: t('删除', 'Delete'))) {

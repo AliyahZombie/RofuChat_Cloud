@@ -76,10 +76,10 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final rikka = !context.isDesktop;
 
     final switcher = SizedBox(
-      height: watch ? 64 : 84,
+      height: watch ? 64 : 92,
       child: ListView(
         scrollDirection: Axis.horizontal,
-        padding: EdgeInsets.symmetric(horizontal: watch ? inset : 10, vertical: 6),
+        padding: EdgeInsets.symmetric(horizontal: watch ? inset : 12, vertical: 8),
         children: [
           for (final c in chars.value ?? const <Character>[])
             _CharChip(
@@ -107,7 +107,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                       clipBehavior: Clip.antiAlias,
                       child: InkWell(
                         onTap: _addCharacter,
-                        child: const SizedBox.square(dimension: 48, child: Icon(Icons.add)),
+                        child: const SizedBox.square(dimension: 48, child: Icon(Icons.add_rounded)),
                       ),
                     ),
                   ),
@@ -205,7 +205,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                     _close();
                     widget.onNewConversation(current);
                   },
-                  icon: const Icon(Icons.add_comment_outlined),
+                  icon: const Icon(Icons.add_comment_rounded),
                 ),
               ],
             ),
@@ -214,11 +214,11 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final footer = Column(
       children: [
         const Divider(),
-        _NavTile(icon: Icons.psychology_alt_outlined, label: t('记忆', 'Memory'), onTap: () => _push(const MemoryPage())),
+        _NavTile(icon: Icons.psychology_alt_rounded, label: t('记忆', 'Memory'), onTap: () => _push(const MemoryPage())),
         _NavTile(icon: Icons.code_rounded, label: t('本地工具', 'Local tools'), onTap: () => _push(const ToolsPage())),
-        _NavTile(icon: Icons.settings_outlined, label: t('设置', 'Settings'), onTap: () => _push(const SettingsPage())),
+        _NavTile(icon: Icons.settings_rounded, label: t('设置', 'Settings'), onTap: () => _push(const SettingsPage())),
         ListTile(
-          leading: Icon(app.active?.isLocal == true ? Icons.phone_android_rounded : Icons.cloud_outlined),
+          leading: Icon(app.active?.isLocal == true ? Icons.phone_android_rounded : Icons.cloud_rounded),
           title: Text(app.active?.isLocal == true ? t('本地后端', 'Local backend') : (app.active?.name ?? ''), maxLines: 1, overflow: TextOverflow.ellipsis),
           subtitle: Text(app.user?.username ?? '', maxLines: 1),
           trailing: const Icon(Icons.swap_horiz_rounded),
@@ -276,7 +276,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                       minTileHeight: compact ? 48 : 56,
                       contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
                       shape: const StadiumBorder(),
-                      leading: const Icon(Icons.add_comment_outlined),
+                      leading: const Icon(Icons.add_comment_rounded),
                       title: Text(t('新对话', 'New chat')),
                       onTap: () {
                         _close();
@@ -335,7 +335,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 minTileHeight: watch ? 48 : 56,
                 shape: const StadiumBorder(),
                 contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x3),
-                leading: current == null ? const Icon(Icons.person_outline) : CharacterAvatar(character: current, size: watch ? 26 : 32),
+                leading: current == null ? const Icon(Icons.person_outline_rounded) : CharacterAvatar(character: current, size: watch ? 26 : 32),
                 title: Text(current?.name ?? t('选择角色', 'Pick a character'), maxLines: 1, overflow: TextOverflow.ellipsis),
                 trailing: TurnChevron(open: !_charsOpen),
                 onTap: () => setState(() => _charsOpen = !_charsOpen),
@@ -348,10 +348,10 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 alignment: WrapAlignment.center,
                 spacing: watch ? 0 : 8,
                 children: [
-                  round(Icons.psychology_alt_outlined, t('记忆', 'Memory'), () => _push(const MemoryPage())),
+                  round(Icons.psychology_alt_rounded, t('记忆', 'Memory'), () => _push(const MemoryPage())),
                   round(Icons.code_rounded, t('本地工具', 'Local tools'), () => _push(const ToolsPage())),
-                  round(Icons.swap_horiz, t('连接', 'Connection'), () => ref.read(appProvider.notifier).showConnect()),
-                  round(Icons.settings_outlined, t('设置', 'Settings'), () => _push(const SettingsPage())),
+                  round(Icons.swap_horiz_rounded, t('连接', 'Connection'), () => ref.read(appProvider.notifier).showConnect()),
+                  round(Icons.settings_rounded, t('设置', 'Settings'), () => _push(const SettingsPage())),
                 ],
               ),
             ),
@@ -370,8 +370,8 @@ class _SidebarState extends ConsumerState<Sidebar> {
     final v = await showActionSheet<String>(
       context,
       (c) => [
-        ListTile(leading: const Icon(Icons.person_add_alt), title: Text(t('新建角色', 'New character')), onTap: () => Navigator.pop(c, 'new')),
-        ListTile(leading: const Icon(Icons.file_open_outlined), title: Text(t('导入角色卡（PNG / JSON）', 'Import card (PNG / JSON)')), onTap: () => Navigator.pop(c, 'import')),
+        ListTile(leading: const Icon(Icons.person_add_alt_rounded), title: Text(t('新建角色', 'New character')), onTap: () => Navigator.pop(c, 'new')),
+        ListTile(leading: const Icon(Icons.file_open_rounded), title: Text(t('导入角色卡（PNG / JSON）', 'Import card (PNG / JSON)')), onTap: () => Navigator.pop(c, 'import')),
       ],
     );
     if (!mounted || v == null) return;
@@ -384,11 +384,11 @@ class _SidebarState extends ConsumerState<Sidebar> {
 
   Future<void> _charMenu(Character c, {Offset? at}) async {
     final v = await showActions(context, [
-      MenuAction('edit', Icons.edit_outlined, t('编辑', 'Edit')),
-      MenuAction('dup', Icons.copy_all_outlined, t('复制', 'Duplicate')),
-      MenuAction('up', Icons.arrow_back, t('前移', 'Move earlier')),
-      MenuAction('down', Icons.arrow_forward, t('后移', 'Move later')),
-      MenuAction('del', Icons.delete_outline, t('删除', 'Delete'), danger: true),
+      MenuAction('edit', Icons.edit_rounded, t('编辑', 'Edit')),
+      MenuAction('dup', Icons.copy_all_rounded, t('复制', 'Duplicate')),
+      MenuAction('up', Icons.arrow_back_rounded, t('前移', 'Move earlier')),
+      MenuAction('down', Icons.arrow_forward_rounded, t('后移', 'Move later')),
+      MenuAction('del', Icons.delete_outline_rounded, t('删除', 'Delete'), danger: true),
     ], at: at);
     if (!mounted || v == null) return;
     final ctl = ref.read(charactersProvider.notifier);
@@ -421,7 +421,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
   }
 
   Future<void> _convMenu(Conversation c, {Offset? at}) async {
-    final v = await showActions(context, [MenuAction('rename', Icons.drive_file_rename_outline, t('重命名', 'Rename')), MenuAction('del', Icons.delete_outline, t('删除', 'Delete'), danger: true)], at: at);
+    final v = await showActions(context, [MenuAction('rename', Icons.drive_file_rename_outline_rounded, t('重命名', 'Rename')), MenuAction('del', Icons.delete_outline_rounded, t('删除', 'Delete'), danger: true)], at: at);
     if (!mounted || v == null) return;
     final api = ref.read(apiProvider);
     try {

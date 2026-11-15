@@ -215,7 +215,7 @@ class TurnChevron extends StatelessWidget {
         turns: open ? (sideways ? 0.25 : 0.5) : 0,
         duration: Motion.of(context, Motion.short4),
         curve: Motion.standard,
-        child: Icon(sideways ? Icons.chevron_right : Icons.expand_more, size: size, color: color),
+        child: Icon(sideways ? Icons.chevron_right_rounded : Icons.expand_more_rounded, size: size, color: color),
       );
 }
 
