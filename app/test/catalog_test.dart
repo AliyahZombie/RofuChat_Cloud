@@ -55,12 +55,20 @@ void main() {
     expect(closeStreamingMarkdown('para\n\n- '), 'para\n\n');
   });
 
-  test('context mode edits stick (nested map is not re-copied)', () {
+  test('compression switches stick (nested map is not re-copied) and map legacy mode', () {
     final c = Character.blank();
-    final ctx = c.context;
-    expect(c.contextMode, 'traditional');
-    ctx['mode'] = 'instant';
-    expect(c.contextMode, 'instant');
+    expect(c.instant, false);
+    expect(c.summarize, true);
+    c.setCompression(instant: true);
+    expect(c.instant, true);
+    expect(c.summarize, true);
     expect(c.toJson()['context']['mode'], 'instant');
+    c.setCompression(summarize: false);
+    expect(c.toJson()['context']['summarize'], false);
+    expect(c.toJson()['context']['instant'], true);
+
+    final legacy = Character({'context': <String, dynamic>{'mode': 'instant'}});
+    expect(legacy.instant, true);
+    expect(legacy.summarize, true);
   });
 }
