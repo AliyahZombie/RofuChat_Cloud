@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/format.dart';
 import '../core/i18n.dart';
 import '../core/theme.dart';
+import '../core/tokens.dart';
 import '../models/models.dart';
 import '../state/app_state.dart';
 
@@ -447,4 +448,149 @@ Future<T?> showActionSheet<T>(BuildContext context, List<Widget> Function(BuildC
       ),
     ),
   );
+}
+
+/// A scrolling form/settings body whose content keeps a readable width on large windows
+/// (M3: fields should not span a whole large screen). The scroll area stays full-width.
+class FormListView extends StatelessWidget {
+  final List<Widget> children;
+  final double horizontal;
+  final double vertical;
+  final double maxWidth;
+  const FormListView({super.key, required this.children, this.horizontal = 16, this.vertical = 16, this.maxWidth = kFormMaxWidth});
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, box) {
+          final side = math.max(horizontal, (box.maxWidth - maxWidth) / 2);
+          return ListView(padding: EdgeInsets.symmetric(horizontal: side, vertical: vertical), children: children);
+        },
+      );
+}
+
+/// A multi-field editor presented by window size: a full-screen dialog on compact widths
+/// (keyboard input, M3 full-screen dialog), a scrollable basic dialog otherwise. [body]
+/// gets a `setState` for local state. Returns true when the user confirmed with [ok].
+Future<bool> showEditorDialog(
+  BuildContext context, {
+  required String title,
+  required String ok,
+  required Widget Function(BuildContext context, StateSetter setState) body,
+  bool Function()? validate,
+}) async {
+  final compact = MediaQuery.sizeOf(context).width < 600;
+  final r = await showDialog<bool>(
+    context: context,
+    builder: (c) => StatefulBuilder(
+      builder: (c, set) {
+        void submit() {
+          if (validate == null || validate()) Navigator.pop(c, true);
+          set(() {});
+        }
+
+        if (compact) {
+          return Dialog.fullscreen(
+            child: Scaffold(
+              appBar: AppBar(
+                leading: IconButton(icon: const Icon(Icons.close), tooltip: t('取消', 'Cancel'), onPressed: () => Navigator.pop(c, false)),
+                title: Text(title),
+                actions: [TextButton(onPressed: submit, child: Text(ok)), const SizedBox(width: 8)],
+              ),
+              body: ListView(padding: const EdgeInsets.all(16), children: [body(c, set)]),
+            ),
+          );
+        }
+        return AlertDialog(
+          scrollable: true,
+          title: Text(title),
+          content: SizedBox(width: double.maxFinite, child: body(c, set)),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(c, false), child: Text(t('取消', 'Cancel'))),
+            TextButton(onPressed: submit, child: Text(ok)),
+          ],
+        );
+      },
+    ),
+  );
+  return r ?? false;
+}
+
+/// One entry of an [OverflowMenu].
+class MenuEntry {
+  final String label;
+  final IconData? icon;
+  final VoidCallback? onPressed;
+  final bool danger;
+  const MenuEntry(this.label, {this.icon, this.onPressed, this.danger = false});
+}
+
+/// An anchored overflow ("more") menu built from MenuAnchor + MenuItemButton (baseline M3
+/// menu anatomy: 48dp items, 24dp leading icons, 4dp corners).
+class OverflowMenu extends StatelessWidget {
+  final List<MenuEntry> entries;
+  final IconData icon;
+  final String? tooltip;
+  const OverflowMenu({super.key, required this.entries, this.icon = Icons.more_vert, this.tooltip});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return MenuAnchor(
+      menuChildren: [
+        for (final e in entries)
+          MenuItemButton(
+            leadingIcon: e.icon == null ? null : Icon(e.icon, color: e.danger ? scheme.error : null),
+            onPressed: e.onPressed,
+            style: e.danger ? MenuItemButton.styleFrom(foregroundColor: scheme.error) : null,
+            child: Text(e.label),
+          ),
+      ],
+      builder: (context, menu, _) => IconButton(
+        icon: Icon(icon),
+        tooltip: tooltip ?? MaterialLocalizations.of(context).showMenuTooltip,
+        onPressed: () => menu.isOpen ? menu.close() : menu.open(),
+      ),
+    );
+  }
+}
+
+/// A single-choice control that adapts to the space it gets: a SegmentedButton when every
+/// label fits, otherwise a DropdownMenu (watch, narrow windows, long labels, large text).
+class ChoiceField<T> extends StatelessWidget {
+  final String label;
+  final T value;
+  final List<(T, String)> options;
+  final ValueChanged<T> onChanged;
+
+  /// Minimum width per segment before switching to the menu.
+  final double minSegmentWidth;
+  const ChoiceField({super.key, required this.label, required this.value, required this.options, required this.onChanged, this.minSegmentWidth = 104});
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, box) {
+          final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+          if (box.maxWidth >= options.length * minSegmentWidth * scale) {
+            return Semantics(
+              label: label,
+              container: true,
+              child: SegmentedButton<T>(
+                showSelectedIcon: false,
+                segments: [for (final (v, l) in options) ButtonSegment(value: v, label: Text(l, maxLines: 1, overflow: TextOverflow.ellipsis))],
+                selected: {value},
+                onSelectionChanged: (v) => onChanged(v.first),
+              ),
+            );
+          }
+          return DropdownMenu<T>(
+            label: Text(label),
+            width: box.maxWidth,
+            initialSelection: value,
+            dropdownMenuEntries: [for (final (v, l) in options) DropdownMenuEntry(value: v, label: l)],
+            onSelected: (v) {
+              if (v != null) onChanged(v);
+            },
+          );
+        },
+      );
 }

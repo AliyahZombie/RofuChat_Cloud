@@ -13,11 +13,16 @@ Future<String?> showModelPicker(BuildContext context, WidgetRef ref, {String? se
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
-    builder: (c) => DraggableScrollableSheet(
-      expand: false,
-      initialChildSize: 0.6,
-      maxChildSize: 0.92,
-      builder: (c, scroll) => _ModelList(scroll: scroll, selected: selected, allowDefault: allowDefault, title: title),
+    useSafeArea: true,
+    // Keeps the search field above the keyboard; the list scrolls.
+    builder: (c) => Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(c).bottom),
+      child: DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        maxChildSize: 0.92,
+        builder: (c, scroll) => _ModelList(scroll: scroll, selected: selected, allowDefault: allowDefault, title: title),
+      ),
     ),
   );
 }
@@ -55,6 +60,7 @@ class _ModelListState extends ConsumerState<_ModelList> {
         ListTile(
           leading: const Icon(Icons.settings_suggest_outlined),
           title: Text(t('使用默认模型', 'Use default model')),
+          selected: (widget.selected ?? '').isEmpty,
           trailing: (widget.selected ?? '').isEmpty ? Icon(Icons.check, color: scheme.primary) : null,
           onTap: () => Navigator.pop(context, ''),
         ),
@@ -65,8 +71,8 @@ class _ModelListState extends ConsumerState<_ModelList> {
       children.add(SectionTitle(p.name));
       for (final m in ms) {
         children.add(ListTile(
-          dense: true,
-          leading: ModelIcon(iconKey: m.icon, name: m.name, size: 28),
+          selected: m.id == widget.selected,
+          leading: ModelIcon(iconKey: m.icon, name: m.name, size: 40),
           title: Text(m.name, maxLines: 1, overflow: TextOverflow.ellipsis),
           subtitle: ModelTags(model: m),
           trailing: m.id == widget.selected ? Icon(Icons.check, color: scheme.primary) : null,
@@ -88,9 +94,14 @@ class ModelTags extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final style = Theme.of(context).textTheme.labelSmall;
+    // Non-interactive metadata: a tiny glyph (documented exception) beside a readable label.
     Widget tag(IconData i, String s) => Padding(
           padding: const EdgeInsets.only(right: 8),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(i, size: 12, color: scheme.primary), const SizedBox(width: 2), Text(s, style: style)]),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            ExcludeSemantics(child: Icon(i, size: 14, color: scheme.primary)),
+            const SizedBox(width: 4),
+            Text(s, style: style?.copyWith(color: scheme.onSurfaceVariant)),
+          ]),
         );
     return Wrap(children: [
       if (model.contextLength > 0) tag(Icons.notes, model.contextLength >= 1000 ? '${(model.contextLength / 1000).round()}k' : '${model.contextLength}'),

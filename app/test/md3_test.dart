@@ -40,6 +40,7 @@ void _expectTargets(WidgetTester t, Finder f) {
 
 void main() {
   foundationTests();
+  screenTests();
 
   for (final platform in [TargetPlatform.android, TargetPlatform.linux, TargetPlatform.windows]) {
     testWidgets('message action buttons are at least 48dp on $platform', (t) async {
@@ -270,5 +271,75 @@ void foundationTests() {
     expect(th.appBarTheme.scrolledUnderElevation, greaterThan(0));
     final bg = th.appBarTheme.backgroundColor! as WidgetStateColor;
     expect(bg.resolve({WidgetState.scrolledUnder}), isNot(bg.resolve({})));
+  });
+}
+
+// ------------------------------------------------------------------ standard screens (phase 3)
+
+void screenTests() {
+  Widget host(double width, Widget child) => MaterialApp(
+        theme: buildTheme(const Appearance(), Brightness.light),
+        home: Scaffold(body: Center(child: SizedBox(width: width, child: child))),
+      );
+
+  for (final w in [150.0, 600.0]) {
+    testWidgets('theme choice adapts at ${w}dp (segments fit or a menu) without overflow', (t) async {
+      var v = 'system';
+      await t.pumpWidget(host(
+        w,
+        ChoiceField<String>(
+          label: 'Theme',
+          value: v,
+          minSegmentWidth: 76,
+          options: const [('system', 'System'), ('light', 'Light'), ('dark', 'Dark'), ('black', 'Black')],
+          onChanged: (x) => v = x,
+        ),
+      ));
+      expect(t.takeException(), isNull);
+      if (w < 304) {
+        expect(find.byType(DropdownMenu<String>), findsOneWidget);
+      } else {
+        expect(find.byType(SegmentedButton<String>), findsOneWidget);
+      }
+    });
+  }
+
+  testWidgets('basic dialogs use two text buttons with a specific confirm label', (t) async {
+    await t.pumpWidget(host(400, Builder(builder: (c) => TextButton(onPressed: () => confirm(c, 'Delete this chat?', ok: 'Delete'), child: const Text('go')))));
+    await t.tap(find.text('go'));
+    await t.pumpAndSettle();
+    final actions = find.descendant(of: find.byType(AlertDialog), matching: find.byWidgetPredicate((w) => w is ButtonStyleButton));
+    expect(actions, findsNWidgets(2));
+    expect(find.descendant(of: find.byType(AlertDialog), matching: find.byType(FilledButton)), findsNothing);
+    expect(find.text('Delete'), findsOneWidget);
+  });
+
+  testWidgets('form bodies keep a readable width on large windows', (t) async {
+    t.view.physicalSize = const Size(1600, 900);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    await t.pumpWidget(MaterialApp(home: Scaffold(body: FormListView(children: const [TextField()]))));
+    expect(t.getSize(find.byType(TextField)).width, lessThanOrEqualTo(720));
+  });
+
+  testWidgets('the action sheet scrolls instead of clipping on a watch', (t) async {
+    t.view.physicalSize = const Size(192, 192);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    await t.pumpWidget(host(192, Builder(
+      builder: (c) => TextButton(
+        onPressed: () => showActions(c, [for (var i = 0; i < 8; i++) MenuAction('$i', Icons.star, 'Action $i')]),
+        child: const Text('go'),
+      ),
+    )));
+    await t.tap(find.text('go'));
+    await t.pumpAndSettle();
+    expect(t.takeException(), isNull);
+    await t.scrollUntilVisible(find.text('Action 7'), 50, scrollable: find.descendant(of: find.byType(BottomSheet), matching: find.byType(Scrollable)));
+    await t.ensureVisible(find.text('Action 7'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('Action 7'));
+    await t.pumpAndSettle();
+    expect(find.byType(BottomSheet), findsNothing, reason: 'the last action was reachable');
   });
 }

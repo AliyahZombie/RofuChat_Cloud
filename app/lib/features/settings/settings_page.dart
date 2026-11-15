@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,6 +7,7 @@ import '../../core/form_factor.dart';
 import '../../core/format.dart';
 import '../../core/i18n.dart';
 import '../../core/theme.dart';
+import '../../core/tokens.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/common.dart';
@@ -127,18 +130,20 @@ class SettingsPage extends ConsumerWidget {
         ),
       ],
       SectionTitle(t('外观', 'Appearance')),
+      // Segments where they fit; a menu on watches and narrow windows.
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        child: SegmentedButton<String>(
-          showSelectedIcon: false,
-          segments: [
-            ButtonSegment(value: 'system', label: Text(t('系统', 'System'))),
-            ButtonSegment(value: 'light', label: Text(t('浅色', 'Light'))),
-            ButtonSegment(value: 'dark', label: Text(t('深色', 'Dark'))),
-            ButtonSegment(value: 'black', label: Text(t('纯黑', 'Black'))),
+        child: ChoiceField<String>(
+          label: t('主题', 'Theme'),
+          value: a.themeMode,
+          minSegmentWidth: 76,
+          options: [
+            ('system', t('系统', 'System')),
+            ('light', t('浅色', 'Light')),
+            ('dark', t('深色', 'Dark')),
+            ('black', t('纯黑', 'Black')),
           ],
-          selected: {a.themeMode},
-          onSelectionChanged: (v) => setA(a.copyWith(themeMode: v.first)),
+          onChanged: (v) => setA(a.copyWith(themeMode: v)),
         ),
       ),
       SwitchListTile(
@@ -185,25 +190,43 @@ class SettingsPage extends ConsumerWidget {
       ),
       ListTile(
         title: Text(t('字体大小', 'Font size')),
-        subtitle: Slider(value: a.fontScale, min: 0.8, max: 1.4, divisions: 12, label: a.fontScale.toStringAsFixed(2), onChanged: (v) => setA(a.copyWith(fontScale: v))),
+        subtitle: Slider(
+          value: a.fontScale,
+          min: 0.8,
+          max: 1.4,
+          divisions: 12,
+          label: '${(a.fontScale * 100).round()}%',
+          semanticFormatterCallback: (v) => t('聊天字号 ${(v * 100).round()}%', 'Chat font size ${(v * 100).round()} percent'),
+          onChanged: (v) => setA(a.copyWith(fontScale: v)),
+        ),
       ),
-      SwitchListTile(title: Text(t('紧凑布局', 'Compact layout')), value: a.compact, onChanged: (v) => setA(a.copyWith(compact: v))),
+      SwitchListTile(
+        title: Text(t('紧凑布局', 'Compact layout')),
+        subtitle: Text(t('收紧消息与文字间距；按钮大小不变', 'Tighter message and text spacing; buttons keep their size')),
+        value: a.compact,
+        onChanged: (v) => setA(a.copyWith(compact: v)),
+      ),
       if (!watch) SwitchListTile(title: Text(t('聊天铺满宽度（桌面）', 'Full-width chat (desktop)')), value: a.fullWidth, onChanged: (v) => setA(a.copyWith(fullWidth: v))),
       _LoadCharsTile(value: a.loadChars, onChanged: (v) => setA(a.copyWith(loadChars: v))),
       if (!watch && !context.isDesktop) _SwipeZoneTile(value: a.swipeZone, onChanged: (v) => setA(a.copyWith(swipeZone: v))),
       SwitchListTile(title: Text(t('显示头像', 'Show avatars')), value: a.showAvatars, onChanged: (v) => setA(a.copyWith(showAvatars: v))),
       SwitchListTile(title: Text(t('显示 Token 用量', 'Show token usage')), value: a.showTokens, onChanged: (v) => setA(a.copyWith(showTokens: v))),
       if (!watch) SwitchListTile(title: Text(t('Enter 发送（Shift+Enter 换行）', 'Enter to send (Shift+Enter newline)')), value: a.enterToSend, onChanged: (v) => setA(a.copyWith(enterToSend: v))),
-      ListTile(
-        title: Text(t('语言', 'Language')),
-        trailing: DropdownButton<String>(
-          value: a.language,
-          items: [
-            DropdownMenuItem(value: '', child: Text(t('跟随系统', 'System'))),
-            const DropdownMenuItem(value: 'zh', child: Text('中文')),
-            const DropdownMenuItem(value: 'en', child: Text('English')),
-          ],
-          onChanged: (v) => setA(a.copyWith(language: v ?? '')),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: LayoutBuilder(
+          builder: (context, box) => DropdownMenu<String>(
+            label: Text(t('语言', 'Language')),
+            width: math.min(box.maxWidth, 320),
+            initialSelection: a.language,
+            leadingIcon: const Icon(Icons.translate_rounded),
+            dropdownMenuEntries: [
+              DropdownMenuEntry(value: '', label: t('跟随系统', 'System')),
+              const DropdownMenuEntry(value: 'zh', label: '中文'),
+              const DropdownMenuEntry(value: 'en', label: 'English'),
+            ],
+            onSelected: (v) => setA(a.copyWith(language: v ?? '')),
+          ),
         ),
       ),
       SectionTitle(t('关于', 'About')),
@@ -218,32 +241,35 @@ class SettingsPage extends ConsumerWidget {
 
     return Scaffold(
       appBar: watch ? null : AppBar(title: Text(t('设置', 'Settings'))),
-      body: ListView(padding: EdgeInsets.symmetric(horizontal: watch ? watchInset(context) * 0.6 : 0), children: children),
+      body: watch
+          ? ListView(padding: EdgeInsets.symmetric(horizontal: watchInset(context) * 0.6), children: children)
+          : FormListView(horizontal: 0, vertical: 0, children: children),
     );
   }
 
   Future<void> _changePassword(BuildContext context, WidgetRef ref) async {
     final old = TextEditingController();
     final nw = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: Text(t('修改密码', 'Change password')),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: old, obscureText: true, decoration: InputDecoration(labelText: t('当前密码', 'Current password'))),
-          const SizedBox(height: 8),
-          TextField(controller: nw, obscureText: true, decoration: InputDecoration(labelText: t('新密码', 'New password'))),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: Text(t('取消', 'Cancel'))),
-          FilledButton(onPressed: () => Navigator.pop(c, true), child: Text(t('确定', 'OK'))),
-        ],
-      ),
+    String? oldErr, newErr;
+    final ok = await showEditorDialog(
+      context,
+      title: t('修改密码', 'Change password'),
+      ok: t('修改密码', 'Change password'),
+      validate: () {
+        oldErr = old.text.isEmpty ? t('请输入当前密码', 'Enter your current password') : null;
+        newErr = nw.text.isEmpty ? t('请输入新密码', 'Enter a new password') : null;
+        return oldErr == null && newErr == null;
+      },
+      body: (c, set) => Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(controller: old, obscureText: true, autofocus: true, decoration: InputDecoration(labelText: t('当前密码', 'Current password'), errorText: oldErr)),
+        const SizedBox(height: 16),
+        TextField(controller: nw, obscureText: true, decoration: InputDecoration(labelText: t('新密码', 'New password'), errorText: newErr)),
+      ]),
     );
-    if (ok != true) return;
+    if (!ok) return;
     try {
       await ref.read(apiProvider).post('/api/auth/password', {'old_password': old.text, 'new_password': nw.text});
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('密码已修改', 'Password changed'))));
+      if (context.mounted) showInfo(context, t('密码已修改', 'Password changed'));
     } catch (e) {
       if (context.mounted) showError(context, e);
     }
@@ -274,6 +300,7 @@ class _LoadCharsTile extends StatelessWidget {
           max: (steps.length - 1).toDouble(),
           divisions: steps.length - 1,
           label: fmtCount(steps[i]),
+          semanticFormatterCallback: (v) => t('每次加载 ${fmtCount(steps[v.round()])} 字', '${fmtCount(steps[v.round()])} characters per load'),
           onChanged: (v) => onChanged(steps[v.round()]),
         ),
       ]),
@@ -307,8 +334,8 @@ class _SwipeZoneTile extends StatelessWidget {
               Positioned.fill(child: ColoredBox(color: scheme.surfaceContainerHighest)),
               TweenAnimationBuilder<double>(
                 tween: Tween(end: value / 10),
-                duration: const Duration(milliseconds: 260),
-                curve: Curves.easeOutCubic,
+                duration: Motion.of(context, Motion.medium1),
+                curve: Motion.standard,
                 builder: (_, f, _) => FractionallySizedBox(widthFactor: f, child: ColoredBox(color: scheme.primary.withValues(alpha: 0.5))),
               ),
             ]),
@@ -320,6 +347,7 @@ class _SwipeZoneTile extends StatelessWidget {
           max: 10,
           divisions: 9,
           label: '$pct%',
+          semanticFormatterCallback: (v) => t('屏幕左侧 ${(v * 10).round()}%', '${(v * 10).round()} percent of the screen from the left'),
           onChanged: (v) => onChanged(v.round()),
         ),
       ]),

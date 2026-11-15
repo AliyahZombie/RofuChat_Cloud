@@ -24,6 +24,8 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
   late Character c;
   bool _saving = false;
   bool _dirty = false;
+  String? _nameError;
+  BuildContext? _tabsContext;
 
   @override
   void initState() {
@@ -50,9 +52,12 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
 
   Future<void> _save() async {
     if (c.name.trim().isEmpty) {
-      showError(context, t('请填写角色名称', 'Name is required'));
+      // Inline error on the field; jump to the tab that holds it.
+      setState(() => _nameError = t('请填写角色名称', 'Name is required'));
+      DefaultTabController.maybeOf(_tabsContext ?? context)?.animateTo(0);
       return;
     }
+    setState(() => _nameError = null);
     if (c.cardStr('name').isEmpty) c.setCard('name', c.name);
     setState(() => _saving = true);
     try {
@@ -104,11 +109,13 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
             title: Text(widget.character == null ? t('新建角色', 'New character') : c.name),
             actions: [
               if (c.id.isNotEmpty)
-                PopupMenuButton<String>(
-                  icon: const Icon(Icons.ios_share),
+                OverflowMenu(
+                  icon: Icons.download_rounded,
                   tooltip: t('导出', 'Export'),
-                  onSelected: _export,
-                  itemBuilder: (_) => [PopupMenuItem(value: 'png', child: Text(t('导出 PNG 角色卡', 'Export PNG card'))), PopupMenuItem(value: 'json', child: Text(t('导出 JSON', 'Export JSON')))],
+                  entries: [
+                    MenuEntry(t('导出 PNG 角色卡', 'Export PNG card'), icon: Icons.image_outlined, onPressed: () => _export('png')),
+                    MenuEntry(t('导出 JSON', 'Export JSON'), icon: Icons.data_object_rounded, onPressed: () => _export('json')),
+                  ],
                 ),
               Padding(
                 padding: const EdgeInsets.only(right: 8),
@@ -121,15 +128,18 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
               tabs: [for (final x in tabs) Tab(text: x)],
             ),
           ),
-          body: TabBarView(
+          body: Builder(builder: (tabs) {
+            _tabsContext = tabs;
+            return TabBarView(
             children: [
-              _BasicTab(c: c, touch: _touch),
+              _BasicTab(c: c, touch: _touch, nameError: _nameError),
               _CardTab(c: c, touch: _touch),
               _ToolsTab(c: c, touch: _touch),
               _ContextTab(c: c, touch: _touch),
               _MemoryTab(c: c, touch: _touch),
             ],
-          ),
+          );
+          }),
         ),
       ),
     );
@@ -145,7 +155,8 @@ class _Field extends StatefulWidget {
   final int maxLines;
   final String? hint;
   final TextInputType? keyboard;
-  const _Field({super.key, required this.label, required this.value, required this.onChanged, this.maxLines = 1, this.hint, this.keyboard});
+  final String? error;
+  const _Field({super.key, required this.label, required this.value, required this.onChanged, this.maxLines = 1, this.hint, this.keyboard, this.error});
   @override
   State<_Field> createState() => _FieldState();
 }
@@ -160,13 +171,13 @@ class _FieldState extends State<_Field> {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
     child: TextField(
       controller: _c,
       minLines: widget.maxLines > 1 ? 2 : 1,
       maxLines: widget.maxLines,
       keyboardType: widget.keyboard,
-      decoration: InputDecoration(labelText: widget.label, hintText: widget.hint, alignLabelWithHint: true),
+      decoration: InputDecoration(labelText: widget.label, hintText: widget.hint, alignLabelWithHint: true, errorText: widget.error),
       onChanged: widget.onChanged,
     ),
   );
@@ -175,7 +186,8 @@ class _FieldState extends State<_Field> {
 class _BasicTab extends ConsumerWidget {
   final Character c;
   final Touch touch;
-  const _BasicTab({required this.c, required this.touch});
+  final String? nameError;
+  const _BasicTab({required this.c, required this.touch, this.nameError});
 
   Future<void> _pickAvatar(BuildContext context) async {
     final f = await FilePicker.pickFile(type: FileType.image);
@@ -194,8 +206,9 @@ class _BasicTab extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final model = ref.watch(characterModelProvider(c.modelId));
     final p = c.params;
-    return ListView(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+    return FormListView(
+      horizontal: 0,
+      vertical: 8,
       children: [
         Center(
           child: Stack(
@@ -225,7 +238,7 @@ class _BasicTab extends ConsumerWidget {
           Center(
             child: TextButton(onPressed: () => touch(() => c.avatar = ''), child: Text(t('移除头像', 'Remove avatar'))),
           ),
-        _Field(label: t('名称', 'Name'), value: c.name, onChanged: (v) => touch(() => c.name = v)),
+        _Field(label: t('名称', 'Name'), value: c.name, error: nameError, onChanged: (v) => touch(() => c.name = v)),
         ListTile(
           leading: ModelIcon(iconKey: model?.icon ?? '', name: model?.name ?? '?', size: 32),
           title: Text(t('对话模型', 'Chat model')),
@@ -249,17 +262,20 @@ class _BasicTab extends ConsumerWidget {
         ),
         _Field(label: 'max_tokens', value: p['max_tokens']?.toString() ?? '', keyboard: TextInputType.number, onChanged: (v) => touch(() => p['max_tokens'] = int.tryParse(v.trim()))),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-          child: DropdownButtonFormField<String>(
-            initialValue: c.reasoningEffort,
-            decoration: InputDecoration(labelText: t('推理强度', 'Reasoning effort')),
-            items: [
-              DropdownMenuItem(value: '', child: Text(t('关闭 / 默认', 'Off / default'))),
-              DropdownMenuItem(value: 'low', child: Text(t('低', 'Low'))),
-              DropdownMenuItem(value: 'medium', child: Text(t('中', 'Medium'))),
-              DropdownMenuItem(value: 'high', child: Text(t('高', 'High'))),
-            ],
-            onChanged: (v) => touch(() => p['reasoning_effort'] = v ?? ''),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: LayoutBuilder(
+            builder: (context, box) => DropdownMenu<String>(
+              width: box.maxWidth,
+              label: Text(t('推理强度', 'Reasoning effort')),
+              initialSelection: c.reasoningEffort,
+              dropdownMenuEntries: [
+                DropdownMenuEntry(value: '', label: t('关闭 / 默认', 'Off / default')),
+                DropdownMenuEntry(value: 'low', label: t('低', 'Low')),
+                DropdownMenuEntry(value: 'medium', label: t('中', 'Medium')),
+                DropdownMenuEntry(value: 'high', label: t('高', 'High')),
+              ],
+              onSelected: (v) => touch(() => p['reasoning_effort'] = v ?? ''),
+            ),
           ),
         ),
       ],
@@ -278,8 +294,9 @@ class _CardTab extends StatelessWidget {
     final greetings = ((c.card['alternate_greetings'] as List?) ?? const []).map((e) => e.toString()).toList();
     final book = c.card['character_book'];
     final entries = book is Map ? ((book['entries'] as List?) ?? const []) : const [];
-    return ListView(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+    return FormListView(
+      horizontal: 0,
+      vertical: 8,
       children: [
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -378,8 +395,9 @@ class _LoreEntry extends StatelessWidget {
             keyboard: TextInputType.number,
             onChanged: (v) => onChanged({...entry, 'insertion_order': int.tryParse(v) ?? 100}),
           ),
-          SwitchListTile(dense: true, title: Text(t('启用', 'Enabled')), value: entry['enabled'] != false, onChanged: (v) => onChanged({...entry, 'enabled': v})),
-          SwitchListTile(dense: true, title: Text(t('常驻（总是注入）', 'Constant (always on)')), value: entry['constant'] == true, onChanged: (v) => onChanged({...entry, 'constant': v})),
+          // Lorebook flags are saved with the character: checkboxes, not switches.
+          CheckboxListTile(title: Text(t('启用', 'Enabled')), value: entry['enabled'] != false, onChanged: (v) => onChanged({...entry, 'enabled': v ?? false})),
+          CheckboxListTile(title: Text(t('常驻（总是注入）', 'Constant (always on)')), value: entry['constant'] == true, onChanged: (v) => onChanged({...entry, 'constant': v ?? false})),
           Align(
             alignment: Alignment.centerRight,
             child: TextButton(onPressed: onDelete, child: Text(t('删除条目', 'Delete entry'))),
@@ -402,8 +420,9 @@ class _ToolsTab extends ConsumerWidget {
     final model = ref.watch(characterModelProvider(c.modelId));
     final scheme = Theme.of(context).colorScheme;
     final mcp = c.mcp;
-    return ListView(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+    return FormListView(
+      horizontal: 0,
+      vertical: 8,
       children: [
         if (model != null && !model.toolCall)
           Container(
@@ -490,9 +509,11 @@ class _McpTileState extends ConsumerState<_McpTile> {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: ExpansionTile(
         initiallyExpanded: s.url.isEmpty,
-        leading: Semantics(
-          label: t('启用 ${s.name.isEmpty ? 'MCP 服务器' : s.name}', 'Enable ${s.name.isEmpty ? 'MCP server' : s.name}'),
-          child: Switch(value: s.enabled, onChanged: (v) => widget.onChanged(_copy()..enabled = v)),
+        // Saved with the character, so a named checkbox rather than a bare switch.
+        leading: Checkbox(
+          semanticLabel: t('启用 ${s.name.isEmpty ? 'MCP 服务器' : s.name}', 'Enable ${s.name.isEmpty ? 'MCP server' : s.name}'),
+          value: s.enabled,
+          onChanged: (v) => widget.onChanged(_copy()..enabled = v ?? false),
         ),
         title: Text(s.name.isEmpty ? t('未命名', 'Unnamed') : s.name),
         subtitle: Text('${s.transport == 'sse' ? 'SSE' : 'Streamable HTTP'} · ${s.url}', maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -500,14 +521,13 @@ class _McpTileState extends ConsumerState<_McpTile> {
           _Field(label: t('名称（工具前缀）', 'Name (tool prefix)'), value: s.name, onChanged: (v) => widget.onChanged(_copy()..name = v)),
           _Field(label: 'URL', value: s.url, onChanged: (v) => widget.onChanged(_copy()..url = v.trim())),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            child: SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 'http', label: Text('Streamable HTTP')),
-                ButtonSegment(value: 'sse', label: Text('SSE')),
-              ],
-              selected: {s.transport},
-              onSelectionChanged: (v) => widget.onChanged(_copy()..transport = v.first),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: ChoiceField<String>(
+              label: t('传输方式', 'Transport'),
+              value: s.transport,
+              minSegmentWidth: 150,
+              options: const [('http', 'Streamable HTTP'), ('sse', 'SSE')],
+              onChanged: (v) => widget.onChanged(_copy()..transport = v),
             ),
           ),
           _Field(
@@ -531,7 +551,8 @@ class _McpTileState extends ConsumerState<_McpTile> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(onPressed: widget.onDelete, child: Text(t('删除', 'Delete'))),
+              TextButton(onPressed: widget.onDelete, child: Text(t('删除服务器', 'Delete server'))),
+              const SizedBox(width: 8),
               FilledButton.tonal(onPressed: _testing ? null : _test, child: Text(_testing ? t('测试中…', 'Testing…') : t('测试', 'Test'))),
               const SizedBox(width: 12),
             ],
@@ -552,8 +573,9 @@ class _ContextTab extends StatelessWidget {
     final ctx = c.context;
     final small = Theme.of(context).textTheme.bodySmall;
     int n(String k, int d) => (ctx[k] as num?)?.toInt() ?? d;
-    return ListView(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+    return FormListView(
+      horizontal: 0,
+      vertical: 8,
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
@@ -565,11 +587,11 @@ class _ContextTab extends StatelessWidget {
             style: small,
           ),
         ),
-        SwitchListTile(
+        CheckboxListTile(
           secondary: const Icon(Icons.compress_rounded),
           title: Text(t('摘要压缩', 'Summary compression')),
           value: c.summarize,
-          onChanged: (v) => touch(() => c.setCompression(summarize: v)),
+          onChanged: (v) => touch(() => c.setCompression(summarize: v ?? false)),
         ),
         if (c.summarize) ...[
           Padding(
@@ -595,11 +617,11 @@ class _ContextTab extends StatelessWidget {
             onChanged: (v) => touch(() => ctx['keep_recent'] = int.tryParse(v) ?? 6),
           ),
         ],
-        SwitchListTile(
+        CheckboxListTile(
           secondary: const Icon(Icons.bolt_rounded),
           title: Text(t('即时压缩', 'Instant compression')),
           value: c.instant,
-          onChanged: (v) => touch(() => c.setCompression(instant: v)),
+          onChanged: (v) => touch(() => c.setCompression(instant: v ?? false)),
         ),
         if (c.instant) ...[
           Padding(
@@ -631,26 +653,27 @@ class _MemoryTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final m = c.memory;
-    return ListView(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+    return FormListView(
+      horizontal: 0,
+      vertical: 8,
       children: [
-        SwitchListTile(
+        CheckboxListTile(
           title: Text(t('启用长期记忆', 'Enable long-term memory')),
           subtitle: Text(t('角色可以通过工具搜索、添加、修改、删除记忆；置顶记忆总是可见。', 'The character can search/add/update/delete memories via tools; pinned ones are always visible.')),
           value: m['enabled'] != false,
-          onChanged: (v) => touch(() => m['enabled'] = v),
+          onChanged: (v) => touch(() => m['enabled'] = v ?? false),
         ),
-        SwitchListTile(
+        CheckboxListTile(
           title: Text(t('空闲时自动整理', 'Auto-extract when idle')),
           subtitle: Text(t('对话空闲一段时间后，用 Fast model 从最近对话中提取记忆。', 'After a chat goes idle, the fast model extracts memories from it.')),
           value: m['auto_scan'] != false,
-          onChanged: (v) => touch(() => m['auto_scan'] = v),
+          onChanged: (v) => touch(() => m['auto_scan'] = v ?? false),
         ),
-        SwitchListTile(
+        CheckboxListTile(
           title: Text(t('共享全局记忆', 'Share global memory')),
           subtitle: Text(t('可以读写所有角色共享的关于你的记忆。', 'Read/write memories about you shared by all characters.')),
           value: m['share_global'] != false,
-          onChanged: (v) => touch(() => m['share_global'] = v),
+          onChanged: (v) => touch(() => m['share_global'] = v ?? false),
         ),
         if (c.id.isNotEmpty)
           ListTile(

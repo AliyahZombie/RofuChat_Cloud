@@ -48,39 +48,51 @@ class _MemoryPageState extends ConsumerState<MemoryPage> {
     var pinned = m?.pinned ?? false;
     var scope = m == null ? (_filter == null || _filter == 'global' ? 'global' : _filter!) : (m.characterId ?? 'global');
     final chars = ref.read(charactersProvider).value ?? const <Character>[];
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => StatefulBuilder(
-        builder: (c, set) => AlertDialog(
-          title: Text(m == null ? t('新增记忆', 'New memory') : t('编辑记忆', 'Edit memory')),
-          content: SizedBox(
-            width: 480,
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(controller: content, maxLines: 5, minLines: 2, autofocus: true, decoration: InputDecoration(labelText: t('内容', 'Content'))),
-              const SizedBox(height: 8),
-              TextField(controller: tags, decoration: InputDecoration(labelText: t('标签（逗号分隔）', 'Tags (comma separated)'))),
-              const SizedBox(height: 8),
-              if (m == null)
-                DropdownButtonFormField<String>(
-                  initialValue: scope,
-                  decoration: InputDecoration(labelText: t('归属', 'Scope')),
-                  items: [
-                    DropdownMenuItem(value: 'global', child: Text(t('全局（所有角色）', 'Global (all characters)'))),
-                    for (final ch in chars) DropdownMenuItem(value: ch.id, child: Text(ch.name)),
-                  ],
-                  onChanged: (v) => set(() => scope = v ?? 'global'),
-                ),
-              SwitchListTile(contentPadding: EdgeInsets.zero, title: Text(t('置顶（总是注入系统提示）', 'Pinned (always in system prompt)')), value: pinned, onChanged: (v) => set(() => pinned = v)),
-            ]),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(c, false), child: Text(t('取消', 'Cancel'))),
-            FilledButton(onPressed: () => Navigator.pop(c, true), child: Text(t('保存', 'Save'))),
-          ],
+    String? contentErr;
+    final ok = await showEditorDialog(
+      context,
+      title: m == null ? t('新增记忆', 'New memory') : t('编辑记忆', 'Edit memory'),
+      ok: t('保存', 'Save'),
+      validate: () {
+        contentErr = content.text.trim().isEmpty ? t('请填写内容', 'Content is required') : null;
+        return contentErr == null;
+      },
+      body: (c, set) => Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        TextField(
+          controller: content,
+          maxLines: 8,
+          minLines: 3,
+          autofocus: true,
+          decoration: InputDecoration(labelText: t('内容', 'Content'), errorText: contentErr, alignLabelWithHint: true),
         ),
-      ),
+        const SizedBox(height: 16),
+        TextField(controller: tags, decoration: InputDecoration(labelText: t('标签（逗号分隔）', 'Tags (comma separated)'))),
+        if (m == null) ...[
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (c, box) => DropdownMenu<String>(
+              width: box.maxWidth,
+              label: Text(t('归属', 'Scope')),
+              initialSelection: scope,
+              dropdownMenuEntries: [
+                DropdownMenuEntry(value: 'global', label: t('全局（所有角色）', 'Global (all characters)')),
+                for (final ch in chars) DropdownMenuEntry(value: ch.id, label: ch.name),
+              ],
+              onSelected: (v) => set(() => scope = v ?? 'global'),
+            ),
+          ),
+        ],
+        const SizedBox(height: 8),
+        // Saved with the dialog, so a checkbox rather than an immediate switch.
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          title: Text(t('置顶（总是注入系统提示）', 'Pinned (always in system prompt)')),
+          value: pinned,
+          onChanged: (v) => set(() => pinned = v ?? false),
+        ),
+      ]),
     );
-    if (ok != true) return;
+    if (!ok) return;
     final body = {
       ...?m?.json,
       'content': content.text.trim(),
@@ -113,32 +125,39 @@ class _MemoryPageState extends ConsumerState<MemoryPage> {
       floatingActionButton: watch ? null : FloatingActionButton(tooltip: t('新增记忆', 'New memory'), onPressed: () => _edit(null), child: const Icon(Icons.add)),
       body: Column(children: [
         if (!watch)
+          // Search and scope: side by side when there is room (the scope menu bounded), stacked
+          // on compact widths so a long character name can never squeeze the search field.
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-            child: Row(children: [
-              Expanded(
-                child: TextField(
-                  decoration: InputDecoration(prefixIcon: const Icon(Icons.search), hintText: t('搜索记忆', 'Search memory')),
-                  onSubmitted: (v) {
-                    _q = v.trim();
-                    _load();
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              DropdownButton<String?>(
-                value: _filter,
-                items: [
-                  DropdownMenuItem(value: null, child: Text(t('全部', 'All'))),
-                  DropdownMenuItem(value: 'global', child: Text(t('全局', 'Global'))),
-                  for (final c in chars) DropdownMenuItem(value: c.id, child: Text(c.name)),
-                ],
-                onChanged: (v) {
-                  _filter = v;
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: LayoutBuilder(builder: (context, box) {
+              final wide = box.maxWidth >= 600;
+              final search = TextField(
+                decoration: InputDecoration(prefixIcon: const Icon(Icons.search), hintText: t('搜索记忆', 'Search memory')),
+                textInputAction: TextInputAction.search,
+                onSubmitted: (v) {
+                  _q = v.trim();
                   _load();
                 },
-              ),
-            ]),
+              );
+              // A typed sentinel stands for "All" (null filter).
+              final scope = DropdownMenu<String>(
+                width: wide ? 240 : box.maxWidth,
+                label: Text(t('范围', 'Scope')),
+                initialSelection: _filter ?? '*',
+                dropdownMenuEntries: [
+                  DropdownMenuEntry(value: '*', label: t('全部', 'All')),
+                  DropdownMenuEntry(value: 'global', label: t('全局', 'Global')),
+                  for (final c in chars) DropdownMenuEntry(value: c.id, label: c.name),
+                ],
+                onSelected: (v) {
+                  _filter = v == '*' ? null : v;
+                  _load();
+                },
+              );
+              return wide
+                  ? Row(children: [Expanded(child: search), const SizedBox(width: 12), scope])
+                  : Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [search, const SizedBox(height: 12), scope]);
+            }),
           ),
         Expanded(
           child: _error != null
@@ -160,10 +179,9 @@ class _MemoryPageState extends ConsumerState<MemoryPage> {
                                 leading: Icon(
                                   m.source == 'agent' ? Icons.smart_toy_outlined : (m.source == 'scan' ? Icons.auto_awesome_outlined : Icons.person_outline),
                                   color: scheme.onSurfaceVariant,
-                                  size: 20,
                                 ),
                                 title: Text(m.content),
-                                subtitle: Text([scopeName(m.characterId), if (m.tags.isNotEmpty) m.tags.map((e) => '#$e').join(' '), fmtTime(m.updatedAt)].join(' · '), style: Theme.of(context).textTheme.labelSmall),
+                                subtitle: Text([scopeName(m.characterId), if (m.tags.isNotEmpty) m.tags.map((e) => '#$e').join(' '), fmtTime(m.updatedAt)].join(' · ')),
                                 trailing: watch
                                     ? null
                                     : Row(mainAxisSize: MainAxisSize.min, children: [

@@ -43,25 +43,41 @@ class _AdminPageState extends ConsumerState<AdminPage> {
   Future<void> _create() async {
     final u = TextEditingController();
     final p = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: Text(t('新建用户', 'New user')),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(controller: u, decoration: InputDecoration(labelText: t('用户名', 'Username'))),
-          const SizedBox(height: 8),
-          TextField(controller: p, obscureText: true, decoration: InputDecoration(labelText: t('密码', 'Password'))),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: Text(t('取消', 'Cancel'))),
-          FilledButton(onPressed: () => Navigator.pop(c, true), child: Text(t('创建', 'Create'))),
-        ],
-      ),
+    String? uErr, pErr;
+    final ok = await showEditorDialog(
+      context,
+      title: t('新建用户', 'New user'),
+      ok: t('创建', 'Create'),
+      validate: () {
+        uErr = u.text.trim().isEmpty ? t('请填写用户名', 'Username is required') : null;
+        pErr = p.text.isEmpty ? t('请填写密码', 'Password is required') : null;
+        return uErr == null && pErr == null;
+      },
+      body: (c, set) => Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(controller: u, autofocus: true, decoration: InputDecoration(labelText: t('用户名', 'Username'), errorText: uErr)),
+        const SizedBox(height: 16),
+        TextField(controller: p, obscureText: true, decoration: InputDecoration(labelText: t('密码', 'Password'), errorText: pErr)),
+      ]),
     );
-    if (ok != true) return;
+    if (!ok) return;
     try {
       await ref.read(apiProvider).post('/api/admin/users', {'username': u.text.trim(), 'password': p.text});
       await _load();
+    } catch (e) {
+      if (mounted) showError(context, e);
+    }
+  }
+
+  Future<void> _userAction(User u, String v) async {
+    final api = ref.read(apiProvider);
+    try {
+      if (v == 'pw') {
+        final p = await promptText(context, t('重置 ${u.username} 的密码', 'Reset password for ${u.username}'), label: t('新密码', 'New password'), ok: t('重置密码', 'Reset password'));
+        if (p != null && p.isNotEmpty) await api.post('/api/admin/users/${u.id}/password', {'password': p});
+      } else if (v == 'del' && mounted && await confirm(context, t('删除用户 ${u.username} 及其全部数据？', 'Delete ${u.username} and all their data?'), ok: t('删除', 'Delete'))) {
+        await api.delete('/api/admin/users/${u.id}');
+        await _load();
+      }
     } catch (e) {
       if (mounted) showError(context, e);
     }
@@ -97,24 +113,11 @@ class _AdminPageState extends ConsumerState<AdminPage> {
                       leading: Icon(u.isRoot ? Icons.shield_outlined : Icons.person_outline),
                       title: Text(u.username),
                       subtitle: Text(fmtTime(u.createdAt)),
-                      trailing: PopupMenuButton<String>(
-                        onSelected: (v) async {
-                          final api = ref.read(apiProvider);
-                          try {
-                            if (v == 'pw') {
-                              final p = await promptText(context, t('重置 ${u.username} 的密码', 'Reset password for ${u.username}'), label: t('新密码', 'New password'), ok: t('重置密码', 'Reset password'));
-                              if (p != null && p.isNotEmpty) await api.post('/api/admin/users/${u.id}/password', {'password': p});
-                            } else if (v == 'del' && await confirm(context, t('删除用户 ${u.username} 及其全部数据？', 'Delete ${u.username} and all their data?'), ok: t('删除', 'Delete'))) {
-                              await api.delete('/api/admin/users/${u.id}');
-                              await _load();
-                            }
-                          } catch (e) {
-                            if (context.mounted) showError(context, e);
-                          }
-                        },
-                        itemBuilder: (_) => [
-                          PopupMenuItem(value: 'pw', child: Text(t('重置密码', 'Reset password'))),
-                          if (!u.isRoot) PopupMenuItem(value: 'del', child: Text(t('删除', 'Delete'))),
+                      trailing: OverflowMenu(
+                        tooltip: t('${u.username} 的操作', 'Actions for ${u.username}'),
+                        entries: [
+                          MenuEntry(t('重置密码', 'Reset password'), icon: Icons.password_rounded, onPressed: () => _userAction(u, 'pw')),
+                          if (!u.isRoot) MenuEntry(t('删除', 'Delete'), icon: Icons.delete_outline, danger: true, onPressed: () => _userAction(u, 'del')),
                         ],
                       ),
                     ),

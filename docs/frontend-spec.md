@@ -87,6 +87,8 @@ Android 需声明网络权限；内置后端绑定 `127.0.0.1`。Linux/Windows �
 - **外观**：主题模式（跟随系统/浅色/深色/纯黑 AMOLED）、配色（动态取色 Android 12+、若干预设种子色：靛蓝、樱粉、薄荷、琥珀、石板灰、自定义色）、字体大小、消息密度（紧凑/标准）、聊天宽度（铺满/居中）、显示头像、显示 token indicator、Enter 发送。外观设置存本地并同步到 `UserSettings.client`。
 - **关于**：版本、后端版本、开源许可。
 
+- **表单约定（M3）**：需点“保存”才生效的编辑页（角色、供应商、模型、工具、记忆编辑）用复选框；立即生效的设置用开关。字段错误在字段下方以 errorText 常驻显示，不只用 snackbar。多字段编辑在紧凑宽度用全屏对话框，较宽窗口用可滚动的基本对话框（两个文字按钮、确认按钮写明动作）。表单与设置在大窗口限制为易读宽度（≤ 720dp）；分段按钮放不下时（手表、窄屏）改为下拉菜单。
+
 ### 5.1 模型图标
 内置一套 SVG/PNG 图标资源（键与后端 4.2.1 一致：openai、claude、gemini、deepseek、qwen、zhipu、moonshot、grok、meta、mistral、doubao、minimax、wenxin、hunyuan、yi、cohere、microsoft、aws、stepfun、baichuan、spark、perplexity、nvidia、openrouter、siliconflow、ollama …），可从 lobehub icons（MIT）获取并打包进 assets（不在运行时联网加载）；无匹配时显示模型名首字母的彩色圆形头像（颜色由名称 hash 决定）。
 

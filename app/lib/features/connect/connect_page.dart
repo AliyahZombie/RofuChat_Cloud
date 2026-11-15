@@ -16,6 +16,16 @@ class ConnectPage extends ConsumerStatefulWidget {
 
 class _ConnectPageState extends ConsumerState<ConnectPage> {
   final _url = TextEditingController();
+  String? _urlError;
+
+  void _connect(AppCtl ctl) {
+    if (_url.text.trim().isEmpty) {
+      setState(() => _urlError = t('请填写服务器地址', 'Enter the server URL'));
+      return;
+    }
+    setState(() => _urlError = null);
+    ctl.addRemote(_url.text);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -53,11 +63,11 @@ class _ConnectPageState extends ConsumerState<ConnectPage> {
               TextField(
                 controller: _url,
                 keyboardType: TextInputType.url,
-                decoration: InputDecoration(labelText: t('服务器地址', 'Server URL'), hintText: 'https://rofu.example.com', prefixIcon: const Icon(Icons.dns_outlined)),
-                onSubmitted: (v) => ctl.addRemote(v),
+                decoration: InputDecoration(labelText: t('服务器地址', 'Server URL'), hintText: 'https://rofu.example.com', prefixIcon: const Icon(Icons.dns_outlined), errorText: _urlError),
+                onSubmitted: (_) => _connect(ctl),
               ),
               const SizedBox(height: 12),
-              FilledButton.tonal(onPressed: () => ctl.addRemote(_url.text), child: Text(t('连接服务器', 'Connect'))),
+              FilledButton.tonal(onPressed: () => _connect(ctl), child: Text(t('连接服务器', 'Connect'))),
               if (remotes.isNotEmpty) ...[
                 SectionTitle(t('已保存的服务器', 'Saved servers')),
                 for (final c in remotes)

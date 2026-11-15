@@ -59,6 +59,8 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
   bool _showKey = false;
   bool _busy = false;
   String? _test;
+  bool _testOk = true;
+  String? _nameError, _urlError;
 
   void _collect() {
     p.name = _name.text.trim();
@@ -74,10 +76,12 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
 
   Future<bool> _save({bool pop = true}) async {
     _collect();
-    if (p.name.isEmpty || p.baseUrl.isEmpty) {
-      showError(context, t('请填写名称和 Base URL', 'Name and Base URL are required'));
-      return false;
-    }
+    // Inline, persistent field errors (M3 text field error text) instead of a snackbar.
+    setState(() {
+      _nameError = p.name.isEmpty ? t('请填写名称', 'Name is required') : null;
+      _urlError = p.baseUrl.isEmpty ? t('请填写 Base URL', 'Base URL is required') : null;
+    });
+    if (_nameError != null || _urlError != null) return false;
     setState(() => _busy = true);
     try {
       final saved = await ref.read(providersProvider.notifier).save(p);
@@ -189,10 +193,12 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
     try {
       // The backend expects the upstream model name, not our config id.
       final r = await ref.read(apiProvider).post('/api/providers/${p.id}/test', {'model_id': model.modelId}) as Map;
+      _testOk = r['ok'] == true;
       _test = r['ok'] == true
           ? t('${model.name} 成功 · ${r['latency_ms']}ms · ${r['reply']}', '${model.name} OK · ${r['latency_ms']}ms · ${r['reply']}')
           : '${model.name} ${t('失败', 'failed')}: ${r['error']}';
     } catch (e) {
+      _testOk = false;
       _test = '${model.name} ${t('失败', 'failed')}: $e';
     }
     if (mounted) setState(() => _busy = false);
@@ -220,17 +226,19 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
           Padding(padding: const EdgeInsets.only(right: 8), child: FilledButton(onPressed: _busy ? null : () => _save(), child: Text(t('保存', 'Save')))),
         ],
       ),
-      body: ListView(padding: const EdgeInsets.all(16), children: [
-        TextField(controller: _name, decoration: InputDecoration(labelText: t('名称', 'Name'), hintText: 'OpenRouter')),
-        const SizedBox(height: 12),
-        SegmentedButton<String>(
-          segments: const [ButtonSegment(value: 'openai', label: Text('OpenAI Compatible')), ButtonSegment(value: 'responses', label: Text('Responses API'))],
-          selected: {p.kind},
-          onSelectionChanged: (v) => setState(() => p.kind = v.first),
+      body: FormListView(children: [
+        TextField(controller: _name, decoration: InputDecoration(labelText: t('名称', 'Name'), hintText: 'OpenRouter', errorText: _nameError)),
+        const SizedBox(height: 16),
+        ChoiceField<String>(
+          label: t('类型', 'Type'),
+          value: p.kind,
+          minSegmentWidth: 168,
+          options: const [('openai', 'OpenAI Compatible'), ('responses', 'Responses API')],
+          onChanged: (v) => setState(() => p.kind = v),
         ),
-        const SizedBox(height: 12),
-        TextField(controller: _url, keyboardType: TextInputType.url, decoration: const InputDecoration(labelText: 'Base URL', hintText: 'https://api.openai.com/v1')),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
+        TextField(controller: _url, keyboardType: TextInputType.url, decoration: InputDecoration(labelText: 'Base URL', hintText: 'https://api.openai.com/v1', errorText: _urlError)),
+        const SizedBox(height: 16),
         TextField(
           controller: _key,
           obscureText: !_showKey,
@@ -243,11 +251,19 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
             ),
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
         TextField(controller: _headers, maxLines: 3, minLines: 1, decoration: InputDecoration(labelText: t('额外请求头（每行 Key: Value）', 'Extra headers (one "Key: Value" per line)'))),
-        SwitchListTile(contentPadding: EdgeInsets.zero, title: Text(t('启用', 'Enabled')), value: p.enabled, onChanged: (v) => setState(() => p.enabled = v)),
-        if (_busy) const LinearProgressIndicator(),
-        if (_test != null) Padding(padding: const EdgeInsets.symmetric(vertical: 6), child: Text(_test!, style: Theme.of(context).textTheme.bodySmall)),
+        // Saved with the form, so a checkbox (M3: switches act immediately).
+        CheckboxListTile(contentPadding: EdgeInsets.zero, title: Text(t('启用', 'Enabled')), value: p.enabled, onChanged: (v) => setState(() => p.enabled = v ?? false)),
+        if (_busy) LinearProgressIndicator(semanticsLabel: t('处理中', 'Working')),
+        if (_test != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Semantics(
+              liveRegion: true,
+              child: Text(_test!, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: _testOk ? null : Theme.of(context).colorScheme.error)),
+            ),
+          ),
         Row(children: [
           Expanded(child: Text(t('模型（${models.length}）', 'Models (${models.length})'), style: Theme.of(context).textTheme.titleMedium)),
           IconButton(
@@ -269,7 +285,7 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
           else
             TextButton.icon(onPressed: _busy ? null : () => _testProvider(), icon: const Icon(Icons.network_check), label: Text(t('测试', 'Test'))),
         ]),
-        Wrap(spacing: 8, children: [
+        Wrap(spacing: 8, runSpacing: 8, children: [
           FilledButton.tonalIcon(onPressed: _busy ? null : _fetchModels, icon: const Icon(Icons.cloud_download_outlined), label: Text(t('获取模型列表', 'Fetch models'))),
           OutlinedButton.icon(onPressed: _busy ? null : _addManual, icon: const Icon(Icons.add), label: Text(t('手动添加', 'Add manually'))),
         ]),
@@ -280,7 +296,7 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
             leading: ModelIcon(iconKey: m.icon, name: m.name, size: 32),
             title: Text(m.name),
             subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              if (m.name != m.modelId) Text(m.modelId, style: Theme.of(context).textTheme.labelSmall),
+              if (m.name != m.modelId) Text(m.modelId),
               ModelTags(model: m),
             ]),
             trailing: IconButton(
@@ -311,7 +327,10 @@ class _RemoteModelsSheetState extends State<_RemoteModelsSheet> {
   Widget build(BuildContext context) {
     final q = _q.toLowerCase();
     final list = widget.models.where((m) => q.isEmpty || m.modelId.toLowerCase().contains(q) || m.name.toLowerCase().contains(q)).toList();
-    return DraggableScrollableSheet(
+    // Keeps its search row above the keyboard; the list scrolls under it.
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: DraggableScrollableSheet(
       expand: false,
       initialChildSize: 0.85,
       maxChildSize: 0.95,
@@ -335,7 +354,6 @@ class _RemoteModelsSheetState extends State<_RemoteModelsSheet> {
               final m = list[i];
               final have = widget.existing.contains(m.modelId);
               return CheckboxListTile(
-                dense: true,
                 value: have || _sel.contains(m.modelId),
                 onChanged: have ? null : (v) => setState(() => v == true ? _sel.add(m.modelId) : _sel.remove(m.modelId)),
                 secondary: ModelIcon(iconKey: m.icon, name: m.name, size: 28),
@@ -346,6 +364,7 @@ class _RemoteModelsSheetState extends State<_RemoteModelsSheet> {
           ),
         ),
       ]),
+      ),
     );
   }
 }
@@ -404,7 +423,7 @@ class _ModelEditorPageState extends ConsumerState<ModelEditorPage> {
           Padding(padding: const EdgeInsets.only(right: 8), child: FilledButton(onPressed: _save, child: Text(t('保存', 'Save')))),
         ],
       ),
-      body: ListView(padding: const EdgeInsets.all(16), children: [
+      body: FormListView(children: [
         TextField(controller: _id, decoration: InputDecoration(labelText: t('模型 ID（发送给 API）', 'Model ID (sent to the API)'))),
         const SizedBox(height: 12),
         TextField(controller: _name, decoration: InputDecoration(labelText: t('显示名', 'Display name'))),
@@ -414,9 +433,10 @@ class _ModelEditorPageState extends ConsumerState<ModelEditorPage> {
           const SizedBox(width: 12),
           Expanded(child: TextField(controller: _out, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: t('最大输出（0=未知）', 'Max output (0=unknown)')))),
         ]),
-        SwitchListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.image_outlined), title: Text(t('多模态（图片输入）', 'Vision (image input)')), value: m.vision, onChanged: (v) => setState(() => m.vision = v)),
-        SwitchListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.build_outlined), title: Text(t('工具调用', 'Tool calling')), value: m.toolCall, onChanged: (v) => setState(() => m.toolCall = v)),
-        SwitchListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.lightbulb_outline), title: Text(t('推理 / 思考', 'Reasoning')), value: m.reasoning, onChanged: (v) => setState(() => m.reasoning = v)),
+        // Capabilities are saved with the form: checkboxes, not switches.
+        CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.image_outlined), title: Text(t('多模态（图片输入）', 'Vision (image input)')), value: m.vision, onChanged: (v) => setState(() => m.vision = v ?? false)),
+        CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.build_outlined), title: Text(t('工具调用', 'Tool calling')), value: m.toolCall, onChanged: (v) => setState(() => m.toolCall = v ?? false)),
+        CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.lightbulb_outline), title: Text(t('推理 / 思考', 'Reasoning')), value: m.reasoning, onChanged: (v) => setState(() => m.reasoning = v ?? false)),
         SectionTitle(t('图标', 'Icon')),
         Wrap(spacing: 8, runSpacing: 8, children: [
           for (final k in ['', ...modelIconKeys])

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/builtin_tools.dart';
 import '../../core/format.dart';
 import '../../core/i18n.dart';
+import '../../core/theme.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/common.dart';
@@ -17,10 +18,9 @@ class ToolsPage extends ConsumerWidget {
     final tools = ref.watch(toolsProvider);
     return Scaffold(
       appBar: AppBar(title: Text(t('本地工具', 'Local tools')), actions: [
-        PopupMenuButton<String>(
-          onSelected: (_) => ref.read(toolsProvider.notifier).restoreBuiltins(),
-          itemBuilder: (_) => [PopupMenuItem(value: 'restore', child: Text(t('恢复内置工具', 'Restore built-in tools')))],
-        ),
+        OverflowMenu(entries: [
+          MenuEntry(t('恢复内置工具', 'Restore built-in tools'), icon: Icons.restore_rounded, onPressed: () => ref.read(toolsProvider.notifier).restoreBuiltins()),
+        ]),
       ]),
       floatingActionButton: FloatingActionButton(
         tooltip: t('新建工具', 'New tool'),
@@ -43,6 +43,7 @@ class ToolsPage extends ConsumerWidget {
                     leading: Icon(builtinToolNames.contains(tool.name) ? Icons.casino_outlined : Icons.code_rounded, color: tool.enabled ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.onSurfaceVariant),
                     title: Text(tool.name),
                     subtitle: Text(tool.description, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    // Immediate setting: a switch is the right control here.
                     trailing: Switch(
                       value: tool.enabled,
                       onChanged: (v) => ref.read(toolsProvider.notifier).save(LocalTool(tool.json)..enabled = v),
@@ -70,6 +71,7 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
   late final _code = TextEditingController(text: tool.code);
   final _args = TextEditingController(text: '{}');
   String? _paramsError;
+  String? _nameError;
   Map<String, dynamic>? _run;
   bool _running = false;
 
@@ -93,9 +95,10 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
       return false;
     }
     if (!RegExp(r'^[A-Za-z0-9_-]{1,64}$').hasMatch(tool.name)) {
-      showError(context, t('名称只能包含字母、数字、_ 和 -', 'Name may only contain letters, digits, _ and -'));
+      setState(() => _nameError = t('名称只能包含字母、数字、_ 和 -（1–64 个）', 'Use 1–64 letters, digits, _ or -'));
       return false;
     }
+    setState(() => _nameError = null);
     return true;
   }
 
@@ -135,7 +138,7 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
   Widget build(BuildContext context) {
     final models = ref.watch(modelsProvider).value ?? const <ModelCfg>[];
     final scheme = Theme.of(context).colorScheme;
-    const mono = TextStyle(fontFamily: 'monospace', fontSize: 13, height: 1.4);
+    final mono = AppTypography.code(context);
     return Scaffold(
       appBar: AppBar(
         title: Text(tool.id.isEmpty ? t('新建工具', 'New tool') : tool.name),
@@ -154,8 +157,8 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
           Padding(padding: const EdgeInsets.only(right: 8), child: FilledButton(onPressed: _save, child: Text(t('保存', 'Save')))),
         ],
       ),
-      body: ListView(padding: const EdgeInsets.all(16), children: [
-        TextField(controller: _name, decoration: InputDecoration(labelText: t('名称（模型看到的函数名）', 'Name (function name the model sees)'))),
+      body: FormListView(children: [
+        TextField(controller: _name, decoration: InputDecoration(labelText: t('名称（模型看到的函数名）', 'Name (function name the model sees)'), errorText: _nameError)),
         const SizedBox(height: 12),
         TextField(controller: _desc, maxLines: 3, minLines: 1, decoration: InputDecoration(labelText: t('描述（告诉模型何时使用）', 'Description (tell the model when to use it)'))),
         const SizedBox(height: 12),
@@ -167,20 +170,24 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
           decoration: InputDecoration(labelText: t('参数 JSON Schema', 'Parameters JSON Schema'), errorText: _paramsError, alignLabelWithHint: true),
         ),
         const SizedBox(height: 12),
-        Container(
-          decoration: BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(8)),
-          padding: const EdgeInsets.all(8),
-          child: TextField(
-            controller: _code,
-            maxLines: null,
-            minLines: 12,
-            style: mono,
-            decoration: InputDecoration(border: InputBorder.none, labelText: t('代码（定义 function main(args)）', 'Code (define function main(args))'), alignLabelWithHint: true),
+        // A conventional filled M3 field: focus, hover and error states come from the theme.
+        TextField(
+          controller: _code,
+          maxLines: null,
+          minLines: 12,
+          style: mono,
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: scheme.surfaceContainerHigh,
+            border: const UnderlineInputBorder(),
+            labelText: t('代码（定义 function main(args)）', 'Code (define function main(args))'),
+            alignLabelWithHint: true,
           ),
         ),
-        SwitchListTile(contentPadding: EdgeInsets.zero, title: Text(t('启用', 'Enabled')), value: tool.enabled, onChanged: (v) => setState(() => tool.enabled = v)),
+        // Saved with the form, so a checkbox (M3: switches act immediately).
+        CheckboxListTile(contentPadding: EdgeInsets.zero, title: Text(t('启用', 'Enabled')), value: tool.enabled, onChanged: (v) => setState(() => tool.enabled = v ?? false)),
         SectionTitle(t('启用的模型（不选 = 所有模型）', 'Enabled for models (none = all)')),
-        Wrap(spacing: 6, runSpacing: 6, children: [
+        Wrap(spacing: 8, runSpacing: 8, children: [
           for (final m in models)
             FilterChip(
               avatar: ModelIcon(iconKey: m.icon, name: m.name, size: 18),
@@ -199,7 +206,7 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
         if (_run != null)
           Container(
             margin: const EdgeInsets.only(top: 8),
-            padding: const EdgeInsets.all(10),
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: _run!['is_error'] == true ? scheme.errorContainer : scheme.surfaceContainerHigh,
               borderRadius: BorderRadius.circular(8),
@@ -210,7 +217,8 @@ class _ToolEditorPageState extends ConsumerState<ToolEditorPage> {
                 '${_run!['result']}',
                 if (((_run!['logs'] as List?) ?? const []).isNotEmpty) '\nconsole:\n${(_run!['logs'] as List).join('\n')}',
               ].join('\n'),
-              style: mono,
+              // Paired foreground for the container role.
+              style: mono.copyWith(color: _run!['is_error'] == true ? scheme.onErrorContainer : scheme.onSurface),
             ),
           ),
         const SizedBox(height: 40),
