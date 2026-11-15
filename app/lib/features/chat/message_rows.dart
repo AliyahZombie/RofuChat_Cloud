@@ -6,8 +6,10 @@ import 'package:md_single_block_renderer/md_single_block_renderer.dart';
 
 import '../../core/format.dart';
 import '../../core/i18n.dart';
+import '../../core/theme.dart';
 import '../../core/tokens.dart';
 import '../../models/models.dart';
+import '../../core/form_factor.dart';
 import '../../widgets/motion.dart';
 
 /// A chat list item. Messages are flattened into rows so that every markdown block is its
@@ -149,6 +151,14 @@ String closeStreamingMarkdown(String text) {
 
 // ------------------------------------------------------------------ widgets
 
+/// The chat body text role: M3 bodyLarge (16sp) on phones/desktop, the named 13sp watch base
+/// (frontend-spec §4) on watches, both multiplied by the user's chat font size. Composes with
+/// the platform TextScaler.
+TextStyle chatBody(BuildContext context) {
+  final role = Theme.of(context).textTheme.bodyLarge!;
+  return AppTypography.chat(context, context.isWatch ? role.copyWith(fontSize: 13) : role);
+}
+
 class UserBubble extends StatelessWidget {
   final Message msg;
   final String userName;
@@ -170,13 +180,13 @@ class UserBubble extends StatelessWidget {
     return Opacity(
       opacity: msg.visible ? 1 : kExcludedOpacity,
       child: Padding(
-        padding: EdgeInsets.only(top: compact ? 6 : 10, bottom: 2),
+        padding: EdgeInsets.only(top: compact ? Insets.x2 : Insets.x3),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             if (showName)
               Padding(
-                padding: const EdgeInsets.only(bottom: 4, right: 4),
+                padding: const EdgeInsets.only(bottom: Insets.x1, right: Insets.x1),
                 child: Text(userName, style: text.labelMedium?.copyWith(color: scheme.onSurfaceVariant)),
               ),
             if (msg.images.isNotEmpty)
@@ -197,11 +207,11 @@ class UserBubble extends StatelessWidget {
                 onSecondaryTapUp: (d) => onMore(d.globalPosition),
                 child: Container(
                   constraints: BoxConstraints(maxWidth: box.maxWidth * maxWidthFactor),
-                  padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 16, vertical: compact ? 8 : 10),
-                  decoration: BoxDecoration(color: scheme.primaryContainer, borderRadius: BorderRadius.circular(20)),
+                  padding: EdgeInsets.symmetric(horizontal: compact ? Insets.x3 : Insets.x4, vertical: compact ? Insets.x2 : Insets.x3),
+                  decoration: BoxDecoration(color: scheme.primaryContainer, borderRadius: Corners.bubble),
                   // Plain Text: the chat's SelectionArea still selects it by dragging, while
                   // long press / secondary click reach the bubble's action dispatch.
-                  child: Text(msg.content, style: text.bodyLarge?.copyWith(color: scheme.onPrimaryContainer, height: 1.35)),
+                  child: Text(msg.content, style: chatBody(context).copyWith(color: scheme.onPrimaryContainer)),
                 ),
               ),
               ),
@@ -268,7 +278,7 @@ class _Thumb extends StatelessWidget {
         width: 96,
         height: 96,
         child: InkWell(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: Corners.rSm,
           onTap: () => showDialog(
             context: context,
             builder: (c) => Dialog(
@@ -289,7 +299,7 @@ class _Thumb extends StatelessWidget {
           ),
           child: Semantics(
             label: t('查看图片', 'View image'),
-            child: ClipRRect(borderRadius: BorderRadius.circular(8), child: SizedBox(width: 96, height: 96, child: img)),
+            child: ClipRRect(borderRadius: Corners.rSm, child: SizedBox(width: 96, height: 96, child: img)),
           ),
         ),
       ),
@@ -368,10 +378,14 @@ class _StepsCardState extends State<StepsCard> {
     final steps = widget.steps;
     final folds = steps.length > 2;
     final hidden = steps.length - 1;
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      decoration: BoxDecoration(color: scheme.surfaceContainerHigh, borderRadius: BorderRadius.circular(18)),
-      padding: const EdgeInsets.symmetric(vertical: 4),
+    // A filled card (product override: surfaceContainerHigh, frontend-spec §10) whose
+    // headers ink directly on the card surface.
+    return Card.filled(
+      color: scheme.surfaceContainerHigh,
+      margin: const EdgeInsets.symmetric(vertical: Insets.x1),
+      shape: const RoundedRectangleBorder(borderRadius: Corners.rLg),
+      child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: Insets.x1),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -384,10 +398,10 @@ class _StepsCardState extends State<StepsCard> {
               child: ConstrainedBox(
                 constraints: const BoxConstraints(minHeight: 48),
                 child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: Insets.x4, vertical: Insets.x2),
                 child: Row(children: [
                   TurnChevron(open: _expanded, size: 20, color: scheme.primary),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: Insets.x3),
                   Expanded(
                     child: Text(_expanded ? t('收起步骤', 'Hide steps') : t('显示另外 $hidden 个步骤', 'Show $hidden more steps'),
                         maxLines: 1, overflow: TextOverflow.ellipsis, style: text.labelLarge?.copyWith(color: scheme.primary)),
@@ -403,6 +417,7 @@ class _StepsCardState extends State<StepsCard> {
             else
               _step(context, steps[i], i, widget.live && i == steps.length - 1),
         ],
+      ),
       ),
     );
   }
@@ -425,19 +440,20 @@ class _StepsCardState extends State<StepsCard> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: 48),
             child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: widget.compact ? 8 : 14, vertical: 6),
+            padding: EdgeInsets.symmetric(horizontal: widget.compact ? Insets.x2 : Insets.x4, vertical: Insets.x2),
             child: Row(children: [
               if (running)
-                SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, semanticsLabel: t('工具运行中', 'Tool running')))
+                // Inline step glyph slot (20dp, a documented exception to the 24dp spinner).
+                SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, semanticsLabel: t('工具运行中', 'Tool running')))
               else
-                Icon(isTool ? (s.isError ? Icons.error_outline : Icons.build_circle_outlined) : Icons.lightbulb_outline,
-                    size: 18, color: s.isError ? scheme.error : scheme.onSurfaceVariant),
+                Icon(isTool ? (s.isError ? Icons.error_outline_rounded : Icons.build_circle_outlined) : Icons.lightbulb_outline_rounded,
+                    size: 20, color: s.isError ? scheme.error : scheme.onSurfaceVariant),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(_title(s, live), style: text.bodyMedium, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  Text(_title(s, live), style: AppTypography.chat(context, text.bodyMedium), maxLines: 1, overflow: TextOverflow.ellipsis),
                   if (sub.isNotEmpty && !widget.compact)
-                    Text(sub, style: text.bodySmall?.copyWith(color: scheme.primary), maxLines: 2, overflow: TextOverflow.ellipsis),
+                    Text(sub, style: AppTypography.chat(context, text.bodySmall).copyWith(color: scheme.primary), maxLines: 2, overflow: TextOverflow.ellipsis),
                 ]),
               ),
               if (isTool && !running) Text(fmtDuration(s.durationMs), style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
@@ -450,18 +466,18 @@ class _StepsCardState extends State<StepsCard> {
         Collapsible(
           open: open,
           child: Padding(
-            padding: EdgeInsets.fromLTRB(widget.compact ? 12 : 44, 0, widget.compact ? 8 : 14, 8),
+            padding: EdgeInsets.fromLTRB(widget.compact ? Insets.x3 : Insets.x12, 0, widget.compact ? Insets.x2 : Insets.x4, Insets.x2),
             child: isTool
                 ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(t('参数', 'Arguments'), style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
                     _Mono(_pretty(s.arguments)),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: Insets.x2),
                     Text(t('结果', 'Result'), style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant)),
                     _Mono(s.result ?? t('运行中…', 'Running…'), maxLines: 30),
                   ])
                 : Text(
                     live ? _tail(s.text) : s.text,
-                    style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant, height: 1.4),
+                    style: AppTypography.chat(context, text.bodySmall).copyWith(color: scheme.onSurfaceVariant),
                   ),
           ),
         ),
@@ -491,7 +507,7 @@ class _Mono extends StatelessWidget {
   Widget build(BuildContext context) => SelectableText(
         text,
         maxLines: maxLines,
-        style: TextStyle(fontFamily: 'monospace', fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+        style: AppTypography.code(context, role: AppTypography.chat(context, Theme.of(context).textTheme.bodySmall)).copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
       );
 }
 
@@ -509,34 +525,37 @@ class _SummaryCardState extends State<SummaryCard> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      decoration: BoxDecoration(
-        color: scheme.tertiaryContainer.withValues(alpha: 0.35),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: scheme.tertiary.withValues(alpha: 0.4)),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
+    // Outlined card (surface / onSurface) with a tertiary accent; ink sits on the card.
+    return Card.outlined(
+      margin: const EdgeInsets.symmetric(vertical: Insets.x2),
+      child: Semantics(
+        expanded: _open,
+        child: InkWell(
         onTap: () => setState(() => _open = !_open),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 6, 10),
+          padding: const EdgeInsets.fromLTRB(Insets.x4, Insets.x1, Insets.x1, Insets.x3),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
-              Icon(Icons.compress_rounded, size: 18, color: scheme.tertiary),
-              const SizedBox(width: 8),
+              Icon(Icons.compress_rounded, size: 20, color: scheme.tertiary),
+              const SizedBox(width: Insets.x2),
               Expanded(child: Text(t('上下文已压缩', 'Context compressed'), style: text.labelLarge?.copyWith(color: scheme.tertiary))),
               MiniIconButton(Icons.edit_outlined, t('编辑摘要', 'Edit summary'), widget.onEdit),
               TurnChevron(open: _open, color: scheme.onSurfaceVariant),
+              const SizedBox(width: Insets.x3),
             ]),
-            const SizedBox(height: 4),
             AnimatedSize(
-              duration: const Duration(milliseconds: 260),
-              curve: Curves.easeOutCubic,
+              duration: Motion.of(context, Motion.medium2),
+              curve: Motion.emphasized,
               alignment: Alignment.topCenter,
-              child: Text(widget.msg.content, maxLines: _open ? null : 3, overflow: _open ? null : TextOverflow.ellipsis, style: text.bodySmall?.copyWith(height: 1.4)),
+              child: Text(
+                widget.msg.content,
+                maxLines: _open ? null : 3,
+                overflow: _open ? null : TextOverflow.ellipsis,
+                style: AppTypography.chat(context, text.bodyMedium).copyWith(color: scheme.onSurface),
+              ),
             ),
           ]),
+        ),
         ),
       ),
     );
@@ -556,7 +575,7 @@ class ActualStatusIcon extends StatelessWidget {
     if (pending || msg.actualStatus == 'pending') {
       // Product status dot (frontend-spec §3.1: a tiny pending mark), not a loading row.
       return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 6),
+        padding: const EdgeInsets.symmetric(horizontal: Insets.x2),
         child: SizedBox(
           width: 10,
           height: 10,

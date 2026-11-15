@@ -41,6 +41,7 @@ void _expectTargets(WidgetTester t, Finder f) {
 void main() {
   foundationTests();
   screenTests();
+  chatTests();
 
   for (final platform in [TargetPlatform.android, TargetPlatform.linux, TargetPlatform.windows]) {
     testWidgets('message action buttons are at least 48dp on $platform', (t) async {
@@ -342,4 +343,51 @@ void screenTests() {
     await t.pumpAndSettle();
     expect(find.byType(BottomSheet), findsNothing, reason: 'the last action was reachable');
   });
+}
+
+// ------------------------------------------------------------------ chat (phase 4)
+
+void chatTests() {
+  testWidgets('chat text follows the user font size on every message role', (t) async {
+    await t.pumpWidget(MaterialApp(
+      theme: buildTheme(const Appearance(fontScale: 1.2), Brightness.light),
+      home: Scaffold(
+        body: SizedBox(
+          width: 400,
+          child: Column(children: [
+            UserBubble(msg: _user(), userName: 'A', showName: false, onCopy: () {}, onEdit: () {}, onMore: (_) {}),
+            SummaryCard(msg: Message({'id': 's', 'role': 'summary', 'content': 'summary text', 'parts': {}}), onEdit: () {}),
+          ]),
+        ),
+      ),
+    ));
+    double size(String s) => t.widget<Text>(find.text(s)).style!.fontSize!;
+    expect(size('hello there'), closeTo(16 * 1.2, 0.01));
+    expect(size('summary text'), closeTo(14 * 1.2, 0.01));
+  });
+
+  for (final scale in [1.0, 2.0]) {
+    testWidgets('steps headers keep 48dp targets and nothing overflows at text scale $scale', (t) async {
+      t.view.physicalSize = const Size(360, 800);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      final steps = [
+        Segment({'type': 'reasoning', 'text': 'thinking', 'duration_ms': 400}),
+        Segment({'type': 'tool', 'name': 'search', 'arguments': '{"q":"x"}', 'result': 'ok', 'duration_ms': 30}),
+        Segment({'type': 'tool', 'name': 'memory_add', 'arguments': '{}', 'result': 'ok', 'duration_ms': 3}),
+      ];
+      await t.pumpWidget(MaterialApp(
+        theme: buildTheme(const Appearance(), Brightness.dark),
+        home: MediaQuery(
+          data: MediaQueryData(size: const Size(360, 800), textScaler: TextScaler.linear(scale)),
+          child: Scaffold(body: ListView(padding: const EdgeInsets.all(12), children: [StepsCard(steps: steps, live: false)])),
+        ),
+      ));
+      await t.pumpAndSettle();
+      expect(t.takeException(), isNull);
+      for (final e in find.descendant(of: find.byType(StepsCard), matching: find.byType(InkWell)).evaluate()) {
+        expect((e.renderObject! as RenderBox).size.height, greaterThanOrEqualTo(48));
+      }
+    });
+  }
 }
