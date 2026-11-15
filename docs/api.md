@@ -54,7 +54,7 @@ Missing/unresolvable/disabled fast models, failed calls, or empty cleaned output
 
 ## Message pagination
 
-`GET /api/conversations/{id}/messages` without either `limit` or `max_chars` continues to return the full array, including hidden messages and summaries; a standalone `before_seq` remains ignored for compatibility. Supplying either bound returns a page object with `messages`, `has_more`, `chars` and `bytes`. `limit` is a positive signed 64-bit integer less than `9223372036854775807`; `max_chars` is an unsigned 64-bit integer (including zero). Optional `before_seq` is an exclusive signed 64-bit seq cursor. Invalid pagination values return 400.
+`GET /api/conversations/{id}/messages` without `after_seq`/`around_seq` and without either `limit` or `max_chars` continues to return the full array, including hidden messages and summaries; a standalone `before_seq` remains ignored for compatibility. Supplying either bound returns a page object with `messages`, `has_more`, `chars` and `bytes`. `limit` is a positive signed 64-bit integer less than `9223372036854775807`; `max_chars` is an unsigned 64-bit integer (including zero). Optional `before_seq` is an exclusive signed 64-bit seq cursor. Invalid pagination values return 400.
 
 Messages are selected newest first, strictly before `before_seq` when supplied, and returned in ascending seq order. `max_chars` counts Unicode scalar values (Rust `chars()`) in each message's active `content`, plus `parts.segments` entries of type `reasoning` (`text`) or `tool` (`arguments` and `result`, both stored strings). Text segments are already represented in `content` and are not counted again. Images, metadata, `actual`, inactive swipes and archived branch tails do not contribute. Hidden messages and summaries remain eligible and their content counts normally.
 
@@ -74,6 +74,34 @@ Response (Message objects abbreviated):
 ```json
 {"id":"c1","character_id":"char1","title":"Chat","created_at":0,"updated_at":0,"memory_scanned_seq":0,"generating":false,"message_count":3}
 ```
+
+## Conversation map and seq navigation
+
+`GET /api/conversations/{id}/map?chars=48&q=<text>&limit=N&before_seq=S` returns compact entries in ascending seq order:
+
+```json
+{"items":[{"id":"a1","seq":3000,"role":"assistant","visible":true,"preview":"Hello 中文","chars":10,"has_images":false,"swipe_count":2}],"total":1,"has_more":false}
+```
+
+The map includes hidden messages (`visible:false`) and summaries (`role:"summary",kind:"summary"`). Existing stored `kind` values are preserved. Each entry describes only active contents; it omits full content, actual, reasoning, tool payloads, image metadata/bytes, inactive swipes and archived tails. `has_images` flags a nonempty active `parts.images`; `swipe_count` is at least one. Assistant text is the concatenation of `type:"text"` segments in order; legacy assistants with no segments use `content` with `<think>`/`<thinking>` blocks removed. Reasoning/tool-only assistants have empty previews. Other roles use active `content`.
+
+`chars` in an item is the full visible source text's Unicode scalar count, before preview cleanup/truncation; it excludes reasoning/tools. The query parameter `chars` controls preview size (default 48, signed integer clamped to 8–200). Previews collapse Unicode whitespace/newlines to one space and trim outer whitespace. Heading `#`, quote `>`, unordered/ordered list prefixes at line starts and code-fence delimiter/language lines are removed; code inside fences remains visible. A normal preview contains the first requested number of cleaned Unicode scalars.
+
+A nonempty `q` searches the entire active visible source text using Unicode lowercase substring matching in Rust, identically on SQLite and PostgreSQL. It uses no SQL LIKE expression: `%`, `_`, backslash, quotes and SQL-looking strings are literal text. URL-encode the query. Empty `q` behaves like omission. Only matching items are returned; previews show a window around the first match and use `…` at truncated edges. Window body size is approximately `chars`, expanding when needed to retain a longer match. Search items add `match_start` and `match_len`, measured in Unicode scalars within the **returned preview**, including any leading ellipsis. Highlighting follows the cleaned representation (e.g. matched whitespace collapses); a match entirely in removed markdown has length zero. Search covers the original source, so a newline query can match before preview whitespace is collapsed. Lowercase expansions are mapped back to original scalar offsets. No locale-specific collation, accent normalization or transliteration is performed.
+
+Omitting `limit` returns the entire map. An explicit positive `limit` is capped at 5000 and selects the newest eligible matches, returned ascending. `before_seq` is an exclusive signed 64-bit cursor and also works without `limit`. `total` counts all matching messages in the conversation, independently of cursor/limit. `has_more` means older matching messages exist before the returned page; pass the first item's seq as the next `before_seq`. Invalid integer parameters return 400. Reads stream one stored row at a time, skip unused JSON fields, and retain only compact results (at most `limit` when supplied); search/count scans the conversation without retaining full history.
+
+`GET /api/conversations/{id}/messages?around_seq=N&limit=K` returns the existing page object plus two direction flags:
+
+```json
+{"messages":[],"has_more":false,"chars":0,"bytes":2,"has_more_before":false,"has_more_after":false}
+```
+
+It selects the nearest `floor(K/2)` messages strictly below `N`, then up to `K-floor(K/2)` messages at or above `N`, returning ascending seq order. This uses message counts, not arithmetic seq spacing, and includes the target if it exists. Missing `N` uses its insertion point. At either end the unavailable half is not refilled from the other side. `limit=1` selects the target or the first later message. `has_more_before` / `has_more_after` indicate stored messages outside the returned range, including hidden rows and summaries; `has_more` is their logical OR.
+
+`GET /api/conversations/{id}/messages?after_seq=N&limit=K` selects the oldest messages strictly above `N`, returned ascending. `has_more` equals `has_more_after`; both direction flags describe messages outside the returned range. Continue downward using the last item's seq. If the page is empty, flags describe rows at/below and strictly above the requested cursor, respectively. `after_seq` also accepts `max_chars` with the existing Unicode budget and minimum user/assistant rules, applied in ascending order; a supplied `limit` remains a hard cap.
+
+Each new cursor opts into a page object. Without `limit`, new cursor requests default to 50 messages (except `after_seq` with `max_chars`, which uses the budget alone). `before_seq`, `after_seq` and `around_seq` are mutually exclusive. `around_seq` cannot be combined with `max_chars`; these combinations return 400. New cursors accept signed 64-bit seqs and the same `limit` validation as existing message pagination. Existing requests without the new cursors retain their previous array/page shape and selection behavior. All map/navigation routes require authentication and return 404 for unknown or other users' conversations.
 
 ## Message swipes (versions)
 

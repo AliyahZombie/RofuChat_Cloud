@@ -160,7 +160,7 @@ fn fallback_title(input: &str) -> String {
     }
 }
 
-fn strip_think(input: &str) -> String {
+pub(crate) fn strip_think(input: &str) -> String {
     let mut output = input.to_owned();
     for tag in ["think", "thinking"] {
         let open = format!("<{tag}>");

@@ -311,6 +311,92 @@ impl Db {
         messages.reverse();
         Ok((messages, has_more, chars))
     }
+    /// Fetch the nearest floor(K/2) rows below the insertion point and the
+    /// remaining rows at/above it, using the existing conversation/seq index.
+    pub async fn messages_around(
+        &self,
+        uid: &str,
+        cid: &str,
+        seq: i64,
+        limit: i64,
+    ) -> Result<(Vec<Value>, bool, bool)> {
+        let (mut messages, _, _) = self
+            .messages_page(uid, cid, Some(limit / 2), Some(seq), None)
+            .await?;
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT data FROM messages WHERE user_id=$1 AND conversation_id=$2 AND seq>=$3 ORDER BY seq,id LIMIT $4"
+        ).bind(uid).bind(cid).bind(seq).bind(limit - limit / 2).fetch_all(&self.pool).await?;
+        for row in rows {
+            messages.push(serde_json::from_str(&row)?);
+        }
+        let (before, after) = self.message_edges(uid, cid, &messages, seq).await?;
+        Ok((messages, before, after))
+    }
+    pub async fn messages_after(
+        &self,
+        uid: &str,
+        cid: &str,
+        seq: i64,
+        limit: Option<i64>,
+        max_chars: Option<u64>,
+    ) -> Result<(Vec<Value>, bool, bool)> {
+        let mut rows = sqlx::query_scalar::<_, String>(
+            "SELECT data FROM messages WHERE user_id=$1 AND conversation_id=$2 AND seq>$3 ORDER BY seq,id LIMIT $4"
+        ).bind(uid).bind(cid).bind(seq).bind(limit.map_or(i64::MAX, |n| n + 1)).fetch(&self.pool);
+        let mut messages = Vec::new();
+        let (mut chars, mut has_user, mut has_assistant) = (0u64, false, false);
+        while let Some(row) = rows.try_next().await? {
+            let message: Value = serde_json::from_str(&row)?;
+            let next_chars = message_chars(&message);
+            if limit.is_some_and(|n| messages.len() as i64 >= n)
+                || (has_user
+                    && has_assistant
+                    && max_chars.is_some_and(|n| chars.saturating_add(next_chars) > n))
+            {
+                break;
+            }
+            has_user |= message["role"] == "user";
+            has_assistant |= message["role"] == "assistant";
+            chars += next_chars;
+            messages.push(message);
+        }
+        // Release the streaming connection before the edge query (SQLite in-memory
+        // pools have just one connection).
+        drop(rows);
+        let (before, after) = self.message_edges(uid, cid, &messages, seq).await?;
+        Ok((messages, before, after))
+    }
+    async fn message_edges(
+        &self,
+        uid: &str,
+        cid: &str,
+        messages: &[Value],
+        pivot: i64,
+    ) -> Result<(bool, bool)> {
+        let first = messages
+            .first()
+            .and_then(|m| m["seq"].as_i64())
+            .unwrap_or(pivot);
+        let last = messages
+            .last()
+            .and_then(|m| m["seq"].as_i64())
+            .unwrap_or(pivot);
+        let before_sql = if messages.is_empty() {
+            "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE user_id=$1 AND conversation_id=$2 AND seq<=$3 LIMIT 1) AS edge"
+        } else {
+            "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE user_id=$1 AND conversation_id=$2 AND seq<$3 LIMIT 1) AS edge"
+        };
+        let before: i64 = sqlx::query_scalar(before_sql)
+            .bind(uid)
+            .bind(cid)
+            .bind(first)
+            .fetch_one(&self.pool)
+            .await?;
+        let after: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM messages WHERE user_id=$1 AND conversation_id=$2 AND seq>$3 LIMIT 1) AS edge"
+        ).bind(uid).bind(cid).bind(last).fetch_one(&self.pool).await?;
+        Ok((before > 0, after > 0))
+    }
     pub async fn message(&self, uid: &str, mid: &str) -> Result<Option<Value>> {
         let s: Option<String> =
             sqlx::query_scalar("SELECT data FROM messages WHERE user_id=$1 AND id=$2")

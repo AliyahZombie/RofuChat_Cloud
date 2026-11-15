@@ -9,6 +9,7 @@ pub use server::{start_server, Config, RunningServer};
 pub mod card;
 pub mod chat;
 pub mod context;
+mod convmap;
 pub mod detect;
 pub mod jstool;
 pub mod llm;

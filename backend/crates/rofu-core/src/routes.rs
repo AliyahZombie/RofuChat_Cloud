@@ -1,6 +1,6 @@
 use crate::{
     api::{self, ApiError, ApiResult},
-    card, chat, detect, jstool, llm, mcp, memory,
+    card, chat, convmap, detect, jstool, llm, mcp, memory,
     model::{id, now, number, text},
     server::AppState,
     swipes,
@@ -218,7 +218,15 @@ pub async fn dispatch(
             }
             if parts.len() == 3 {
                 match (method.as_str(), parts[2]) {
+                    ("GET", "map") => {
+                        return Ok(Some(
+                            Json(convmap::map(&s.db, uid, cid, q).await?).into_response(),
+                        ));
+                    }
                     ("GET", "messages") => {
+                        if q.contains_key("after_seq") || q.contains_key("around_seq") {
+                            return Ok(Some(ok(message_window(s, uid, cid, q).await?)));
+                        }
                         if q.contains_key("limit") || q.contains_key("max_chars") {
                             let limit = q.get("limit").map(|value| {
                                 value.parse::<i64>().ok().filter(|n| *n > 0 && *n < i64::MAX)
@@ -420,4 +428,78 @@ pub async fn dispatch(
         }
     }
     Ok(None)
+}
+
+/// New directional cursors opt into a page object even without an explicit limit.
+async fn message_window(
+    s: &AppState,
+    uid: &str,
+    cid: &str,
+    q: &HashMap<String, String>,
+) -> ApiResult<Value> {
+    let around = q
+        .get("around_seq")
+        .map(|v| v.parse::<i64>())
+        .transpose()
+        .map_err(|_| ApiError::bad("around_seq must be an integer"))?;
+    let after = q
+        .get("after_seq")
+        .map(|v| v.parse::<i64>())
+        .transpose()
+        .map_err(|_| ApiError::bad("after_seq must be an integer"))?;
+    if q.contains_key("before_seq") || (around.is_some() && after.is_some()) {
+        return Err(ApiError::bad(
+            "before_seq, after_seq and around_seq are mutually exclusive",
+        ));
+    }
+    let limit = q
+        .get("limit")
+        .map(|v| {
+            v.parse::<i64>()
+                .ok()
+                .filter(|n| *n > 0 && *n < i64::MAX)
+                .ok_or_else(|| {
+                    ApiError::bad("limit must be a positive integer less than 9223372036854775807")
+                })
+        })
+        .transpose()?;
+    let max_chars = q
+        .get("max_chars")
+        .map(|v| v.parse::<u64>())
+        .transpose()
+        .map_err(|_| ApiError::bad("max_chars must be an unsigned 64-bit integer"))?;
+    if around.is_some() && max_chars.is_some() {
+        return Err(ApiError::bad(
+            "around_seq cannot be combined with max_chars",
+        ));
+    }
+    let (messages, has_more_before, has_more_after) = if let Some(seq) = around {
+        s.db.messages_around(uid, cid, seq, limit.unwrap_or(50))
+            .await?
+    } else {
+        s.db.messages_after(
+            uid,
+            cid,
+            after.unwrap(),
+            limit.or_else(|| max_chars.is_none().then_some(50)),
+            max_chars,
+        )
+        .await?
+    };
+    let chars = messages.iter().map(crate::db::message_chars).sum::<u64>();
+    let messages = messages.iter().map(swipes::public).collect::<Vec<_>>();
+    let bytes = serde_json::to_vec(&messages)
+        .map_err(anyhow::Error::from)?
+        .len();
+    // Directional pages report whether either side remains for around, and the
+    // requested direction for after. Legacy before-page responses are unchanged.
+    let has_more = if around.is_some() {
+        has_more_before || has_more_after
+    } else {
+        has_more_after
+    };
+    Ok(
+        json!({"messages":messages,"has_more":has_more,"chars":chars,"bytes":bytes,
+        "has_more_before":has_more_before,"has_more_after":has_more_after}),
+    )
 }

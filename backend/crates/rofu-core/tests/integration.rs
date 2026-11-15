@@ -1020,6 +1020,305 @@ async fn title_generation_for_provider(h: &Harness, mock: &MockServer, kind: &st
     assert_eq!(wait_title(h, &cid).await, "New chat");
 }
 
+async fn conversation_map(h: &Harness) {
+    let character = h
+        .post("/characters", json!({"name":"Conversation map"}))
+        .await;
+    let conv = h
+        .post("/conversations", json!({"character_id":character["id"]}))
+        .await;
+    let cid = text(&conv, "id");
+    let uid = text(&h.get("/auth/me").await, "id");
+    assert_eq!(
+        h.get(&format!("/conversations/{cid}/map")).await,
+        json!({"items":[],"total":0,"has_more":false})
+    );
+    for query in ["around_seq=0&limit=3", "after_seq=0&limit=3"] {
+        let empty = h
+            .get(&format!("/conversations/{cid}/messages?{query}"))
+            .await;
+        assert_eq!(empty["messages"], json!([]));
+        assert_eq!(empty["has_more_before"], false);
+        assert_eq!(empty["has_more_after"], false);
+        assert_eq!(empty["bytes"], 2);
+    }
+    let contents = [
+        (
+            "user",
+            "  ## > - 你好🙂\t 世界\n1. 第二行\n```rust\n代码\n```",
+        ),
+        ("assistant", "ignored stale content"),
+        ("summary", "# Earlier summary"),
+        (
+            "user",
+            "abcdefghijklmnopqrstuvwxyz HELLO_%\\中文 后面还有文字文字",
+        ),
+        ("assistant", "Legacy plain HELLO"),
+        ("user", "other text"),
+        ("assistant", ""),
+    ];
+    for (i, (role, content)) in contents.iter().enumerate() {
+        let mut m = rofu_core::chat::message(&cid, (i as i64 + 1) * 1000, role, content);
+        if i == 0 {
+            m["visible"] = json!(false);
+        }
+        if i == 1 {
+            m["parts"] = json!({"images":["https://example.invalid/test.png"], "segments":[
+                {"type":"reasoning","text":"PRIVATE REASONING"},
+                {"type":"text","text":"# Hello "},
+                {"type":"tool","arguments":"PRIVATE ARGUMENTS","result":"PRIVATE RESULT"},
+                {"type":"text","text":"中文"}
+            ]});
+            m["swipes"] = json!([{"content":"PRIVATE INACTIVE"},{}]);
+            m["swipe_index"] = json!(1);
+        }
+        if i == 6 {
+            m["parts"]["segments"] = json!([{"type":"reasoning","text":"PRIVATE REASONING ONLY"}]);
+        }
+        h.server.state.db.save_message(&uid, &m).await.unwrap();
+    }
+    let map = h.get(&format!("/conversations/{cid}/map")).await;
+    let items = map["items"].as_array().unwrap();
+    assert_eq!(items.len(), 7);
+    assert_eq!(map["total"], 7);
+    assert_eq!(map["has_more"], false);
+    assert_eq!(items[0]["preview"], "你好🙂 世界 第二行 代码");
+    assert_eq!(items[0]["chars"], contents[0].1.chars().count());
+    assert_eq!(items[0]["visible"], false);
+    assert_eq!(items[1]["preview"], "Hello 中文");
+    assert_eq!(items[1]["swipe_count"], 2);
+    assert_eq!(items[1]["has_images"], true);
+    assert_eq!(items[2]["role"], "summary");
+    assert_eq!(items[2]["kind"], "summary");
+    assert_eq!(items[6]["chars"], 0);
+    assert!(!map.to_string().contains("PRIVATE"));
+    for item in items {
+        assert!(item.get("content").is_none());
+        assert!(item.get("parts").is_none());
+        assert!(item.get("match_start").is_none());
+    }
+    for (query, expected, total) in [
+        ("", "", 7),
+        ("hello", "Hello", 3),
+        ("HELLO", "Hello", 3),
+        ("中文", "中文", 2),
+        ("_%\\", "_%\\", 1),
+        ("PRIVATE", "", 0),
+        ("%", "%", 1),
+        ("_", "_", 1),
+        ("' OR 1=1 --", "", 0),
+        ("你好🙂", "你好🙂", 1),
+    ] {
+        let encoded: String = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("q", query)
+            .finish();
+        let page = h
+            .get(&format!("/conversations/{cid}/map?chars=8&{encoded}"))
+            .await;
+        assert_eq!(page["total"], total, "{query}: {page}");
+        if !query.is_empty() && total > 0 {
+            let item = &page["items"][0];
+            let hit: String = text(item, "preview")
+                .chars()
+                .skip(item["match_start"].as_u64().unwrap() as usize)
+                .take(item["match_len"].as_u64().unwrap() as usize)
+                .collect();
+            assert_eq!(hit, expected);
+        }
+    }
+    let window = h
+        .get(&format!("/conversations/{cid}/map?chars=8&q=hello_%25"))
+        .await;
+    assert!(text(&window["items"][0], "preview").starts_with('…'));
+    assert!(text(&window["items"][0], "preview").ends_with('…'));
+    let page = h
+        .get(&format!("/conversations/{cid}/map?limit=2&before_seq=5000"))
+        .await;
+    assert_eq!(page["items"], json!([items[2], items[3]]));
+    assert_eq!(page["total"], 7);
+    assert_eq!(page["has_more"], true);
+    let page = h
+        .get(&format!("/conversations/{cid}/map?limit=2&before_seq=3000"))
+        .await;
+    assert_eq!(page["items"], json!([items[0], items[1]]));
+    assert_eq!(page["has_more"], false);
+    let page = h
+        .get(&format!(
+            "/conversations/{cid}/map?q=hello&limit=1&before_seq=5000"
+        ))
+        .await;
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["items"][0]["seq"], 4000);
+    assert_eq!(page["has_more"], true);
+    let all = h.get(&format!("/conversations/{cid}/messages")).await;
+    for (query, start, end, before, after) in [
+        ("around_seq=4000&limit=4", 1, 5, true, true),
+        ("around_seq=4000&limit=3", 2, 5, true, true),
+        ("around_seq=4000&limit=1", 3, 4, true, true),
+        ("around_seq=3500&limit=4", 1, 5, true, true),
+        ("around_seq=1000&limit=4", 0, 2, false, true),
+        ("around_seq=7000&limit=4", 4, 7, true, false),
+        ("around_seq=9223372036854775807&limit=4", 5, 7, true, false),
+        ("around_seq=-9223372036854775808&limit=4", 0, 2, false, true),
+        ("around_seq=4000", 0, 7, false, false),
+        ("after_seq=2000&limit=3", 2, 5, true, true),
+        ("after_seq=0&limit=3", 0, 3, false, true),
+        ("after_seq=7000&limit=3", 7, 7, true, false),
+        ("after_seq=9223372036854775807&limit=3", 7, 7, true, false),
+        ("after_seq=0", 0, 7, false, false),
+        ("after_seq=2000&max_chars=0", 2, 5, true, true),
+        ("after_seq=2000&max_chars=0&limit=1", 2, 3, true, true),
+    ] {
+        let page = h
+            .get(&format!("/conversations/{cid}/messages?{query}"))
+            .await;
+        let selected = json!(&all.as_array().unwrap()[start..end]);
+        let expected = expected_page(selected, false);
+        for key in ["messages", "chars", "bytes"] {
+            assert_eq!(page[key], expected[key], "{query}: {key}");
+        }
+        assert_eq!(page["has_more_before"], before, "{query}");
+        assert_eq!(page["has_more_after"], after, "{query}");
+        assert_eq!(
+            page["has_more"],
+            if query.starts_with("around") {
+                before || after
+            } else {
+                after
+            },
+            "{query}"
+        );
+    }
+    for (route, query) in [
+        ("map", "limit=0"),
+        ("map", "limit=-1"),
+        ("map", "chars=no"),
+        ("map", "before_seq=no"),
+        ("messages", "around_seq=no"),
+        ("messages", "after_seq=no"),
+        ("messages", "around_seq=2&after_seq=3"),
+        ("messages", "after_seq=2&before_seq=3"),
+        ("messages", "around_seq=2&before_seq=3"),
+        ("messages", "around_seq=2&max_chars=100"),
+        ("messages", "after_seq=2&limit=0"),
+        ("messages", "after_seq=2&max_chars=-1"),
+    ] {
+        assert_eq!(
+            h.request(
+                Method::GET,
+                &format!("/conversations/{cid}/{route}?{query}"),
+                json!({})
+            )
+            .await
+            .status(),
+            400,
+            "{query}"
+        );
+    }
+    let foreign = rofu_core::auth::create(
+        &h.server.state.db,
+        &format!("map_{}", id()),
+        "secret",
+        false,
+    )
+    .await
+    .unwrap();
+    let login = rofu_core::auth::login(
+        &h.server.state.db,
+        &json!({"username":foreign["username"],"password":"secret"}),
+    )
+    .await
+    .unwrap();
+    for route in [
+        "map",
+        "map?q=hello",
+        "messages?around_seq=4000&limit=3",
+        "messages?after_seq=2000&limit=3",
+    ] {
+        assert_eq!(
+            h.client
+                .get(format!("{}/conversations/{cid}/{route}", h.base))
+                .bearer_auth(text(&login, "token"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+    }
+
+    // Bulk insert outside the measured HTTP request, with representative active
+    // text, reasoning/tool segments, images and inactive versions.
+    let conv = h
+        .post("/conversations", json!({"character_id":character["id"]}))
+        .await;
+    let cid = text(&conv, "id");
+    let mut tx = h.server.state.db.pool.begin().await.unwrap();
+    for i in 1..=10_000 {
+        let mut m = rofu_core::chat::message(
+            &cid,
+            i * 1000,
+            if i % 2 == 0 { "assistant" } else { "user" },
+            &"你好🙂 conversation map text ".repeat(4),
+        );
+        if i % 2 == 0 {
+            m["parts"]["segments"] = json!([
+                {"type":"reasoning","text":"private ".repeat(20)},
+                {"type":"text","text":m["content"]},
+                {"type":"tool","arguments":"{}","result":"ignored result"}
+            ]);
+            m["swipes"] =
+                json!([{"content":"old inactive","parts":{"images":["ignored image"]}},{}]);
+        }
+        sqlx::query(
+            "INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(text(&m, "id"))
+        .bind(&uid)
+        .bind(&cid)
+        .bind(i * 1000)
+        .bind(m.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+    let start = std::time::Instant::now();
+    let large = h.get(&format!("/conversations/{cid}/map")).await;
+    let elapsed = start.elapsed();
+    eprintln!("10k conversation map HTTP smoke: {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "10k conversation map took {elapsed:?}"
+    );
+    assert_eq!(large["items"].as_array().unwrap().len(), 10_000);
+    assert_eq!(large["total"], 10_000);
+    assert_eq!(large["has_more"], false);
+    for (width, expected) in [
+        ("0", 8),
+        ("-1", 8),
+        (
+            "999",
+            "你好🙂 conversation map text "
+                .repeat(4)
+                .trim()
+                .chars()
+                .count(),
+        ),
+    ] {
+        let page = h
+            .get(&format!("/conversations/{cid}/map?chars={width}&limit=1"))
+            .await;
+        assert_eq!(text(&page["items"][0], "preview").chars().count(), expected);
+    }
+    let page = h
+        .get(&format!("/conversations/{cid}/map?limit=9999&q=你好"))
+        .await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 5000);
+    assert_eq!(page["total"], 10_000);
+    assert_eq!(page["has_more"], true);
+}
+
 async fn character_pagination(h: &Harness) {
     let character = h
         .post("/characters", json!({"name":"Pagination regression"}))
@@ -1785,6 +2084,7 @@ async fn legacy_image_migration(database: &str) {
 }
 
 async fn run_suite(database: Option<String>) {
+    let is_postgres = database.is_some();
     let migration_dir = tempfile::tempdir().unwrap();
     let migration_url = database
         .clone()
@@ -1796,6 +2096,9 @@ async fn run_suite(database: Option<String>) {
     instant_summary_contract(&h, &mock).await;
     title_generation(&h, &mock).await;
     character_pagination(&h).await;
+    if is_postgres {
+        conversation_map(&h).await;
+    }
     retry_history(&h, &mock).await;
     merged_system_context(&h, &mock).await;
     swipe_contract(&h, &mock).await;
@@ -2345,4 +2648,11 @@ async fn postgres_contract_and_agent_suite() {
         .await
         .unwrap();
     admin.close().await;
+}
+
+#[tokio::test]
+async fn sqlite_conversation_map() {
+    let h = Harness::new(None).await;
+    conversation_map(&h).await;
+    h.server.stop().await.unwrap();
 }
