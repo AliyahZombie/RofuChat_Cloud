@@ -8,6 +8,7 @@ import '../../core/i18n.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/common.dart';
+import '../../widgets/motion.dart';
 import '../../widgets/slide_drawer.dart';
 import '../characters/character_editor.dart';
 import '../memory/memory_page.dart';
@@ -25,6 +26,7 @@ class Sidebar extends ConsumerStatefulWidget {
 
 class _SidebarState extends ConsumerState<Sidebar> {
   String _q = '';
+  bool _charsOpen = false;
 
   void _close() {
     final drawer = SlideDrawer.maybeOf(context);
@@ -98,9 +100,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 final g = diff <= 0 ? t('今天', 'Today') : diff == 1 ? t('昨天', 'Yesterday') : diff < 7 ? t('7 天内', 'Last 7 days') : t('更早', 'Earlier');
                 groups.putIfAbsent(g, () => []).add(c);
               }
-              return ListView(
-                padding: EdgeInsets.symmetric(horizontal: watch ? inset : 8),
-                children: [
+              final tiles = <Widget>[
                   if (filtered.isEmpty)
                     Padding(padding: const EdgeInsets.all(16), child: Text(t('暂无对话', 'No chats yet'), style: Theme.of(context).textTheme.bodySmall)),
                   for (final e in groups.entries) ...[
@@ -126,10 +126,13 @@ class _SidebarState extends ConsumerState<Sidebar> {
                         onLongPress: () => _convMenu(c),
                       )),
                   ],
-                ],
-              );
+              ];
+              if (watch) return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: tiles);
+              return ListView(padding: const EdgeInsets.symmetric(horizontal: 8), children: tiles);
             },
           );
+
+    if (watch) return _watchLayout(chars.value ?? const <Character>[], current, list, app, inset);
 
     final header = current == null
         ? const SizedBox.shrink()
@@ -189,6 +192,69 @@ class _SidebarState extends ConsumerState<Sidebar> {
           Expanded(child: list),
           footer,
         ]),
+      ),
+    );
+  }
+
+  /// Watch: everything scrolls in one list so the chats get the whole screen. The character is
+  /// one row that expands into a picker; navigation sits at the end of the list.
+  Widget _watchLayout(List<Character> chars, Character? current, Widget convs, AppState app, double inset) {
+    final scheme = Theme.of(context).colorScheme;
+    return SafeArea(
+      child: Material(
+        color: Colors.transparent,
+        child: ListView(
+          padding: EdgeInsets.fromLTRB(inset + 4, 8, inset + 4, 24),
+          children: [
+            ListTile(
+              dense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              tileColor: scheme.surfaceContainerHigh,
+              leading: current == null ? const Icon(Icons.person_outline) : CharacterAvatar(character: current, size: 26),
+              title: Text(current?.name ?? t('选择角色', 'Pick a character'), maxLines: 1, overflow: TextOverflow.ellipsis),
+              trailing: TurnChevron(open: _charsOpen),
+              onTap: () => setState(() => _charsOpen = !_charsOpen),
+              onLongPress: current == null ? null : () => _charMenu(current),
+            ),
+            Collapsible(
+              open: _charsOpen,
+              child: Column(children: [
+                for (final c in chars)
+                  ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.only(left: 20, right: 8),
+                    leading: CharacterAvatar(character: c, size: 22),
+                    title: Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    trailing: c.id == current?.id ? Icon(Icons.check, size: 16, color: scheme.primary) : null,
+                    onTap: () {
+                      ref.read(selectedCharacterIdProvider.notifier).select(c.id);
+                      ref.read(selectedConversationIdProvider.notifier).select(null);
+                      setState(() => _charsOpen = false);
+                    },
+                    onLongPress: () => _charMenu(c),
+                  ),
+              ]),
+            ),
+            if (current != null)
+              ListTile(
+                dense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                leading: const Icon(Icons.add_comment_outlined, size: 20),
+                title: Text(t('新对话', 'New chat')),
+                onTap: () {
+                  _close();
+                  widget.onNewConversation(current);
+                },
+              ),
+            convs,
+            const Divider(),
+            _NavTile(icon: Icons.psychology_alt_outlined, label: t('记忆', 'Memory'), onTap: () => _push(const MemoryPage())),
+            _NavTile(icon: Icons.code_rounded, label: t('本地工具', 'Local tools'), onTap: () => _push(const ToolsPage())),
+            _NavTile(icon: Icons.settings_outlined, label: t('设置', 'Settings'), onTap: () => _push(const SettingsPage())),
+            _NavTile(icon: Icons.swap_horiz, label: app.active?.name ?? t('连接', 'Connection'), onTap: () => ref.read(appProvider.notifier).showConnect()),
+          ],
+        ),
       ),
     );
   }

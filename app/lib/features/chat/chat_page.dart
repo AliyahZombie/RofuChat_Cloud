@@ -347,9 +347,15 @@ class _ChatBody extends ConsumerStatefulWidget {
 class _ChatBodyState extends ConsumerState<_ChatBody> {
   final _input = GlobalKey<ChatInputBarState>();
 
+  void _toBottom() {
+    final s = widget.scroll;
+    if (s.hasClients && s.offset > 0) s.animateTo(0, duration: const Duration(milliseconds: 320), curve: Curves.easeOutCubic);
+  }
+
   Future<void> _send(String text, List<String> images) async {
     final ctl = widget.ctl;
     if (ctl == null) return;
+    _toBottom();
     if (ctl.isDraft) return widget.startConversation(text, images);
     await ctl.send(content: text, images: images);
     ref.invalidate(conversationsProvider(widget.character.id));
@@ -382,7 +388,7 @@ class _ChatBodyState extends ConsumerState<_ChatBody> {
               bottom: 8,
               child: FloatingActionButton.small(
                 heroTag: 'bottom',
-                onPressed: () => widget.scroll.animateTo(0, duration: const Duration(milliseconds: 250), curve: Curves.easeOut),
+                onPressed: _toBottom,
                 child: const Icon(Icons.keyboard_double_arrow_down_rounded),
               ),
             ),
@@ -442,33 +448,58 @@ class _MessageList extends ConsumerWidget {
     final rows = buildRows(ctl.messages, cache, streamingId: ctl.streamingId, generating: ctl.generating);
     final hInset = watch ? watchInset(context) : (appearance.compact ? 12.0 : 18.0);
     final base = Theme.of(context).textTheme.bodyLarge!.copyWith(height: 1.55, fontSize: (watch ? 13 : 15.5) * appearance.fontScale);
-    final n = rows.length;
-    final list = ListView.builder(
+    // The newest turn (from the last user message on) is laid out in its own sliver at the
+    // bottom of the reversed list. At the very bottom the view follows the stream; once
+    // scrolled up, _KeepStill offsets its growth so what the user is reading stays put.
+    final lastUser = ctl.messages.lastWhere((m) => m.isUser, orElse: () => ctl.messages.isEmpty ? Message({'id': ''}) : ctl.messages.last);
+    var split = rows.indexWhere((r) => r.msg.id == lastUser.id);
+    if (split < 0) split = rows.length;
+    final older = rows.sublist(0, split);
+    final newest = rows.sublist(split);
+    final m = older.length;
+    Widget build(ChatRow row) => KeyedSubtree(key: ValueKey(row.key), child: _row(context, ref, row, base, appearance, settings, models, watch));
+    final list = CustomScrollView(
       controller: scroll,
       reverse: true,
-      padding: EdgeInsets.fromLTRB(hInset, 8, hInset, watch ? 64 : 8),
-      itemCount: n + 2,
-      itemBuilder: (context, i) {
-        if (i == 0) return _ListTail(ctl: ctl);
-        if (i == n + 1) {
-          // Top of the (reversed) list: fetch the previous page once it scrolls into view.
-          if (ctl.hasMore && !ctl.loadingOlder) WidgetsBinding.instance.addPostFrameCallback((_) => ctl.loadOlder());
-          final loaded = ctl.loadedChars > 0
-              ? Text(t('已加载 ${fmtCount(ctl.loadedChars)} 字 · ${fmtBytes(ctl.loadedBytes)}', 'Loaded ${fmtCount(ctl.loadedChars)} chars · ${fmtBytes(ctl.loadedBytes)}'),
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.outline))
-              : null;
-          return Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(children: [
-              if (ctl.hasMore) const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-              if (ctl.hasMore && loaded != null) const SizedBox(height: 6),
-              ?loaded,
-            ]),
-          );
-        }
-        final row = rows[n - i];
-        return KeyedSubtree(key: ValueKey(row.key), child: _row(context, ref, row, base, appearance, settings, models, watch));
-      },
+      slivers: [
+        KeepStillSliver(
+          sliver: SliverPadding(
+            padding: EdgeInsets.fromLTRB(hInset, 0, hInset, watch ? 64 : 8),
+            sliver: SliverToBoxAdapter(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                for (final row in newest) build(row),
+                _ListTail(ctl: ctl),
+              ]),
+            ),
+          ),
+        ),
+        SliverPadding(
+          padding: EdgeInsets.fromLTRB(hInset, 8, hInset, 0),
+          sliver: SliverList.builder(
+            itemCount: m + 1,
+            itemBuilder: (context, i) {
+              if (i == m) {
+                // Top of the (reversed) list: fetch the previous page once it scrolls into view.
+                if (ctl.hasMore && !ctl.loadingOlder) WidgetsBinding.instance.addPostFrameCallback((_) => ctl.loadOlder());
+                final loaded = ctl.loadedChars > 0
+                    ? Text(t('已加载 ${fmtCount(ctl.loadedChars)} 字 · ${fmtBytes(ctl.loadedBytes)}', 'Loaded ${fmtCount(ctl.loadedChars)} chars · ${fmtBytes(ctl.loadedBytes)}'),
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Theme.of(context).colorScheme.outline))
+                    : null;
+                return Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(children: [
+                    if (ctl.hasMore) const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                    if (ctl.hasMore && loaded != null) const SizedBox(height: 6),
+                    ?loaded,
+                  ]),
+                );
+              }
+              return build(older[m - 1 - i]);
+            },
+          ),
+        ),
+      ],
     );
     if (!watch) return SelectionArea(child: list);
     return list;
@@ -1130,3 +1161,4 @@ class AppScrollBehavior extends MaterialScrollBehavior {
   @override
   Set<PointerDeviceKind> get dragDevices => {PointerDeviceKind.touch, PointerDeviceKind.stylus, PointerDeviceKind.trackpad};
 }
+

@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 
 /// A left drawer that follows the finger while dragged and settles with an eased
-/// (non-linear) animation, replacing Scaffold's linear drawer. A horizontal drag anywhere
-/// opens it; tapping the scrim, dragging left or Back closes it.
+/// (non-linear) animation, replacing Scaffold's linear drawer. A rightward drag starting in
+/// the left [openZone] of the screen opens it; tapping the scrim, dragging left or Back closes it.
 class SlideDrawer extends StatefulWidget {
   final Widget child;
   final Widget drawer;
   final double width;
-  const SlideDrawer({super.key, required this.child, required this.drawer, required this.width});
+
+  /// Fraction of the screen width, from the left edge, where a drag may open the drawer.
+  final double openZone;
+  const SlideDrawer({super.key, required this.child, required this.drawer, required this.width, this.openZone = 0.6});
 
   /// The enclosing drawer, if any (the sidebar uses it to close itself).
   static SlideDrawerState? maybeOf(BuildContext context) => context.findAncestorStateOfType<SlideDrawerState>();
@@ -19,6 +22,7 @@ class SlideDrawer extends StatefulWidget {
 class SlideDrawerState extends State<SlideDrawer> with SingleTickerProviderStateMixin {
   late final AnimationController _a = AnimationController(vsync: this)..addListener(() => setState(() {}));
   bool _dragging = false;
+  bool _ignore = false;
 
   bool get isOpen => _a.value > 0;
 
@@ -55,13 +59,22 @@ class SlideDrawerState extends State<SlideDrawer> with SingleTickerProviderState
       },
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
-        onHorizontalDragStart: (_) {
+        onHorizontalDragStart: (d) {
+          final screen = context.size?.width ?? MediaQuery.sizeOf(context).width;
+          _ignore = _a.value == 0 && d.localPosition.dx > screen * widget.openZone;
+          if (_ignore) return;
           _a.stop();
           _dragging = true;
         },
-        onHorizontalDragUpdate: (d) => _a.value = (_a.value + d.primaryDelta! / w).clamp(0.0, 1.0),
-        onHorizontalDragEnd: (d) => _settle(d.primaryVelocity ?? 0),
-        onHorizontalDragCancel: () => _settle(0),
+        onHorizontalDragUpdate: (d) {
+          if (!_ignore) _a.value = (_a.value + d.primaryDelta! / w).clamp(0.0, 1.0);
+        },
+        onHorizontalDragEnd: (d) {
+          if (!_ignore) _settle(d.primaryVelocity ?? 0);
+        },
+        onHorizontalDragCancel: () {
+          if (!_ignore) _settle(0);
+        },
         child: Stack(
           children: [
             widget.child,

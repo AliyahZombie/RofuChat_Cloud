@@ -92,4 +92,30 @@ void main() {
     expect(fmtBytes(512), '512 B');
     expect(fmtBytes(estimateHistoryBytes(20000)), '70 KB');
   });
+
+  testWidgets('KeepStillSliver follows at the bottom, keeps content still when scrolled up', (tester) async {
+    final grow = ValueNotifier<double>(100);
+    final scroll = ScrollController();
+    await tester.pumpWidget(MaterialApp(
+      home: CustomScrollView(controller: scroll, reverse: true, slivers: [
+        KeepStillSliver(sliver: SliverToBoxAdapter(child: ValueListenableBuilder<double>(valueListenable: grow, builder: (_, h, _) => SizedBox(height: h)))),
+        SliverList.builder(itemCount: 50, itemBuilder: (_, i) => SizedBox(height: 50, child: Text('row $i'))),
+      ]),
+    ));
+    double top() => tester.getTopLeft(find.text('row 3')).dy;
+    // Pinned at the bottom: growth pushes older rows up (the view follows the stream).
+    var before = top();
+    grow.value = 160;
+    await tester.pump();
+    expect(top(), before - 60);
+    expect(scroll.offset, 0);
+    // Scrolled up: growth is compensated, rows stay where they are.
+    scroll.jumpTo(120);
+    await tester.pump();
+    before = top();
+    grow.value = 400;
+    await tester.pump();
+    expect(top(), before);
+    expect(scroll.offset, 360);
+  });
 }

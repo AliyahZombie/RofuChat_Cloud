@@ -312,8 +312,23 @@ class CharactersCtl extends ListCtl<Character> {
 
   Future<Character> import(Map<String, dynamic> body) async {
     final j = await ref.read(apiProvider).post('/api/characters/import', body);
+    var c = Character(Map<String, dynamic>.from(j as Map));
+    // Imported characters get the built-in tools (the dice roller) switched on too.
+    try {
+      final ids = await builtinToolIds();
+      if (ids.any((id) => !c.toolIds.contains(id))) {
+        c.toolIds = {...c.toolIds, ...ids}.toList();
+        c = await save(c);
+      }
+    } catch (_) {}
     await refresh();
-    return Character(Map<String, dynamic>.from(j as Map));
+    return c;
+  }
+
+  /// Ids of the enabled built-in tools, waiting for the tool list (and its first-time seeding).
+  Future<List<String>> builtinToolIds() async {
+    final tools = await ref.read(toolsProvider.future);
+    return [for (final tool in tools) if (builtinToolNames.contains(tool.name) && tool.enabled) tool.id];
   }
 
   Future<void> reorder(List<String> ids) async {

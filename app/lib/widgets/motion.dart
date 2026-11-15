@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 /// Fades and slides its child in the first time it is built, and smoothly animates later
 /// size changes (a paragraph growing while it streams). With [enabled] false it is inert,
@@ -172,4 +173,32 @@ class TurnChevron extends StatelessWidget {
         curve: Curves.easeOutCubic,
         child: Icon(sideways ? Icons.chevron_right : Icons.expand_more, size: size, color: color),
       );
+}
+
+
+/// Wraps the bottom sliver of the reversed chat list. While the list sits at the very bottom
+/// (offset 0) its growth pushes older content up, so the view follows the stream. Once the
+/// user has scrolled up, any growth is answered with an equal scroll-offset correction in the
+/// same layout pass, so the content on screen does not move (as in RikkaHub).
+class KeepStillSliver extends SingleChildRenderObjectWidget {
+  const KeepStillSliver({super.key, required Widget sliver}) : super(child: sliver);
+  @override
+  RenderObject createRenderObject(BuildContext context) => _RenderKeepStill();
+}
+
+class _RenderKeepStill extends RenderProxySliver {
+  double? _extent;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    final g = geometry!;
+    if (g.scrollOffsetCorrection != null) return;
+    final prev = _extent;
+    _extent = g.scrollExtent;
+    final delta = g.scrollExtent - (prev ?? g.scrollExtent);
+    if (delta.abs() > 0.01 && constraints.scrollOffset > 0.5) {
+      geometry = SliverGeometry(scrollOffsetCorrection: delta);
+    }
+  }
 }
