@@ -16,6 +16,7 @@ import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/back_guard.dart';
 import '../../widgets/common.dart';
+import '../../widgets/fit_action_row.dart';
 import '../../widgets/async_image.dart';
 import '../../widgets/slide_drawer.dart';
 import '../../core/theme.dart';
@@ -1382,27 +1383,33 @@ class _AssistantFooter extends StatelessWidget {
           else
             Padding(
               padding: const EdgeInsets.only(bottom: Insets.x1),
-              child: Wrap(
-                crossAxisAlignment: WrapCrossAlignment.center,
+              // One line that never wraps: scales down, then folds edit/copy (both in More).
+              child: FitActionRow(
                 children: [
-                  if (!msg.visible) const ContextTag(),
+                  if (!msg.visible) const ActionSlot(drop: 1, child: ContextTag()),
                   ActualStatusIcon(
                     msg: msg,
                     pending: ctl.actualPending.contains(msg.id),
                     onTapFailed: () => showActualDialog(context, ctl, msg),
                   ),
-                  MiniIconButton(
-                    Icons.copy_rounded,
-                    t('复制', 'Copy'),
-                    () => copyText(context, msg.content),
+                  ActionSlot(
+                    drop: ctl.isDraft ? 0 : 3,
+                    child: MiniIconButton(
+                      Icons.copy_rounded,
+                      t('复制', 'Copy'),
+                      () => copyText(context, msg.content),
+                    ),
                   ),
                   swipeNav,
                   if (!ctl.isDraft) ...[
                     if (!compact)
-                      MiniIconButton(
-                        Icons.edit_rounded,
-                        t('编辑', 'Edit'),
-                        onEdit,
+                      ActionSlot(
+                        drop: 2,
+                        child: MiniIconButton(
+                          Icons.edit_rounded,
+                          t('编辑', 'Edit'),
+                          onEdit,
+                        ),
                       ),
                     if (isLast)
                       MiniIconButton(

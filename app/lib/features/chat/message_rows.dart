@@ -13,6 +13,7 @@ import '../../models/models.dart';
 import '../../core/form_factor.dart';
 import '../../widgets/motion.dart';
 import '../../widgets/async_image.dart';
+import '../../widgets/fit_action_row.dart';
 
 /// A chat list item. Messages are flattened into rows so that every markdown block is its
 /// own ListView item (md_single_block_renderer: only visible blocks get built).
@@ -227,16 +228,14 @@ class UserBubble extends StatelessWidget {
               ),
               ),
             if (!compact)
-              // Wraps instead of overflowing with long labels or large text; the swipe
-              // controls stay together.
-              Wrap(
-                alignment: WrapAlignment.end,
-                crossAxisAlignment: WrapCrossAlignment.center,
+              // One line that never wraps: scales down, then folds edit/copy (both in More).
+              FitActionRow(
+                alignEnd: true,
                 children: [
-                  if (!msg.visible) const ContextTag(),
-                  _MiniIcon(Icons.copy_rounded, t('复制', 'Copy'), onCopy),
+                  if (!msg.visible) const ActionSlot(drop: 1, child: ContextTag()),
+                  ActionSlot(drop: 3, child: _MiniIcon(Icons.copy_rounded, t('复制', 'Copy'), onCopy)),
                   ?swipeNav,
-                  _MiniIcon(Icons.edit_rounded, t('编辑', 'Edit'), onEdit),
+                  ActionSlot(drop: 2, child: _MiniIcon(Icons.edit_rounded, t('编辑', 'Edit'), onEdit)),
                   Builder(builder: (c) => _MiniIcon(Icons.more_vert_rounded, t('更多', 'More'), () => onMore(_center(c)))),
                 ],
               ),
