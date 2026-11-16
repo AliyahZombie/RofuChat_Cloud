@@ -32,14 +32,14 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
     super.initState();
     c = widget.character == null ? Character.blank() : Character(jsonDecode(jsonEncode(widget.character!.json)) as Map<String, dynamic>);
     if (widget.character == null) {
-      // New characters get the built-in tools (e.g. the dice roller) switched on, also when the
-      // tool list has not loaded yet.
+      // New characters get the built-in plugins (the dice roller) attached, also when the
+      // plugin list has not loaded yet.
       ref
           .read(charactersProvider.notifier)
-          .builtinToolIds()
+          .builtinPluginIds()
           .then((ids) {
             if (!mounted || ids.isEmpty) return;
-            setState(() => c.toolIds = {...c.toolIds, ...ids}.toList());
+            setState(() => c.pluginIds = {...c.pluginIds, ...ids}.toList());
           })
           .catchError((_) {});
     }
@@ -62,7 +62,7 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
     setState(() => _saving = true);
     try {
       final saved = await ref.read(charactersProvider.notifier).save(c);
-      await _savePluginOrder(saved.id);
+      ref.invalidate(pluginMenusProvider);
       if (widget.character == null) ref.read(selectedCharacterIdProvider.notifier).select(saved.id);
       if (mounted) Navigator.pop(context);
     } catch (e) {
@@ -70,18 +70,6 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
     } finally {
       if (mounted) setState(() => _saving = false);
     }
-  }
-
-  /// The character PUT only carries legacy tools; module plugins and the full order go
-  /// through PUT /api/characters/{id}/plugins (schema 3 servers).
-  Future<void> _savePluginOrder(String id) async {
-    if (!c.json.containsKey('plugin_ids')) return;
-    final legacy = {for (final tool in ref.read(toolsProvider).value ?? const <LocalTool>[]) tool.id};
-    final selected = <String>{...c.toolIds, ...c.pluginIds.where((x) => !legacy.contains(x))};
-    final order = [for (final x in c.pluginIds) if (selected.contains(x)) x, for (final x in c.toolIds) if (!c.pluginIds.contains(x)) x];
-    await ref.read(apiProvider).put('/api/characters/$id/plugins', {'plugin_ids': order});
-    await ref.read(charactersProvider.notifier).refresh();
-    ref.invalidate(pluginMenusProvider);
   }
 
   Future<void> _export(String format) async {
@@ -428,9 +416,7 @@ class _ToolsTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final tools = ref.watch(toolsProvider).value ?? const <LocalTool>[];
-    final plugins = (ref.watch(pluginsProvider).value ?? const <Plugin>[]).where((p) => !p.isLegacy).toList();
-    final models = ref.watch(modelsProvider).value ?? const <ModelCfg>[];
+    final plugins = ref.watch(pluginsProvider).value ?? const <Plugin>[];
     final model = ref.watch(characterModelProvider(c.modelId));
     final scheme = Theme.of(context).colorScheme;
     final mcp = c.mcp;
@@ -445,32 +431,7 @@ class _ToolsTab extends ConsumerWidget {
             decoration: BoxDecoration(color: scheme.errorContainer, borderRadius: BorderRadius.circular(8)),
             child: Text(t('当前模型未标记为支持工具调用，工具不会发送给模型。', 'The current model is not marked as tool-capable; tools will not be sent.'), style: TextStyle(color: scheme.onErrorContainer)),
           ),
-        SectionTitle(t('本地工具（JS）', 'Local tools (JS)')),
-        if (tools.isEmpty) Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Text(t('还没有本地工具，可在侧边栏「本地工具」中创建。', 'No local tools yet. Create them under "Local tools".'))),
-        for (final tool in tools)
-          Builder(
-            builder: (context) {
-              final allowed = tool.models.isEmpty || (model != null && tool.models.contains(model.id));
-              final names = tool.models.map((id) => models.where((m) => m.id == id).firstOrNull?.name ?? id).join(', ');
-              return CheckboxListTile(
-                value: c.toolIds.contains(tool.id),
-                onChanged: (v) => touch(() => c.toolIds = v == true ? [...c.toolIds, tool.id] : c.toolIds.where((x) => x != tool.id).toList()),
-                // Still selectable for configuration: keep the label readable and explain the
-                // restriction in the supporting text instead of fading it.
-                title: Text(tool.name),
-                subtitle: Text(
-                  [
-                    if (tool.description.isNotEmpty) tool.description,
-                    tool.models.isEmpty ? t('所有模型可用', 'All models') : t('仅：$names', 'Only: $names'),
-                    if (!allowed) t('当前模型不在允许列表中', 'Not enabled for the current model'),
-                  ].join(' · '),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              );
-            },
-          ),
-        if (c.json.containsKey('plugin_ids') || plugins.isNotEmpty) ...[
+        ...[
           SectionTitle(t('插件', 'Plugins')),
           if (plugins.isEmpty) Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Text(t('还没有插件，可在侧边栏「插件」中创建。', 'No plugins yet. Create them under "Plugins".'))),
           for (final p in plugins)

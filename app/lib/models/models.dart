@@ -57,6 +57,9 @@ class ProviderCfg extends JsonModel {
   String get icon => _s(json, 'icon');
   Map<String, String> get headers => _m(json, 'headers').map((k, v) => MapEntry(k, v.toString()));
   set headers(Map<String, String> v) => json['headers'] = v;
+  /// Deep-merged into every request body (model extra_body wins; null deletes a key).
+  Map<String, dynamic> get extraBody => _m(json, 'extra_body');
+  set extraBody(Map<String, dynamic> v) => json['extra_body'] = v;
 }
 
 class ModelCfg extends JsonModel {
@@ -79,6 +82,9 @@ class ModelCfg extends JsonModel {
   set reasoning(bool v) => json['reasoning'] = v;
   String get icon => _s(json, 'icon');
   set icon(String v) => json['icon'] = v;
+  /// Deep-merged into the request body after the provider's extra_body.
+  Map<String, dynamic> get extraBody => _m(json, 'extra_body');
+  set extraBody(Map<String, dynamic> v) => json['extra_body'] = v;
 }
 
 class McpServerCfg {
@@ -105,8 +111,8 @@ class Character extends JsonModel {
     'model_id': '',
     'card': <String, dynamic>{'name': ''},
     'mcp': <dynamic>[],
-    'tool_ids': <dynamic>[],
-    'context': <String, dynamic>{'mode': 'traditional', 'summarize': true, 'instant': false, 'compress_threshold': 0, 'keep_recent': 6, 'display_recent': 4},
+    'plugin_ids': <dynamic>[],
+    'context': <String, dynamic>{'summarize': true, 'instant': false, 'compress_threshold': 0, 'keep_recent': 6, 'display_recent': 4},
     'memory': <String, dynamic>{'enabled': true, 'auto_scan': true, 'share_global': true},
     'params': <String, dynamic>{'reasoning_effort': ''},
   });
@@ -122,26 +128,22 @@ class Character extends JsonModel {
   Json get params => _m(json, 'params');
   String get contextMode => instant ? 'instant' : 'traditional';
 
-  /// Per-reply compression (`actual`). Missing key follows the legacy `mode`.
-  bool get instant => (context['instant'] as bool?) ?? _s(context, 'mode') == 'instant';
+  /// Per-reply compression (`actual`).
+  bool get instant => _b(context, 'instant');
 
   /// Threshold summary compression; defaults to on.
   bool get summarize => _b(context, 'summarize', true);
 
-  /// Writes both switches (and `mode` for old servers).
+  /// Writes both compression switches.
   void setCompression({bool? instant, bool? summarize}) {
     final i = instant ?? this.instant, s = summarize ?? this.summarize;
     context['instant'] = i;
     context['summarize'] = s;
-    context['mode'] = i ? 'instant' : 'traditional';
   }
 
-  List<String> get toolIds => _ls(json, 'tool_ids');
-  set toolIds(List<String> v) => json['tool_ids'] = v;
 
-  /// Full ordered plugin attachment list (legacy tools and module plugins). Servers before
-  /// schema 3 do not send it; then it equals [toolIds].
-  List<String> get pluginIds => json.containsKey('plugin_ids') ? _ls(json, 'plugin_ids') : toolIds;
+  /// Ordered plugin attachment list (hooks run in this order).
+  List<String> get pluginIds => _ls(json, 'plugin_ids');
   set pluginIds(List<String> v) => json['plugin_ids'] = v;
   List<McpServerCfg> get mcp => ((json['mcp'] as List?) ?? const []).map((e) => McpServerCfg(Map<String, dynamic>.from(e as Map))).toList();
   set mcp(List<McpServerCfg> v) => json['mcp'] = v.map((e) => e.json).toList();
@@ -165,31 +167,7 @@ class Character extends JsonModel {
   }
 }
 
-class LocalTool extends JsonModel {
-  LocalTool(super.j);
-  factory LocalTool.blank() => LocalTool({
-    'name': 'my_tool',
-    'description': '',
-    'parameters': {'type': 'object', 'properties': <String, dynamic>{}},
-    'code': '// args 为模型传入的参数对象；可使用 console.log 与同步 http(method, url, body, headers)\nfunction main(args) {\n  return { echo: args };\n}\n',
-    'models': <dynamic>[],
-    'enabled': true,
-  });
-  String get name => _s(json, 'name');
-  set name(String v) => json['name'] = v;
-  String get description => _s(json, 'description');
-  set description(String v) => json['description'] = v;
-  dynamic get parameters => json['parameters'];
-  set parameters(dynamic v) => json['parameters'] = v;
-  String get code => _s(json, 'code');
-  set code(String v) => json['code'] = v;
-  List<String> get models => _ls(json, 'models');
-  set models(List<String> v) => json['models'] = v;
-  bool get enabled => _b(json, 'enabled', true);
-  set enabled(bool v) => json['enabled'] = v;
-}
-
-/// A plugin package (docs/api.md, Plugins). Legacy tools appear as `format: legacy-main`.
+/// A plugin package (docs/api.md, Plugins).
 class Plugin extends JsonModel {
   Plugin(super.j);
   factory Plugin.blank() => Plugin({
@@ -217,7 +195,6 @@ class Plugin extends JsonModel {
   String get description => _s(json, 'description');
   set description(String v) => json['description'] = v;
   String get format => _s(json, 'format', 'module-v1');
-  bool get isLegacy => format == 'legacy-main';
   bool get enabled => _b(json, 'enabled');
   set enabled(bool v) => json['enabled'] = v;
   List<String> get models => _ls(json, 'models');
@@ -363,18 +340,16 @@ class ContextInfo {
   final int tokens;
   final int max;
   final bool estimated;
-  final String mode;
   final int threshold;
   final bool instant;
   final bool summarize;
-  const ContextInfo({this.tokens = 0, this.max = 0, this.estimated = true, this.mode = 'traditional', this.threshold = 0, this.instant = false, this.summarize = true});
+  const ContextInfo({this.tokens = 0, this.max = 0, this.estimated = true, this.threshold = 0, this.instant = false, this.summarize = true});
   factory ContextInfo.fromJson(Json j) => ContextInfo(
     tokens: _i(j, 'tokens'),
     max: _i(j, 'max'),
     estimated: _b(j, 'estimated', true),
-    mode: _s(j, 'mode', 'traditional'),
     threshold: _i(j, 'threshold'),
-    instant: (j['instant'] as bool?) ?? _s(j, 'mode') == 'instant',
+    instant: _b(j, 'instant'),
     summarize: _b(j, 'summarize', true),
   );
   double get ratio => max <= 0 ? 0 : (tokens / max).clamp(0.0, 1.0);

@@ -9,7 +9,6 @@ import 'package:path_provider/path_provider.dart';
 import '../core/api.dart';
 import '../core/backend_ffi.dart';
 import '../core/i18n.dart';
-import '../core/builtin_tools.dart';
 import '../core/storage.dart';
 import '../core/theme.dart';
 import '../models/models.dart';
@@ -316,11 +315,11 @@ class CharactersCtl extends ListCtl<Character> {
   Future<Character> import(Map<String, dynamic> body) async {
     final j = await ref.read(apiProvider).post('/api/characters/import', body);
     var c = Character(Map<String, dynamic>.from(j as Map));
-    // Imported characters get the built-in tools (the dice roller) switched on too.
+    // Imported characters get the built-in plugins (the dice roller) attached too.
     try {
-      final ids = await builtinToolIds();
-      if (ids.any((id) => !c.toolIds.contains(id))) {
-        c.toolIds = {...c.toolIds, ...ids}.toList();
+      final ids = await builtinPluginIds();
+      if (ids.any((id) => !c.pluginIds.contains(id))) {
+        c.pluginIds = {...c.pluginIds, ...ids}.toList();
         c = await save(c);
       }
     } catch (_) {}
@@ -328,10 +327,10 @@ class CharactersCtl extends ListCtl<Character> {
     return c;
   }
 
-  /// Ids of the enabled built-in tools, waiting for the tool list (and its first-time seeding).
-  Future<List<String>> builtinToolIds() async {
-    final tools = await ref.read(toolsProvider.future);
-    return [for (final tool in tools) if (builtinToolNames.contains(tool.name) && tool.enabled) tool.id];
+  /// Ids of the enabled built-in plugins the server seeds for every new user.
+  Future<List<String>> builtinPluginIds() async {
+    final plugins = await ref.read(pluginsProvider.future);
+    return [for (final p in plugins) if (kBuiltinPluginNames.contains(p.name) && p.enabled) p.id];
   }
 
   Future<void> reorder(List<String> ids) async {
@@ -359,71 +358,11 @@ class ModelsCtl extends ListCtl<ModelCfg> {
   }
 }
 
-class ToolsCtl extends ListCtl<LocalTool> {
-  @override
-  String get path => '/api/tools';
-  @override
-  LocalTool make(Json j) => LocalTool(j);
-
-  /// List without code (older servers ignore it and send full tools); the editor fetches
-  /// the full tool, and a PUT without `code` keeps the stored code.
-  @override
-  Map<String, String>? get listQuery => const {'summary': '1'};
-
-  @override
-  Future<List<LocalTool>> build() async {
-    final list = await super.build();
-    try {
-      final added = await _addBuiltins(list, onlyFirstTime: true);
-      if (added) return await ref.read(apiProvider).list(path, make, query: listQuery);
-    } catch (_) {}
-    return list;
-  }
-
-  String _seedKey() {
-    final app = ref.read(appProvider);
-    return 'builtin_tools_seeded.${app.active?.id ?? ''}.${app.user?.id ?? ''}';
-  }
-
-  /// Creates built-in tools that are missing. With [onlyFirstTime], each one is created at most
-  /// once per connection and user, so a tool the user deleted stays deleted.
-  Future<bool> _addBuiltins(List<LocalTool> list, {required bool onlyFirstTime}) async {
-    final store = ref.read(storeProvider);
-    final seeded = Set<String>.from((store.getJson(_seedKey())['names'] as List?) ?? const []);
-    final have = {for (final t in list) t.name};
-    final toAdd = [for (final b in builtinTools) if (!have.contains(b.name) && !(onlyFirstTime && seeded.contains(b.name))) b];
-    // Mark first, so two concurrent loads cannot both create the tool.
-    await store.setJson(_seedKey(), {'names': {...seeded, ...builtinToolNames}.toList()});
-    for (final b in toAdd) {
-      await ref.read(apiProvider).post(path, await b.toToolJson());
-    }
-    final added = toAdd.isNotEmpty;
-    return added;
-  }
-
-  /// Re-adds any built-in tool the user deleted.
-  Future<void> restoreBuiltins() async {
-    await _addBuiltins(state.value ?? const [], onlyFirstTime: false);
-    await refresh();
-  }
-}
-
 class PluginsCtl extends ListCtl<Plugin> {
   @override
   String get path => '/api/plugins';
   @override
   Plugin make(Json j) => Plugin(j);
-
-  @override
-  Future<List<Plugin>> build() async {
-    try {
-      return await super.build();
-    } on ApiException catch (e) {
-      // Servers before schema 3 have no plugin routes.
-      if (e.status == 404) return const [];
-      rethrow;
-    }
-  }
 
   Future<Plugin> full(String id) async => Plugin(Map<String, dynamic>.from(await ref.read(apiProvider).get('$path/$id') as Map));
 
@@ -436,10 +375,12 @@ class PluginsCtl extends ListCtl<Plugin> {
   }
 }
 
+/// Names of the plugins the server installs for every new user (docs/api.md).
+const kBuiltinPluginNames = {'骰子 / Dice'};
+
 final charactersProvider = AsyncNotifierProvider<CharactersCtl, List<Character>>(CharactersCtl.new);
 final providersProvider = AsyncNotifierProvider<ProvidersCtl, List<ProviderCfg>>(ProvidersCtl.new);
 final modelsProvider = AsyncNotifierProvider<ModelsCtl, List<ModelCfg>>(ModelsCtl.new);
-final toolsProvider = AsyncNotifierProvider<ToolsCtl, List<LocalTool>>(ToolsCtl.new);
 final pluginsProvider = AsyncNotifierProvider<PluginsCtl, List<Plugin>>(PluginsCtl.new);
 
 /// Composer + menu entries registered by the plugins enabled for a conversation.

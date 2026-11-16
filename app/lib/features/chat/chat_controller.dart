@@ -419,7 +419,6 @@ class ChatController extends ChangeNotifier {
 
   /// Plugin protocol negotiation sent with chat and menu requests.
   static Map<String, dynamic> get pluginFields => {
-        'plugin_protocol': 1,
         'client_id': clientId,
         'ui_capabilities': const ['toast', 'notify', 'dialog'],
       };
@@ -624,13 +623,7 @@ class ChatController extends ChangeNotifier {
         }
         _upsert(msg());
       case 'context':
-        context = ContextInfo(
-          tokens: (ev['tokens'] as num?)?.toInt() ?? context.tokens,
-          max: (ev['max'] as num?)?.toInt() ?? context.max,
-          estimated: context.estimated,
-          mode: context.mode,
-          threshold: context.threshold,
-        );
+        context = ContextInfo.fromJson(ev);
       case 'error':
         loadError = null;
         final m = _streaming;

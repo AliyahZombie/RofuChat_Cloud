@@ -4,12 +4,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rofuchat/core/api.dart';
-import 'package:rofuchat/core/builtin_tools.dart';
 import 'package:rofuchat/features/chat/chat_controller.dart';
 import 'package:rofuchat/models/models.dart';
 
 void main() {
-  TestWidgetsFlutterBinding.ensureInitialized(); // for rootBundle (dice.js asset)
   setUpAll(() => HttpOverrides.global = null); // real network to the server under test
   final url = Platform.environment['ROFU_E2E_URL'];
   final root = Platform.environment['ROFU_E2E_ROOT'] ?? '';
@@ -112,23 +110,14 @@ void main() {
     expect((page['messages'] as List).length, 1);
     expect(page['has_more'], true);
 
-    for (final path in ['/api/tools', '/api/memories', '/api/admin/users']) {
+    for (final path in ['/api/plugins', '/api/memories', '/api/admin/users']) {
       expect(await api.get(path), isA<List>(), reason: path);
     }
     expect(await api.get('/api/settings'), isA<Map>());
     expect(await api.get('/api/admin/config'), isA<Map>());
-    final tool = await api.post('/api/tools', {'name': 'add', 'description': 'add', 'parameters': {'type': 'object'}, 'code': 'function main(args) { return args.a + args.b; }'});
-    final run = await api.post('/api/tools/run', {'code': 'function main(args) { return args.a + args.b; }', 'args': {'a': 1, 'b': 2}});
-    expect(run.toString(), contains('3'), reason: 'tool $tool');
 
-    // built-in dice tool runs in the backend's QuickJS
-    final dice = await builtinTools.first.toToolJson();
-    for (final e in ['1d20+5 attack', '4d6kh3, 2d20kl1', '1d20+3 adv', '10d6>=5', '3#1d8+2', 'd%', '4dF', '2d6!!', '2d10ro<2']) {
-      final r = Map<String, dynamic>.from(await api.post('/api/tools/run', {'code': dice['code'], 'args': {'expression': e}}) as Map);
-      expect(r['is_error'], false, reason: '$e: ${r['result']}');
-      expect(r['result'], contains('**'), reason: e);
-    }
-    final bad = Map<String, dynamic>.from(await api.post('/api/tools/run', {'code': dice['code'], 'args': {'expression': '1d0'}}) as Map);
-    expect(bad['is_error'], true);
+    // the server seeds the built-in dice plugin for every new user
+    final plugins = ((await api.get('/api/plugins')) as List).map((e) => Plugin(Map<String, dynamic>.from(e as Map))).toList();
+    expect(plugins.where((x) => x.name == '骰子 / Dice' && x.enabled), isNotEmpty);
   }, skip: skip, timeout: const Timeout(Duration(seconds: 60)));
 }

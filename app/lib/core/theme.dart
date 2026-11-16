@@ -62,8 +62,6 @@ class Appearance {
     fullWidth: j['full_width'] as bool? ?? true,
     showAvatars: j['show_avatars'] as bool? ?? true,
     showTokens: j['show_tokens'] as bool? ?? true,
-    // New key: the old enter_to_send was saved as true by default, so it is ignored and
-    // everyone starts on Enter = newline.
     enterToSend: j['enter_sends'] as bool? ?? false,
     language: j['language'] as String? ?? '',
     loadChars: (j['load_chars'] as num?)?.toInt() ?? 20000,

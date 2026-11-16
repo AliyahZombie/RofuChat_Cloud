@@ -6,7 +6,6 @@ import '../../core/api.dart';
 import '../../core/form_factor.dart';
 import '../../core/i18n.dart';
 import '../../core/tokens.dart';
-import '../../models/models.dart';
 import 'chat_controller.dart';
 
 /// One line of the conversation map (GET /api/conversations/{id}/map, docs/api.md).
@@ -40,28 +39,6 @@ class MapItem {
         matchStart: (j['match_start'] as num?)?.toInt(),
         matchLen: (j['match_len'] as num?)?.toInt(),
       );
-
-  /// Fallback for servers without the map route: built from the messages loaded locally.
-  factory MapItem.fromMessage(Message m, {String q = ''}) {
-    final flat = m.content.replaceAll(RegExp(r'\s+'), ' ').trim();
-    var start = 0;
-    int? ms;
-    if (q.isNotEmpty) {
-      final i = flat.toLowerCase().indexOf(q.toLowerCase());
-      start = (i - 16).clamp(0, flat.length);
-      ms = i - start + (start > 0 ? 1 : 0);
-    }
-    final body = flat.substring(start, (start + 60).clamp(0, flat.length));
-    return MapItem(
-      id: m.id,
-      seq: m.seq,
-      role: m.isSummary ? 'summary' : m.role,
-      visible: m.visible,
-      preview: '${start > 0 ? '…' : ''}$body',
-      matchStart: ms,
-      matchLen: q.isEmpty ? null : q.length,
-    );
-  }
 }
 
 /// Opens the conversation map: a compact, searchable list of every message (only the start of
@@ -155,14 +132,12 @@ class _ConversationMapState extends State<_ConversationMap> {
           .toList();
       total = (m['total'] as num?)?.toInt() ?? items.length;
     } catch (e) {
-      // Older servers: map what is loaded locally.
-      final local = widget.ctl.messages
-          .where((m) => q.isEmpty || m.content.toLowerCase().contains(q.toLowerCase()))
-          .map((m) => MapItem.fromMessage(m, q: q))
-          .toList();
-      items = local;
-      total = local.length;
-      if (e is! ApiException || e.status != 404) _error = '$e';
+      if (!mounted || req != _req) return;
+      setState(() {
+        _loading = false;
+        _error = '$e';
+      });
+      return;
     }
     if (!mounted || req != _req) return;
     setState(() {

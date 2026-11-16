@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -609,5 +610,45 @@ class ChoiceField<T> extends StatelessWidget {
             },
           );
         },
+      );
+}
+
+/// Editor state for a JSON object field (e.g. extra_body). Empty text means `{}`.
+class JsonObjectController extends TextEditingController {
+  JsonObjectController(Map<String, dynamic> value)
+      : super(text: value.isEmpty ? '' : const JsonEncoder.withIndent('  ').convert(value));
+
+  /// The parsed object, or null when the text is not a JSON object.
+  Map<String, dynamic>? get object {
+    final s = text.trim();
+    if (s.isEmpty) return <String, dynamic>{};
+    try {
+      final v = jsonDecode(s);
+      return v is Map<String, dynamic> ? v : null;
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// Multi-line JSON object input with inline validation.
+class JsonObjectField extends StatelessWidget {
+  final JsonObjectController controller;
+  final String label;
+  final String? hint;
+  final String? helper;
+  final String? error;
+  const JsonObjectField({super.key, required this.controller, required this.label, this.hint, this.helper, this.error});
+
+  @override
+  Widget build(BuildContext context) => TextField(
+        controller: controller,
+        minLines: 1,
+        maxLines: 10,
+        keyboardType: TextInputType.multiline,
+        autocorrect: false,
+        enableSuggestions: false,
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFamily: 'monospace'),
+        decoration: InputDecoration(labelText: label, hintText: hint, helperText: helper, helperMaxLines: 3, errorText: error),
       );
 }

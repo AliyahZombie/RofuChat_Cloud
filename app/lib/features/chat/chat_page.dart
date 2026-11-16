@@ -1583,65 +1583,88 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
     }
   }
 
+  /// Context sheet. Switches apply in place and the sheet stays open (it only closes on a
+  /// barrier tap, a drag or "Compress now"); values follow the controller live.
   void _contextCard(ChatController ctl) {
-    final c = ctl.context;
+    bool? summarize, instant; // optimistic values while a save is in flight
     showActionSheet<void>(
       context,
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+      padding: const EdgeInsets.fromLTRB(Insets.x6, 0, Insets.x6, Insets.x4),
       (ctx) => [
-        Row(
-          children: [
-            ContextRing(info: c, size: 36, stroke: 4),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                '${c.estimated ? '~' : ''}${fmtTokens(c.tokens)} / ${fmtTokens(c.max)}  (${(c.ratio * 100).toStringAsFixed(0)}%)',
-                style: Theme.of(ctx).textTheme.titleMedium,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          secondary: const Icon(Icons.compress_rounded),
-          title: Text(t('摘要压缩', 'Summary compression')),
-          subtitle: c.summarize && c.threshold > 0
-              ? Text('${t('压缩阈值', 'Threshold')}: ${fmtTokens(c.threshold)}')
-              : null,
-          value: c.summarize,
-          onChanged: (v) async {
-            Navigator.pop(ctx);
-            await _setCompression(ctl, summarize: v);
-          },
-        ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          secondary: const Icon(Icons.bolt_rounded),
-          title: Text(t('即时压缩', 'Instant compression')),
-          value: c.instant,
-          onChanged: (v) async {
-            Navigator.pop(ctx);
-            await _setCompression(ctl, instant: v);
-          },
-        ),
-        const SizedBox(height: 8),
-        if (c.summarize)
-          Align(
-            alignment: AlignmentDirectional.centerStart,
-            child: FilledButton.tonalIcon(
-              onPressed: ctl.generating
-                  ? null
-                  : () {
-                      Navigator.pop(ctx);
-                      ctl.compressNow().catchError((e) {
-                        if (mounted) showError(context, e);
-                      });
-                    },
-              icon: const Icon(Icons.compress_rounded),
-              label: Text(t('立即压缩', 'Compress now')),
-            ),
+        StatefulBuilder(
+          builder: (ctx, setSheet) => ListenableBuilder(
+            listenable: ctl,
+            builder: (ctx, _) {
+              final c = ctl.context;
+              final sum = summarize ?? c.summarize;
+              final inst = instant ?? c.instant;
+              Future<void> apply({bool? s, bool? i}) async {
+                setSheet(() {
+                  summarize = s ?? summarize;
+                  instant = i ?? instant;
+                });
+                await _setCompression(ctl, summarize: s, instant: i);
+                if (ctx.mounted) {
+                  setSheet(() {
+                    summarize = null;
+                    instant = null;
+                  });
+                }
+              }
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      ContextRing(info: c, size: 36, stroke: 4),
+                      const SizedBox(width: Insets.x3),
+                      Expanded(
+                        child: Text(
+                          '${c.estimated ? '~' : ''}${fmtTokens(c.tokens)} / ${fmtTokens(c.max)}  (${(c.ratio * 100).toStringAsFixed(0)}%)',
+                          style: Theme.of(ctx).textTheme.titleMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: Insets.x3),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    secondary: const Icon(Icons.compress_rounded),
+                    title: Text(t('摘要压缩', 'Summary compression')),
+                    subtitle: sum && c.threshold > 0
+                        ? Text('${t('压缩阈值', 'Threshold')}: ${fmtTokens(c.threshold)}')
+                        : null,
+                    value: sum,
+                    onChanged: (v) => apply(s: v),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    secondary: const Icon(Icons.bolt_rounded),
+                    title: Text(t('即时压缩', 'Instant compression')),
+                    value: inst,
+                    onChanged: (v) => apply(i: v),
+                  ),
+                  const SizedBox(height: Insets.x2),
+                  if (sum)
+                    FilledButton.tonalIcon(
+                      onPressed: ctl.generating || ctl.compressing
+                          ? null
+                          : () {
+                              Navigator.pop(ctx);
+                              ctl.compressNow().catchError((e) {
+                                if (mounted) showError(context, e);
+                              });
+                            },
+                      icon: const Icon(Icons.compress_rounded),
+                      label: Text(ctl.compressing ? t('正在压缩…', 'Compressing…') : t('立即压缩', 'Compress now')),
+                    ),
+                ],
+              );
+            },
           ),
+        ),
       ],
     );
   }

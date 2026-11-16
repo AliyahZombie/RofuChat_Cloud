@@ -56,6 +56,8 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
   late final _url = TextEditingController(text: p.baseUrl);
   late final _key = TextEditingController(text: p.apiKey);
   late final _headers = TextEditingController(text: p.headers.entries.map((e) => '${e.key}: ${e.value}').join('\n'));
+  late final _extra = JsonObjectController(p.extraBody);
+  String? _extraError;
   bool _showKey = false;
   bool _busy = false;
   String? _test;
@@ -72,6 +74,9 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
       if (i > 0) m[line.substring(0, i).trim()] = line.substring(i + 1).trim();
     }
     p.headers = m;
+    final extra = _extra.object;
+    _extraError = extra == null ? t('需要是 JSON 对象', 'Must be a JSON object') : null;
+    if (extra != null) p.extraBody = extra;
   }
 
   Future<bool> _save({bool pop = true}) async {
@@ -81,7 +86,7 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
       _nameError = p.name.isEmpty ? t('请填写名称', 'Name is required') : null;
       _urlError = p.baseUrl.isEmpty ? t('请填写 Base URL', 'Base URL is required') : null;
     });
-    if (_nameError != null || _urlError != null) return false;
+    if (_nameError != null || _urlError != null || _extraError != null) return false;
     setState(() => _busy = true);
     try {
       final saved = await ref.read(providersProvider.notifier).save(p);
@@ -253,6 +258,14 @@ class _ProviderEditorPageState extends ConsumerState<ProviderEditorPage> {
         ),
         const SizedBox(height: 16),
         TextField(controller: _headers, maxLines: 3, minLines: 1, decoration: InputDecoration(labelText: t('额外请求头（每行 Key: Value）', 'Extra headers (one "Key: Value" per line)'))),
+        const SizedBox(height: 16),
+        JsonObjectField(
+          controller: _extra,
+          label: t('自定义请求体参数（JSON）', 'Custom body parameters (JSON)'),
+          hint: '{"provider": {"order": ["anthropic"], "allow_fallbacks": false}}',
+          helper: t('深度合并进每次请求体；模型里的同名参数优先，值为 null 表示删除该字段', 'Deep-merged into every request body; the model\'s value wins; null removes a field'),
+          error: _extraError,
+        ),
         // Saved with the form, so a checkbox (M3: switches act immediately).
         CheckboxListTile(contentPadding: EdgeInsets.zero, title: Text(t('启用', 'Enabled')), value: p.enabled, onChanged: (v) => setState(() => p.enabled = v ?? false)),
         if (_busy) LinearProgressIndicator(semanticsLabel: t('处理中', 'Working')),
@@ -382,8 +395,14 @@ class _ModelEditorPageState extends ConsumerState<ModelEditorPage> {
   late final _name = TextEditingController(text: m.name);
   late final _ctx = TextEditingController(text: '${m.contextLength}');
   late final _out = TextEditingController(text: '${m.maxOutput}');
+  late final _extra = JsonObjectController(m.extraBody);
+  String? _extraError;
 
   Future<void> _save() async {
+    final extra = _extra.object;
+    setState(() => _extraError = extra == null ? t('需要是 JSON 对象', 'Must be a JSON object') : null);
+    if (extra == null) return;
+    m.extraBody = extra;
     m.modelId = _id.text.trim();
     m.name = _name.text.trim().isEmpty ? m.modelId : _name.text.trim();
     m.contextLength = int.tryParse(_ctx.text.trim()) ?? 0;
@@ -433,6 +452,14 @@ class _ModelEditorPageState extends ConsumerState<ModelEditorPage> {
           const SizedBox(width: 12),
           Expanded(child: TextField(controller: _out, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: t('最大输出（0=未知）', 'Max output (0=unknown)')))),
         ]),
+        const SizedBox(height: 12),
+        JsonObjectField(
+          controller: _extra,
+          label: t('自定义请求体参数（JSON）', 'Custom body parameters (JSON)'),
+          hint: '{"provider": {"only": ["anthropic"]}}',
+          helper: t('在提供商的参数之后深度合并；值为 null 表示删除该字段', "Deep-merged after the provider's; null removes a field"),
+          error: _extraError,
+        ),
         // Capabilities are saved with the form: checkboxes, not switches.
         CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.image_rounded), title: Text(t('多模态（图片输入）', 'Vision (image input)')), value: m.vision, onChanged: (v) => setState(() => m.vision = v ?? false)),
         CheckboxListTile(contentPadding: EdgeInsets.zero, secondary: const Icon(Icons.build_rounded), title: Text(t('工具调用', 'Tool calling')), value: m.toolCall, onChanged: (v) => setState(() => m.toolCall = v ?? false)),

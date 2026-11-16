@@ -9,7 +9,6 @@ import '../../core/theme.dart';
 import '../../models/models.dart';
 import '../../state/app_state.dart';
 import '../../widgets/common.dart';
-import '../tools/tools_page.dart';
 
 /// What each coarse permission group allows (docs/api.md, Plugins).
 String permissionHelp(String label) {
@@ -87,7 +86,7 @@ class PluginsPage extends ConsumerWidget {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text('$e')),
         data: (all) {
-          final list = all.where((p) => !p.isLegacy).toList();
+          final list = all;
           return ListView(children: [
             if (list.isEmpty)
               Padding(
@@ -116,14 +115,6 @@ class PluginsPage extends ConsumerWidget {
                 trailing: Switch(value: p.enabled, onChanged: (v) => _toggle(context, ref, p, v)),
                 onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => PluginEditorPage(plugin: p))),
               ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.code_rounded),
-              title: Text(t('本地工具（旧版）', 'Local tools (legacy)')),
-              subtitle: Text(t('function main(args) 形式的单个工具，仍然可用', 'Single main(args) tools, still supported')),
-              trailing: const Icon(Icons.chevron_right_rounded),
-              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ToolsPage())),
-            ),
             const SizedBox(height: 80),
           ]);
         },

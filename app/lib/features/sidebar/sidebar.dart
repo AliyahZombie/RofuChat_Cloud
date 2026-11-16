@@ -33,9 +33,8 @@ class _SidebarState extends ConsumerState<Sidebar> {
   @override
   void initState() {
     super.initState();
-    // Pre-cache the tool list so the tools page and character editor open without a spinner.
+    // Pre-cache the plugin list so the plugins page and character editor open without a spinner.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) ref.read(toolsProvider.future).then((_) {}, onError: (_) {});
       if (mounted) ref.read(pluginsProvider.future).then((_) {}, onError: (_) {});
     });
   }
