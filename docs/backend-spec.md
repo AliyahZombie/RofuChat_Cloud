@@ -164,7 +164,7 @@ void rofu_free_string(char* s);
 {
   "id": "…", "conversation_id": "…",
   "seq": 3000,                    // 排序键，新消息 = max+1000，留缝给摘要卡插入
-  "role": "user",                 // "user" | "assistant" | "summary" | "system"
+  "role": "user",                 // "user" | "assistant" | "summary" | "system" | "tool"
   "content": "显示内容（display）",
   "actual": null,                 // 即时模式：发送给模型的压缩内容
   "actual_status": "none",        // "none" | "pending" | "ok" | "failed"
@@ -190,7 +190,7 @@ void rofu_free_string(char* s);
 - `usage` 是整轮（含多次工具往返）的累计；`input/cached` 用供应商返回值，供应商未返回时用估算值并设 `"estimated": true`。
 
 ### 4.7 Memory（长期记忆）
-`{id(12位短id), character_id|null(=全局), content, tags[], pinned, source("agent"|"scan"|"user"), created_at, updated_at}`
+`{id(12位短id), character_id|null(=全局), content, tags[], pinned, source("agent"|"scan"|"user"|"plugin"), created_at, updated_at}`
 
 ### 4.8 UserSettings
 ```json
@@ -387,15 +387,25 @@ void rofu_free_string(char* s);
 - 允许用户 PATCH 手动编辑 actual。
 - 切换开关不改历史数据；关闭 instant 时已有 actual 不参与普通历史上下文选择，但摘要输入仍优先使用成功的 actual。关闭 instant 后新回复不自动生成 actual，手动 actual 重试端点保持可用。无论 instant 是否开启，visible=false 的消息均不进入上下文。
 
-## 9. 本地工具（QuickJS）
+## 9. 插件与兼容本地工具（QuickJS）
 
-- 用户代码必须定义 `function main(args)`（可以是 `async function`），返回值：字符串原样返回，其他 `JSON.stringify`，`undefined` 返回 `"undefined"`。
-- 提供 `console.log/info/warn/error`，输出收集后以 `\n\n[console]\n…` 附加到结果。
-- 限制：执行超时 10s（interrupt handler），内存 64MB，栈 1MB；每次调用新建 Runtime/Context，彼此隔离；在 `spawn_blocking` 中执行。
-- 提供同步 `http(method, url, body?, headers?) -> {status, body}` 宿主函数（用阻塞 reqwest，超时 15s，最大响应 1MB），让工具能访问网络；Promise 在 job queue 中驱动到完成，无法完成时报错。
-- 工具名对模型暴露为 `sanitize(name)`（仅 `[A-Za-z0-9_-]`，≤64）。
-- 启用条件：工具 `enabled` 且在角色 `tool_ids` 中，且 `models` 为空或包含当前 Model.id。
-- 异常、语法错误、超时：返回错误文本并 `is_error=true`，不让整个回合失败。
+插件 API 的完整路由、JSON/SSE 结构、JS 签名和示例以 `docs/api.md` 的 Plugins 节为准；原 `/api/tools` HTTP 契约不变。仅后端实现，前端通过可选协议字段接入。
+
+- schema 3 在一个事务中创建 plugin_storage/plugin_kv 并将原 tool 实体转为单工具 `legacy-main` 插件。保留 id、代码、模型过滤、启用状态和角色顺序；失败整体回滚。旧工具默认声明 network，启用时授予。旧 `/tools` 只投影 legacy 插件，并保留 summary/省略 code 的更新语义。模块插件使用 `/plugins`。
+- 插件 manifest 静态声明 api_version=1、permissions、tools、hooks、menus；代码为 ES module，handler 指向命名 export。保存仅编译语法，不执行用户代码。列表不含 code，附 code_chars。最多 32 tools、16 menus；模型工具名 `p_<plugin-id>_<tool-id>`，无冲突。models 仅过滤工具，不过滤菜单/钩子。角色内部 tool_ids 是完整插件顺序；HTTP tool_ids 是旧工具视图，plugin_ids 是完整视图；PUT `/characters/{id}/plugins` 替换完整顺序。
+- 权限为 read、write、storage、hooks、send、ui、network；可选 network origins allowlist（空允许任意 HTTP(S) origin，重定向也检查）。用户启用时将 manifest 权限保存为 grants；声明权限变化时禁用直到重新启用。无细粒度矩阵、hash grants、plugin_runs、request_id、idempotency、UI ack、强制 revision 或 DNS/private-IP 策略。
+- AsyncRuntime/AsyncContext，每次调用新建隔离运行时；64 MiB heap、1 MiB stack；hook 2s、tool/menu 10s 为代码常量，包含宿主等待。最多 2 个运行 worker，CPU 循环不阻塞服务线程；中断/取消/超时会终止调用。JS 与宿主交换 owned JSON，网络为异步；无文件/环境/OS/模块加载/timer。
+- rofu 提供 invocation（当前用户的 plugin/conversation/character/source/phase/root/round）、conversation.get、character.get（不含凭证）、真实组装 context.get、当前角色 memory CRUD、完整 messages CRUD/insert/swipes、插件 KV、http.request、chat.send、ui.toast/notify/dialog。每个 I/O 方法返回 Promise，返回数据为副本。读列表默认 50、最大 100，响应 1 MiB 限制。memory 不继承 share_global 写权限，禁用时拒绝；context 可按角色配置读取全局记忆。
+- 消息任意字段可读写：role、seq、content/display、actual/status/error、visible、images、segments、usage、model、时间戳、swipes 和自定义 JSON。仅 id/user_id/conversation_id 不可变。只做形状校验：JSON、字段类型、会话内 seq 唯一、工具 call/result 配对、版本索引等，错误 E_VALIDATION。工具可采用现有合并 segment 或显式 assistant tool_calls/tool call_id；配对在 handler commit 检查，以允许一次 handler 暂存两侧。
+- messages.insert 接受任意 user/assistant/system/tool，服务端 id，after_seq 后插入或默认追加；不触发模型。所有 visible system 行按 seq 合入唯一的开头 system（长期记忆之后、摘要之前），绝不在中间或结尾发送。summary 分配 seq 时避开现有值。插件历史/记忆写入后上下文重新估算，避免旧供应商 usage 覆盖修改。
+- KV 按 user+plugin+table，跨角色全局；默认 table=default，可 `kv.table(name)` 自选命名（包括角色 id）。无强制 character scope。10 MiB/plugin、64 KiB/value、10000 entries、16 tables、key 256 UTF-8 bytes、table 128 ASCII bytes；计 table+key+compact JSON 的 UTF-8 字节。usage/clear 提供总计和按表数据。事务先更新 accounting row 序列化并发；SQLite/PG 相同。
+- 所有会话操作复用单进程 coordinator，生成中独立菜单/写入返回 409，当前 generation 自己的 hooks 允许变更；不跨 JS/HTTP/UI 等待持有 DB 事务或全局 map 锁。stop 取消 hooks、对话框和后续发送；关闭等待后台任务。每库仅运行一个后端进程。
+- 每个 handler 读快照和 read-your-writes overlay；成功后短事务提交 message/memory/KV/attachments，异常/超时/验证失败丢弃本插件修改，发 plugin_error 后继续。memory 使用存储值冲突检查。网络/UI 已发送的外部效果不能回滚。beforeSend 整条链延迟到 prepare 一起提交；取消则全部丢弃，且取消前无 DB 写入。
+- beforeSend 在任何用户写入/归档/版本分配之前，返回 content/images/turn-local params patch 或 cancel；regenerate 不改用户 content/images。beforeToolCall 接受 args 或 skip；afterToolCall 可改 result/is_error，执行于持久化/tool_end 前，对成功/失败/skip 均运行，最后截断 20000 Unicode 字符。afterReply 在工具循环成功结束后、assistant_done 和 actual/summary 之前，允许 mutation 和 send；重新加载提交的 assistant，避免旧副本覆盖。hooks 按角色顺序串行，工具过滤关闭不影响 hooks。
+- chat.send 仅 afterReply/menu，暂存普通 user+generation，handler/本轮后处理结束后排队执行，同一 SSE owner 最后只发一次 done。每 handler 一次，每 root 最多 2 个额外 round（常量 MAX_FOLLOW_UPS）。不调用公开 chat 路由，不递归重入 coordinator，不重放。
+- 菜单查询 `/conversations/{id}/plugin_menus`，调用 `/plugins/{id}/menus/{menu_id}/invoke` 为 SSE；对话框应答 `/plugins/calls/{call_id}` 校验用户、client、action/input，过期/重复 404。dialog 必须 default_action，默认 5s，最多 30s 且缩短到调用剩余预算；无能力客户端或断线立即 unavailable/default，无 ack。chat 可带 plugin_protocol:1/client_id/ui_capabilities；老客户端不发插件事件。新增事件 plugin_ui、plugin_error、plugin_cancelled、plugin_messages_changed、plugin_result，精确结构见 api.md。
+
+兼容 legacy-main：用户代码定义 `function main(args)`（允许 async），字符串原样返回，其他 JSON.stringify，undefined 为 "undefined"；console 附加到结果。旧同步 http(method,url,body?,headers?) 保留，10s 执行超时、64MB/1MB、独立 spawn_blocking Runtime，工具名 sanitize，旧启用/model 条件保持。新模块使用异步 rofu.http.request。
 
 ## 10. MCP
 

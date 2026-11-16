@@ -206,3 +206,197 @@ Schema version 2 performs an idempotent startup migration of existing message at
 Only the selected vision-provider context resolves image references back to data URLs, server-side, for both Chat Completions and Responses. API history never does this. Pagination `max_chars` continues to ignore images; page `bytes` still measures the compact public JSON array, which now includes only reference metadata, never the referenced blob bytes.
 
 The Flutter client reserves image geometry before loading, loads near the viewport (including the eager newest-turn sliver), caches providers/decoded images, requests display-sized decoding, fades with the emphasized-decelerate curve, and offers retry after failure. Legacy data URLs use an isolate and a bounded shared byte cache on native platforms; web delegates them to the browser's asynchronous image loader. Avatars share memoized image providers across rebuilds.
+
+## Plugins (schema 3, JavaScript API 1)
+
+Plugins are owned by the authenticated user. Character attachments are ordered; tools, hooks and menus come from a static manifest. Saving or listing a module never evaluates its code. Each handler executes in a fresh QuickJS async runtime (64 MiB heap, 1 MiB stack); hooks have a 2-second invocation deadline and tools/menus have 10 seconds. The deadlines include host I/O. Two runtime workers are available per server. Imports, OS/file/environment access and timers are not provided. Await host calls. Persistent state belongs in KV.
+
+### Packages and grants
+
+```json
+{
+  "id":"<server-generated-id>",
+  "name":"Example","version":"1","description":"Example plugin",
+  "code":"export async function run(input) { return input; }",
+  "format":"module-v1","enabled":false,"models":[],
+  "manifest":{
+    "api_version":1,
+    "permissions":["read","write","storage","hooks","send","ui",{"name":"network","origins":["https://example.org"]}],
+    "tools":[{"id":"lookup","name":"Lookup","description":"Look up a value","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]},"handler":"lookup"}],
+    "hooks":{"beforeSend":"beforeSend","beforeToolCall":"beforeToolCall","afterToolCall":"afterToolCall","afterReply":"afterReply"},
+    "menus":[{"id":"run","label":"Run example","icon":"extension","handler":"run"}]
+  },
+  "granted_permissions":[],"created_at":0,"updated_at":0
+}
+```
+
+`handler` names an ES module export. Tools receive `(args, invocation)`, menus `(input, invocation)`; hooks receive `(payload, invocation)` and also have `payload.invocation`. Any handler may be async. Results must be JSON-serializable; `undefined` becomes `null`. Module tool string results are returned verbatim to the model; other results are serialized as JSON. Tool provider names are `p_<plugin-id>_<tool-id>`. `models` filters exported tools by saved Model.id; it does not filter hooks or menus. Hooks and menus work when the model has `tool_call:false`.
+
+Permissions are coarse groups: `read` (conversation, character, assembled context, messages/swipes, current-character memory), `write` (message/insert/swipe and memory mutations), `storage`, `hooks`, `send`, `ui`, `network`. `network` may be a string (any origin) or `{name:"network",origins:string[]}`; an empty origins array permits any HTTP(S) origin. Allowlisted origins include scheme and port, with no path or trailing slash; redirects are checked too. Enabling records the declared list as `granted_permissions`; clients must present the list before enabling. Changing the declared permissions on PUT disables the plugin until explicitly enabled again. Grant metadata is server-managed; there are no hash-bound grants or UI receipts. Network permission permits transmitting data the plugin can read.
+
+Limits: code 1 MiB UTF-8, 32 tools and 16 menus per plugin. Tool/menu ids are 1–20 ASCII letters/digits/underscores, unique within their category. Parameters use the supported JSON Schema subset: `type`, `properties`, `required`, `items`, `enum`, `additionalProperties` (boolean), `minimum`, `maximum`, `minLength`, `maxLength`, `minItems`, `maxItems`, `description`, `title`. Unsupported keywords are rejected at save time; tool arguments and hook-transformed arguments are checked against the schema.
+
+| Method | Route | Request / response |
+|---|---|---|
+| GET | `/api/plugins` | Summary array: all package metadata, `code` omitted, `code_chars` added (Unicode scalar count). Never executes code. |
+| POST | `/api/plugins` | Package fields above; returns full saved plugin. Defaults: `enabled:false`, `format:"module-v1"`, version `"1"`, empty tools/hooks/menus/permissions/models. Supplied id/timestamps/grants are ignored. `enabled:true` grants the declared list. |
+| GET | `/api/plugins/{id}` | Full package including code. |
+| PUT | `/api/plugins/{id}` | Save package (missing ordinary fields use defaults); omitted code preserves stored code. Id/created_at are retained. |
+| DELETE | `/api/plugins/{id}` | 204; removes package, KV and accounting. Stale character attachments are ignored. |
+| POST or PUT | `/api/plugins/{id}/enable` | `{enabled?:boolean}` (default true); returns full package with declared permissions granted, or grants cleared when disabled. |
+| PUT | `/api/characters/{id}/plugins` | Ordered plugin id array, or `{plugin_ids:[...]}`; rejects foreign/unknown/duplicate ids. Returns `{plugin_ids:[...]}`. |
+| GET | `/api/plugins/{id}/storage` | `{plugin_id,used_bytes,entry_count,quota_bytes,tables:[{name,used_bytes,entry_count}]}`. |
+| DELETE | `/api/plugins/{id}/storage` | 204; clears all plugin KV tables. |
+| DELETE | `/api/plugins/{id}/storage/{table}` | 204; clears that table. |
+| GET | `/api/conversations/{id}/plugin_menus` | Array of `{plugin_id,plugin_name,id,label,icon}` in character/plugin manifest order; missing icon is null. Only enabled attached plugins are listed. |
+| POST | `/api/plugins/{id}/menus/{menu_id}/invoke` | SSE. `{conversation_id,input?:Json,plugin_protocol?:1,client_id?:string,ui_capabilities?:string[]}`. Omitted input is null. Protocol defaults to 1 for menus. |
+| POST | `/api/plugins/calls/{call_id}` | `{client_id,action:string|null,input?:string|null}`; dialog reply, 204. `action:null` dismisses and returns the dialog default. Wrong user/client, expired or already answered call: 404. Invalid action/input: 400. |
+
+Every plugin/conversation/character/call lookup is scoped to the authenticated user. HTTP validation errors use the existing `{error:string}` envelope, with `E_VALIDATION:` for plugin shape errors. Independent conversation/message/swipe/branch/title/memory/menu mutations return 409 during an operation; reads remain available. Character memory/order changes are also blocked while an affected conversation is active. Hooks from the owning generation use the internal staged APIs and can mutate their conversation. Plugin enable/revoke remains available. Stop cancels the operation, its dialogs and queued sends. The coordinator is in-process: run one backend process per database.
+
+Schema 2→3 transactionally converts every LocalTool into an entity of kind `plugin`, `format:"legacy-main"`, with a single `main` tool and declared/granted `network` permission when enabled. IDs, code, models, enable state and character order are preserved. All `/api/tools` routes retain their old JSON shapes, summary/code-preservation behavior, execution names and `main(args)`/synchronous `http(...)` behavior; they expose only legacy plugins. Use those routes to create/edit legacy tools. Character `tool_ids` over HTTP remains the legacy-only ordered view; additive `plugin_ids` contains the full order. A legacy character PUT replaces legacy slots while preserving module attachments, then appends extra legacy ids. Internally `tool_ids` is the sole canonical full order.
+
+### Invocation, reads and messages
+
+All `rofu` I/O methods return Promises. Returned values are copies; mutate using the methods below. `Json` denotes a JSON value, `Image` the existing URL/data URL/owner-scoped attachment-reference shape, and `Message` the complete stored message, including swipes/tails (unlike the public HTTP message projection). Host results and handler results are limited to 1 MiB UTF-8; use pagination. Default page size is 50, maximum 100; `next_cursor:null` ends a list. Cursors are opaque strings, with no optimistic revision requirement.
+
+```ts
+rofu.invocation: Readonly<{
+  id: string; plugin_id: string; conversation_id: string; character_id: string;
+  source: "user" | "plugin" | "menu";
+  phase: "tool" | "menu" | "beforeSend" | "beforeToolCall" | "afterToolCall" | "afterReply";
+  root_turn_id: string; round: number;
+}>;
+// source=menu for menus; otherwise user for the root round, plugin for queued rounds.
+
+rofu.conversation.get(): Promise<{id:string, character_id:string, title:string}>;
+rofu.character.get(): Promise<{id:string, name:string, card:Json, context:Json, memory:Json, params:Json}>;
+// Excludes provider credentials, MCP headers and plugin code.
+rofu.context.get(): Promise<{
+  messages: Json[]; tools: Json[]; tokens:number; max:number; estimated:true
+}>;
+// Uses actual context assembly, including applicable global/pinned memories and
+// tools. Image references are not expanded to bytes. Requires a configured model.
+
+rofu.messages.list(opts?: {cursor?:string,limit?:number,include_hidden?:boolean})
+  : Promise<{items:Message[],next_cursor:string|null}>;
+// Hidden rows included by default; current branch, ascending seq order.
+rofu.messages.get(id:string): Promise<Message>;
+rofu.messages.update(id:string, patch:Record<string,Json>): Promise<Message>;
+rofu.messages.insert(input:{
+  role:"user"|"assistant"|"system"|"tool", content:string,
+  actual?:string|null, visible?:boolean, images?:Image[], after_seq?:number,
+  call_id?:string, name?:string
+}): Promise<Message>;
+
+rofu.messages.swipes.list(id:string): Promise<{items:Json[],next_cursor:null}>;
+rofu.messages.swipes.append(id:string,input:{content:string,images?:Image[],[field:string]:Json},opts?:{activate?:boolean})
+  : Promise<Message>;
+rofu.messages.swipes.select(id:string,index:number): Promise<{messages:Message[]}>;
+rofu.messages.swipes.remove(id:string,index:number): Promise<{messages:Message[]}>;
+```
+
+Every message field is readable/writable, including role, seq, content/display, actual/status/error, visibility, images, segments, usage, model/provenance, timestamps, custom JSON and swipes. Only `id`, `user_id`, `conversation_id` are immutable; foreign ids never resolve. `display` aliases `content`; top-level `images` and `segments` alias `parts.images` and `parts.segments`. A content-only edit updates text segments while retaining reasoning/tools. An actual-only edit sets status `ok` (or `none` for null) and clears its error; explicit actual_status/actual_error override these defaults. Explicit fields override defaults from a selected swipe.
+
+Validation checks shapes rather than restricting categories: role/field types, JSON arguments, seq uniqueness in the conversation, valid swipe index/nonempty versions, and tool call/result pairing. Invalid shapes return `E_VALIDATION`. Native combined tool segments contain `{type:"tool",id,name,arguments:<JSON string>,result:<string>,is_error:<boolean>,duration_ms?}`. Explicit cross-message calls may use assistant `tool_calls:[{id,name,arguments:<JSON string>}]` paired with a tool message's `call_id`; `name` is optional on a tool result. Pairing is checked at handler commit so a handler can stage both sides. Swipe operations retain at least one version; selecting user versions archives/restores subsequent rows transactionally. Inactive snapshots/tails are readable and editable through the full swipes field.
+
+Insert allocates a server id and places the message immediately after `after_seq`, shifting later seq values if needed; omission appends. It never calls the LLM. A tool-role insert needs a paired call (`call_id`/`name` are additive inputs for that purpose). All visible system-role rows, wherever inserted/resequenced, are merged into the one leading system message in seq order; none is emitted mid-history or at the end. Automatic summaries also avoid seq collisions after plugin insertion/resequencing.
+
+### Memory and storage
+
+```ts
+rofu.memory.list(opts?:{q?:string,cursor?:string,limit?:number})
+  : Promise<{items:Memory[],next_cursor:string|null}>;
+rofu.memory.add(input:{content:string,tags?:string[],pinned?:boolean}): Promise<Memory>;
+rofu.memory.update(id:string,patch:{content?:string,tags?:string[],pinned?:boolean}): Promise<Memory>;
+rofu.memory.remove(id:string): Promise<null>;
+// Current character only, source="plugin"; disabled character memory rejects access.
+// Context reads can include applicable global memory, but memory CRUD never inherits share_global.
+
+rofu.kv.get(key:string): Promise<Json|undefined>;
+rofu.kv.set(key:string,value:Json): Promise<null>;
+rofu.kv.delete(key:string): Promise<boolean>;
+rofu.kv.list(prefix?:string): Promise<{items:{key:string,value:Json}[],next_cursor:string|null}>;
+rofu.kv.list(opts?:{prefix?:string,cursor?:string,limit?:number}): Promise<{items:{key:string,value:Json}[],next_cursor:string|null}>;
+rofu.kv.table(name:string): Store; // same get/set/delete/list methods
+```
+
+KV scope is **user + plugin + table**, global across characters. Ordinary methods use table `default`; named tables are optional. A plugin may explicitly choose its character id as a table name. Names are 1–128 ASCII letters/digits/underscore/hyphen/dot. Keys are 1–256 UTF-8 bytes. Compact JSON values are at most 64 KiB. Aggregate limits are 10 MiB and 10,000 entries per user/plugin, with 16 tables including default. Charged bytes are UTF-8 table name + key + compact value bytes for each entry. Usage reports each table and the plugin total. Accounting/quota checks and entry writes share a short transaction with serialized accounting-row writes on both databases; a quota failure rolls back the entire invocation. Clearing a table/plugin preserves no hidden per-character namespace. KV list is ordered by key and filters by prefix.
+
+### Network, follow-ups and UI
+
+```ts
+rofu.http.request(opts:{
+  url:string, method?:"GET"|"POST"|"PUT"|"PATCH"|"DELETE"|"HEAD",
+  headers?:Record<string,string>, body?:string, timeout_ms?:number
+}): Promise<{status:number,headers:Record<string,string>,body:string}>;
+// Async HTTP(S), GET default, timeout default 10000ms (clamped 1..30000),
+// response body <=1 MiB; invocation deadline also applies. Non-2xx is returned.
+
+rofu.chat.send(content:string,opts?:{images?:Image[]}): Promise<{queued_id:string}>;
+// afterReply and menus only; one enqueue per handler. Queues a normal user message
+// and generation after this handler and round postprocessing. Does not recurse
+// into /chat. At most 2 extra rounds per root operation, across all plugins.
+
+rofu.ui.toast(message:string,opts?:{duration_ms?:number}): Promise<{delivered:boolean}>;
+rofu.ui.notify(opts:{title:string,body:string}): Promise<{delivered:boolean}>;
+rofu.ui.dialog(opts:{
+  title:string,body?:string,actions:{id:string,label:string}[],
+  input?:{label:string,initial?:string,max_length?:number},
+  default_action:string,timeout_ms?:number
+}): Promise<{action:string,input:string|null,reason:"answered"|"dismissed"|"timeout"|"unavailable"}>;
+```
+
+Dialogs require unique nonempty action ids and a matching default_action. Default timeout is 5000ms; accepted range 1–30000ms, shortened to fit the remaining invocation deadline. Input defaults to a maximum of 4096 Unicode characters (maximum supported limit 65536). Dismissal/timeout/unavailable choose the default action with null input. Without an attached, negotiated capable client, dialogs immediately resolve `unavailable`; toast/notify return `delivered:false`. A disconnect during a dialog also resolves `unavailable`; other generation work continues. Stop cancels instead. `delivered:true` means an event was queued to that stream, not a client acknowledgement.
+
+Chat requests add optional fields `{plugin_protocol:1,client_id:"<client-instance>",ui_capabilities:["toast","notify","dialog"]}`. Omit them for old clients. Plugin events are emitted only with protocol 1 (menus default to 1). Unknown UI capabilities grant no additional access. The frontend renders UI and posts dialog answers using the same authenticated user and client_id. No durable calls, request idempotency or acknowledgement receipts exist.
+
+Each event retains the existing SSE framing (`data: <JSON>\n\n`) and `type` discriminator:
+
+```json
+{"type":"plugin_ui","plugin_id":"p","invocation_id":"i","call_id":"c","client_id":"client","kind":"dialog","payload":{"title":"Continue?","actions":[{"id":"ok","label":"OK"}],"default_action":"ok"}}
+{"type":"plugin_error","plugin_id":"p","phase":"afterReply","code":"E_LIMIT","error":"E_LIMIT: ..."}
+{"type":"plugin_cancelled","plugin_id":"p","reason":"Cancelled by plugin"}
+{"type":"plugin_messages_changed","plugin_id":"p","conversation_id":"conv","message_ids":["changed-or-inserted-id"],"reload":true}
+{"type":"plugin_result","plugin_id":"p","menu_id":"run","result":{"ok":true}}
+```
+
+For toast the UI payload is `{message,duration_ms}`; notify/dialog carry their options. `plugin_messages_changed` signals a branch/history reload (including deletions); message_ids lists changed/inserted active rows, so it can be empty after removal. `plugin_result` is the successful menu result, emitted after its commit and before queued generation; menu failures emit plugin_error. Codes include E_VALIDATION, E_PERMISSION, E_PHASE, E_NOT_FOUND, E_LIMIT, E_CONFLICT, E_JS, E_TIMEOUT, E_CANCELLED. The normal stream ends with exactly one `done`, after every queued round. Each round retains user_message/assistant_start/assistant_done. If a plugin selects a user branch that removes the live assistant, generation stops that round and emits no stale assistant_done/actual for the removed row; the history reload is authoritative. Before rendering a final assistant, apply plugin_messages_changed reloads as needed; afterReply edits are also present in assistant_done.
+
+### Hooks and rollback
+
+Hooks run serially in character plugin order. Later hooks see earlier accepted patches and staged writes. Throw, timeout, invalid return, validation failure or revoked permission discards that invocation's staged message/memory/KV writes and queued send; it emits plugin_error and continues to the next plugin. UI/network effects already sent cannot be rolled back. Do not hold a SQL transaction across JavaScript, HTTP or dialog waits. No revision fields or request replay are required. Memory writes use a cheap stored-value conflict check to avoid overwriting concurrent memory edits. Message/memory mutations invalidate provider token-count preference for that conversation; context statistics then use `estimated:true`.
+
+| Hook | Payload (plus invocation) | Return / timing |
+|---|---|---|
+| beforeSend | `{mode:"send"\|"edit"\|"regenerate",target_message_id:string\|null,content,images,params}` | `undefined` or `{patch?:{content?:string,images?:Image[],params?:{temperature?,top_p?,max_tokens?,reasoning_effort?}},cancel?:{reason:string}}`. Runs before any writes, tail archival or swipe allocation. Params apply only to this round. Regenerate cannot patch stored content/images. Cancellation discards the entire beforeSend chain, including staged attachments, and emits plugin_cancelled without a user message or LLM request. |
+| beforeToolCall | `{assistant_id,tool:{kind:"plugin"\|"mcp"\|"memory",plugin_id:string\|null,id,name},call_id,args,parameters}` | `undefined`, `{args:Json}`, or `{skip:{result:string,is_error:boolean}}`. Runs before execution for every tool kind. Invalid raw argument JSON bypasses this hook. Tool identity is unchanged. tool_start and persisted arguments use the accepted JSON string. |
+| afterToolCall | Same fields plus `{result:string,is_error:boolean,duration_ms:number,skipped:boolean}`; invalid raw args use null | `undefined` or `{result?:string,is_error?:boolean}`. Runs on success/failure/skip, before tool_end and persistence; result is then capped at 20,000 Unicode characters. |
+| afterReply | `{user_message_id,assistant:Message,status:"completed"}` | `undefined` only; mutate through rofu and optionally queue send. Runs after the tool loop and before assistant_done/actual/summary. Generation reloads committed edits; an explicitly successful actual is retained. Failed/stopped/greeting/utility generations do not invoke it. |
+
+### Small example plugin
+
+Create a package with this code and manifest (then attach its id using the character plugins route). The menu stores global config, optionally asks the client, and inserts a system note without generating:
+
+```js
+export async function remember(input) {
+  const reply = await rofu.ui.dialog({
+    title: "Remember this instruction?",
+    body: input.text,
+    actions: [{id:"save",label:"Save"},{id:"cancel",label:"Cancel"}],
+    default_action: "cancel", timeout_ms: 3000
+  });
+  if (reply.action !== "save") return {saved:false, reason:reply.reason};
+  await rofu.kv.set("last_instruction", input.text); // shared across characters
+  const message = await rofu.messages.insert({role:"system",content:input.text});
+  return {saved:true, message_id:message.id};
+}
+export async function beforeSend(payload) {
+  const instruction = await rofu.kv.get("last_instruction");
+  if (instruction) return {patch:{params:{temperature:0.7}}};
+}
+```
+
+```json
+{"api_version":1,"permissions":["write","storage","ui","hooks"],"tools":[],"hooks":{"beforeSend":"beforeSend"},"menus":[{"id":"remember","label":"Remember instruction","handler":"remember"}]}
+```
