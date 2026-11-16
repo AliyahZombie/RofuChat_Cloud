@@ -27,6 +27,7 @@ import 'chat_controller.dart';
 import 'conversation_map.dart';
 import 'message_rows.dart';
 import 'model_picker.dart';
+import 'plugin_ui.dart';
 
 class ChatPage extends ConsumerStatefulWidget {
   const ChatPage({super.key});
@@ -121,6 +122,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       )
         ..onEvict = _cache.forget
         ..load();
+      _ctl!.onPluginEvent = _pluginEvent(_ctl!);
     }
     return _ctl;
   }
@@ -157,6 +159,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       }
       draft.dispose();
       _cache.clear();
+      ctl.onPluginEvent = _pluginEvent(ctl);
       _ctl = ctl;
       _ctlConv = id;
       ref.read(selectedConversationIdProvider.notifier).select(id);
@@ -169,6 +172,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     await ctl.send(content: text, images: images);
     if (mounted) ref.invalidate(conversationsProvider(ch.id));
   }
+
+  void Function(Json) _pluginEvent(ChatController ctl) => (ev) {
+        if (mounted) handlePluginEvent(context, ctl, ev);
+      };
 
   /// "New chat" just opens a fresh draft; the greeting is picked with its swipe arrows.
   void newConversation(Character ch) {
@@ -1682,6 +1689,7 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
     // Short window with the keyboard up (square watches, landscape): keep the text field
     // and send button only, so the composer always fits above the IME.
     final tight = tightWithKeyboard(context);
+    final menus = ctl == null ? const <PluginMenu>[] : (ref.watch(pluginMenusProvider(ctl.conversationId)).value ?? const <PluginMenu>[]);
     final moreMenu = Collapsible(
       open: _more && !tight,
       child: Padding(
@@ -1690,6 +1698,18 @@ class ChatInputBarState extends ConsumerState<ChatInputBar> {
           spacing: Insets.x2,
           runSpacing: Insets.x2,
           children: [
+            for (final menu in menus)
+              _ComposerAction(
+                icon: pluginMenuIcon(menu.icon),
+                label: menu.label,
+                tooltip: menu.pluginName,
+                onPressed: _busy || ctl == null
+                    ? null
+                    : () {
+                        setState(() => _more = false);
+                        ctl.invokeMenu(menu);
+                      },
+              ),
             _ComposerAction(
               icon: Icons.image_outlined,
               label: t('图片', 'Image'),

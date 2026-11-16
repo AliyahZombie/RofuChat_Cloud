@@ -138,6 +138,11 @@ class Character extends JsonModel {
 
   List<String> get toolIds => _ls(json, 'tool_ids');
   set toolIds(List<String> v) => json['tool_ids'] = v;
+
+  /// Full ordered plugin attachment list (legacy tools and module plugins). Servers before
+  /// schema 3 do not send it; then it equals [toolIds].
+  List<String> get pluginIds => json.containsKey('plugin_ids') ? _ls(json, 'plugin_ids') : toolIds;
+  set pluginIds(List<String> v) => json['plugin_ids'] = v;
   List<McpServerCfg> get mcp => ((json['mcp'] as List?) ?? const []).map((e) => McpServerCfg(Map<String, dynamic>.from(e as Map))).toList();
   set mcp(List<McpServerCfg> v) => json['mcp'] = v.map((e) => e.json).toList();
   String get reasoningEffort => _s(params, 'reasoning_effort');
@@ -182,6 +187,83 @@ class LocalTool extends JsonModel {
   set models(List<String> v) => json['models'] = v;
   bool get enabled => _b(json, 'enabled', true);
   set enabled(bool v) => json['enabled'] = v;
+}
+
+/// A plugin package (docs/api.md, Plugins). Legacy tools appear as `format: legacy-main`.
+class Plugin extends JsonModel {
+  Plugin(super.j);
+  factory Plugin.blank() => Plugin({
+    'name': 'my_plugin',
+    'version': '1',
+    'description': '',
+    'format': 'module-v1',
+    'enabled': false,
+    'models': <dynamic>[],
+    'code': kPluginTemplate,
+    'manifest': {
+      'api_version': 1,
+      'permissions': <dynamic>['read', 'ui'],
+      'tools': <dynamic>[],
+      'hooks': <String, dynamic>{},
+      'menus': <dynamic>[
+        {'id': 'hello', 'label': 'Hello', 'icon': 'extension', 'handler': 'hello'},
+      ],
+    },
+  });
+  String get name => _s(json, 'name');
+  set name(String v) => json['name'] = v;
+  String get version => _s(json, 'version', '1');
+  set version(String v) => json['version'] = v;
+  String get description => _s(json, 'description');
+  set description(String v) => json['description'] = v;
+  String get format => _s(json, 'format', 'module-v1');
+  bool get isLegacy => format == 'legacy-main';
+  bool get enabled => _b(json, 'enabled');
+  set enabled(bool v) => json['enabled'] = v;
+  List<String> get models => _ls(json, 'models');
+  set models(List<String> v) => json['models'] = v;
+  String get code => _s(json, 'code');
+  set code(String v) => json['code'] = v;
+  bool get hasCode => json.containsKey('code');
+  int get codeChars => _i(json, 'code_chars', code.length);
+  Json get manifest => _m(json, 'manifest');
+  set manifest(Json v) => json['manifest'] = v;
+
+  /// Declared permissions as display labels (`network` objects show their origins).
+  List<String> get permissionLabels => [for (final p in (manifest['permissions'] as List?) ?? const []) _permLabel(p)];
+  List<String> get grantedLabels => [for (final p in (json['granted_permissions'] as List?) ?? const []) _permLabel(p)];
+  int get menuCount => ((manifest['menus'] as List?) ?? const []).length;
+  int get toolCount => ((manifest['tools'] as List?) ?? const []).length;
+  List<String> get hookNames => [for (final e in ((manifest['hooks'] as Map?) ?? const {}).entries) if (e.value != null && '${e.value}'.isNotEmpty) '${e.key}'];
+
+  static String _permLabel(dynamic p) {
+    if (p is Map) {
+      final origins = ((p['origins'] as List?) ?? const []).join(', ');
+      return origins.isEmpty ? '${p['name']}' : '${p['name']} ($origins)';
+    }
+    return '$p';
+  }
+}
+
+const kPluginTemplate = '''// ES module. Handlers are named in the manifest; all rofu.* calls return Promises.
+// See docs/api.md "Plugins" for the full API.
+export async function hello(input, invocation) {
+  const conv = await rofu.conversation.get();
+  await rofu.ui.toast(`Hello from \${conv.title || conv.id}`);
+  return { ok: true };
+}
+''';
+
+/// A menu button a plugin registered for the composer's + menu.
+class PluginMenu {
+  final String pluginId, pluginName, id, label;
+  final String? icon;
+  PluginMenu(Json j)
+      : pluginId = _s(j, 'plugin_id'),
+        pluginName = _s(j, 'plugin_name'),
+        id = _s(j, 'id'),
+        label = _s(j, 'label'),
+        icon = j['icon'] as String?;
 }
 
 class Memory extends JsonModel {

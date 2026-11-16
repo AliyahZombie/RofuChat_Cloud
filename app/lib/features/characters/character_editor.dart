@@ -62,6 +62,7 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
     setState(() => _saving = true);
     try {
       final saved = await ref.read(charactersProvider.notifier).save(c);
+      await _savePluginOrder(saved.id);
       if (widget.character == null) ref.read(selectedCharacterIdProvider.notifier).select(saved.id);
       if (mounted) Navigator.pop(context);
     } catch (e) {
@@ -69,6 +70,18 @@ class _CharacterEditorPageState extends ConsumerState<CharacterEditorPage> {
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  /// The character PUT only carries legacy tools; module plugins and the full order go
+  /// through PUT /api/characters/{id}/plugins (schema 3 servers).
+  Future<void> _savePluginOrder(String id) async {
+    if (!c.json.containsKey('plugin_ids')) return;
+    final legacy = {for (final tool in ref.read(toolsProvider).value ?? const <LocalTool>[]) tool.id};
+    final selected = <String>{...c.toolIds, ...c.pluginIds.where((x) => !legacy.contains(x))};
+    final order = [for (final x in c.pluginIds) if (selected.contains(x)) x, for (final x in c.toolIds) if (!c.pluginIds.contains(x)) x];
+    await ref.read(apiProvider).put('/api/characters/$id/plugins', {'plugin_ids': order});
+    await ref.read(charactersProvider.notifier).refresh();
+    ref.invalidate(pluginMenusProvider);
   }
 
   Future<void> _export(String format) async {
@@ -416,6 +429,7 @@ class _ToolsTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final tools = ref.watch(toolsProvider).value ?? const <LocalTool>[];
+    final plugins = (ref.watch(pluginsProvider).value ?? const <Plugin>[]).where((p) => !p.isLegacy).toList();
     final models = ref.watch(modelsProvider).value ?? const <ModelCfg>[];
     final model = ref.watch(characterModelProvider(c.modelId));
     final scheme = Theme.of(context).colorScheme;
@@ -456,6 +470,33 @@ class _ToolsTab extends ConsumerWidget {
               );
             },
           ),
+        if (c.json.containsKey('plugin_ids') || plugins.isNotEmpty) ...[
+          SectionTitle(t('插件', 'Plugins')),
+          if (plugins.isEmpty) Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Text(t('还没有插件，可在侧边栏「插件」中创建。', 'No plugins yet. Create them under "Plugins".'))),
+          for (final p in plugins)
+            CheckboxListTile(
+              value: c.pluginIds.contains(p.id),
+              onChanged: (v) => touch(() {
+                final ids = c.pluginIds;
+                c.pluginIds = v == true ? [...ids, p.id] : ids.where((x) => x != p.id).toList();
+              }),
+              title: Text(p.name),
+              subtitle: Text(
+                [
+                  if (!p.enabled) t('插件未启用', 'Plugin is disabled'),
+                  if (p.description.isNotEmpty) p.description,
+                  if (p.hookNames.isNotEmpty) p.hookNames.join(', '),
+                ].join(' · '),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          if (c.pluginIds.where((id) => plugins.any((p) => p.id == id)).length > 1)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Text(t('hook 按勾选顺序执行。', 'Hooks run in the order they were checked.'), style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
+            ),
+        ],
         SectionTitle(t('MCP 服务器', 'MCP servers')),
         for (var i = 0; i < mcp.length; i++) _McpTile(server: mcp[i], onChanged: (s) => touch(() => c.mcp = [...mcp]..[i] = s), onDelete: () => touch(() => c.mcp = [...mcp]..removeAt(i))),
         Align(

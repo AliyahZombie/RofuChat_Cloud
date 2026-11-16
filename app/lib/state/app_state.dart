@@ -408,10 +408,49 @@ class ToolsCtl extends ListCtl<LocalTool> {
   }
 }
 
+class PluginsCtl extends ListCtl<Plugin> {
+  @override
+  String get path => '/api/plugins';
+  @override
+  Plugin make(Json j) => Plugin(j);
+
+  @override
+  Future<List<Plugin>> build() async {
+    try {
+      return await super.build();
+    } on ApiException catch (e) {
+      // Servers before schema 3 have no plugin routes.
+      if (e.status == 404) return const [];
+      rethrow;
+    }
+  }
+
+  Future<Plugin> full(String id) async => Plugin(Map<String, dynamic>.from(await ref.read(apiProvider).get('$path/$id') as Map));
+
+  /// Grants the declared permissions (enabled) or clears the grants (disabled).
+  Future<Plugin> setEnabled(String id, bool enabled) async {
+    final j = await ref.read(apiProvider).post('$path/$id/enable', {'enabled': enabled});
+    await refresh();
+    ref.invalidate(pluginMenusProvider);
+    return Plugin(Map<String, dynamic>.from(j as Map));
+  }
+}
+
 final charactersProvider = AsyncNotifierProvider<CharactersCtl, List<Character>>(CharactersCtl.new);
 final providersProvider = AsyncNotifierProvider<ProvidersCtl, List<ProviderCfg>>(ProvidersCtl.new);
 final modelsProvider = AsyncNotifierProvider<ModelsCtl, List<ModelCfg>>(ModelsCtl.new);
 final toolsProvider = AsyncNotifierProvider<ToolsCtl, List<LocalTool>>(ToolsCtl.new);
+final pluginsProvider = AsyncNotifierProvider<PluginsCtl, List<Plugin>>(PluginsCtl.new);
+
+/// Composer + menu entries registered by the plugins enabled for a conversation.
+final pluginMenusProvider = FutureProvider.family<List<PluginMenu>, String>((ref, conversationId) async {
+  if (conversationId.isEmpty) return const [];
+  try {
+    return await ref.watch(apiProvider).list('/api/conversations/$conversationId/plugin_menus', PluginMenu.new);
+  } catch (_) {
+    return const [];
+  }
+});
 
 class SettingsCtl extends AsyncNotifier<UserSettings> {
   @override

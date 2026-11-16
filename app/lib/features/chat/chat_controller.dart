@@ -410,9 +410,41 @@ class ChatController extends ChangeNotifier {
       }
     }
     _notify();
-    final body = {'content': content, 'images': images, 'regenerate': regenerate, 'edit_message_id': editMessageId};
+    final body = {'content': content, 'images': images, 'regenerate': regenerate, 'edit_message_id': editMessageId, ...pluginFields};
+    return _stream('/api/conversations/$conversationId/chat', body, tempId);
+  }
+
+  /// Per-app-instance id the server binds plugin dialogs to (docs/api.md, Plugins).
+  static final String clientId = 'c${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}${Random().nextInt(1 << 30).toRadixString(36)}';
+
+  /// Plugin protocol negotiation sent with chat and menu requests.
+  static Map<String, dynamic> get pluginFields => {
+        'plugin_protocol': 1,
+        'client_id': clientId,
+        'ui_capabilities': const ['toast', 'notify', 'dialog'],
+      };
+
+  /// Receives plugin_ui / plugin_error / plugin_result events (the page renders them).
+  void Function(Json ev)? onPluginEvent;
+
+  /// Runs a plugin's + menu entry. Its stream may carry chat rounds the plugin queued.
+  Future<void> invokeMenu(PluginMenu menu, {Object? input}) async {
+    if (generating || isDraft) return;
+    generating = true;
+    _notify();
+    return _stream('/api/plugins/${menu.pluginId}/menus/${menu.id}/invoke', {'conversation_id': conversationId, 'input': input, ...pluginFields}, null, menu: true);
+  }
+
+  /// Answers a plugin dialog; null [action] dismisses it (the server uses its default).
+  Future<void> replyDialog(String callId, String? action, String? input) async {
+    try {
+      await api.post('/api/plugins/calls/$callId', {'client_id': clientId, 'action': action, 'input': input});
+    } catch (_) {}
+  }
+
+  Future<void> _stream(String path, Object body, String? tempId, {bool menu = false}) {
     final completer = Completer<void>();
-    _sub = api.sse('/api/conversations/$conversationId/chat', body).listen(
+    _sub = api.sse(path, body).listen(
       (ev) {
         final type = ev['type'];
         if (type == 'text' || type == 'reasoning') {
@@ -429,7 +461,11 @@ class ChatController extends ChangeNotifier {
           _startPolling();
         } else {
           generating = false;
-          loadError = '$e';
+          if (menu) {
+            onPluginEvent?.call({'type': 'plugin_error', 'error': '$e'});
+          } else {
+            loadError = '$e';
+          }
         }
         _notify();
         if (!completer.isCompleted) completer.complete();
@@ -446,6 +482,24 @@ class ChatController extends ChangeNotifier {
       cancelOnError: true,
     );
     return completer.future;
+  }
+
+  /// Reloads the newest page after a plugin changed history (edits, inserts, swipes). The
+  /// message streaming right now keeps its local copy.
+  Future<void> _reloadAfterPlugin() async {
+    try {
+      final (page, more) = await _page();
+      if (_disposed) return;
+      final live = _streaming;
+      messages = page;
+      _cold.clear();
+      hasMore = more;
+      if (live != null && byId(live.id) == null) _upsert(live);
+      if (autoLoad && hasMore) unawaited(_autoLoadAll());
+      rev++;
+      _notify();
+      unawaited(refreshContext());
+    } catch (_) {}
   }
 
   // ------------------------------------------------------------ smooth streaming
@@ -586,6 +640,17 @@ class ChatController extends ChangeNotifier {
           final id = messages.isNotEmpty ? messages.last.id : '';
           notices.putIfAbsent(id, () => []).add(ev['error'] as String? ?? 'error');
         }
+      case 'plugin_cancelled':
+        if (tempId != null) messages.removeWhere((m) => m.id == tempId);
+        onPluginEvent?.call(ev);
+      case 'plugin_messages_changed':
+        unawaited(_reloadAfterPlugin());
+      case 'plugin_ui' || 'plugin_error' || 'plugin_result':
+        if (ev['type'] == 'plugin_error') {
+          final id = streamingId ?? (messages.isNotEmpty ? messages.last.id : '');
+          notices.putIfAbsent(id, () => []).add('${ev['plugin_id'] ?? 'plugin'}: ${ev['error'] ?? ev['code'] ?? ''}');
+        }
+        onPluginEvent?.call(ev);
       case 'done':
         generating = false;
         compressing = false;

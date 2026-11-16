@@ -15,7 +15,7 @@ import '../../widgets/slide_drawer.dart';
 import '../characters/character_editor.dart';
 import '../memory/memory_page.dart';
 import '../settings/settings_page.dart';
-import '../tools/tools_page.dart';
+import '../plugins/plugins_page.dart';
 
 /// Drawer / side panel: character switcher on top, conversation list, then navigation.
 class Sidebar extends ConsumerStatefulWidget {
@@ -36,6 +36,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
     // Pre-cache the tool list so the tools page and character editor open without a spinner.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) ref.read(toolsProvider.future).then((_) {}, onError: (_) {});
+      if (mounted) ref.read(pluginsProvider.future).then((_) {}, onError: (_) {});
     });
   }
 
@@ -224,7 +225,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
       children: [
         const Divider(),
         _NavTile(icon: Icons.psychology_alt_rounded, label: t('记忆', 'Memory'), onTap: () => _push(const MemoryPage())),
-        _NavTile(icon: Icons.code_rounded, label: t('本地工具', 'Local tools'), onTap: () => _push(const ToolsPage())),
+        _NavTile(icon: Icons.extension_rounded, label: t('插件', 'Plugins'), onTap: () => _push(const PluginsPage())),
         _NavTile(icon: Icons.settings_rounded, label: t('设置', 'Settings'), onTap: () => _push(const SettingsPage())),
         ListTile(
           leading: Icon(app.active?.isLocal == true ? Icons.phone_android_rounded : Icons.cloud_rounded),
@@ -361,7 +362,7 @@ class _SidebarState extends ConsumerState<Sidebar> {
                 spacing: watch ? 0 : 8,
                 children: [
                   round(Icons.psychology_alt_rounded, t('记忆', 'Memory'), () => _push(const MemoryPage())),
-                  round(Icons.code_rounded, t('本地工具', 'Local tools'), () => _push(const ToolsPage())),
+                  round(Icons.extension_rounded, t('插件', 'Plugins'), () => _push(const PluginsPage())),
                   round(Icons.swap_horiz_rounded, t('连接', 'Connection'), () => ref.read(appProvider.notifier).showConnect()),
                   round(Icons.settings_rounded, t('设置', 'Settings'), () => _push(const SettingsPage())),
                 ],
