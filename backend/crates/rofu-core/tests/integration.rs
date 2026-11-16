@@ -102,8 +102,8 @@ impl Harness {
             json!([])
         );
         let m = self.post("/models", remote[0].clone()).await;
-        let tool=self.post("/tools",json!({"name":"dice","code":"function main(args){console.log('rolled');return {total:args.n+1}}"})).await;
-        let c=self.post("/characters",json!({"name":"Rofu","model_id":m["id"],"card":{"first_mes":"Hello {{user}}, I am {{char}}"},"tool_ids":[tool["id"]],"mcp":[{"name":"search","url":format!("{}/{}",mock.url,if transport=="sse"{"legacy"}else{"mcp"}),"transport":transport,"enabled":true}]})).await;
+        let tool = self.get("/plugins").await[0].clone();
+        let c=self.post("/characters",json!({"name":"Rofu","model_id":m["id"],"card":{"first_mes":"Hello {{user}}, I am {{char}}"},"plugin_ids":[tool["id"]],"mcp":[{"name":"search","url":format!("{}/{}",mock.url,if transport=="sse"{"legacy"}else{"mcp"}),"transport":transport,"enabled":true}]})).await;
         let conv = self
             .post("/conversations", json!({"character_id":c["id"]}))
             .await;
@@ -111,9 +111,19 @@ impl Harness {
     }
     async fn events(&self, cid: &str, body: Value) -> Vec<Value> {
         let response = self
-            .request(Method::POST, &format!("/conversations/{cid}/chat"), body)
+            .request(
+                Method::POST,
+                &format!("/conversations/{cid}/chat"),
+                body.clone(),
+            )
             .await;
-        assert_eq!(response.status(), 200);
+        let status = response.status();
+        if status != 200 {
+            panic!(
+                "chat {cid}: {body}: {status}: {}",
+                response.text().await.unwrap()
+            );
+        }
         let wire = response.bytes().await.unwrap();
         let mut parser = Decoder::default();
         let events = parser.push(&wire);
@@ -138,10 +148,11 @@ async fn retry_history(h: &Harness, mock: &MockServer) {
         for tools in [false, true] {
             let (model, mut c, _) = h.fixture(mock, "openai", "http").await;
             c["card"] = json!({"system_prompt":"retry history system","post_history_instructions":"Retry as {{char}}"});
-            c["context"] = json!({"mode":if instant {"instant"} else {"traditional"},"display_recent":0,"compress_threshold":999999});
+            c["context"] =
+                json!({"instant":instant,"display_recent":0,"compress_threshold":999999});
             c["memory"] = json!({"enabled":tools,"auto_scan":false});
             if !tools {
-                c["tool_ids"] = json!([]);
+                c["plugin_ids"] = json!([]);
                 c["mcp"] = json!([]);
             }
             h.json(
@@ -303,18 +314,9 @@ async fn merged_system_context(h: &Harness, mock: &MockServer) {
             (3000, "summary", "Later summary", true),
             (4000, "summary", "Hidden summary", false),
         ] {
-            h.server
-                .state
-                .db
-                .save_message(
-                    &owner,
-                    &json!({
-                        "id":id(),"conversation_id":cid,"seq":seq,
-                        "role":role,"content":content,"visible":visible
-                    }),
-                )
-                .await
-                .unwrap();
+            let mut m = rofu_core::chat::message(&cid, seq, role, content);
+            m["visible"] = json!(visible);
+            h.server.state.db.save_message(&owner, &m).await.unwrap();
         }
         let expected_system = "System Rofu\n\nDescription\n\nWorld lore\n\n[Summary of the earlier conversation]\n早先摘要\n\n[Summary of the earlier conversation]\nLater summary\n\nPost Rofu User";
         let stats = h.get(&format!("/conversations/{cid}/context")).await;
@@ -392,16 +394,20 @@ async fn swipe_contract(h: &Harness, mock: &MockServer) {
     assert_eq!(greeting["swipe_count"], 3);
     assert!(greeting.get("swipes").is_none());
     let gid = text(&greeting, "id");
-    assert_eq!(
-        h.post(&format!("/messages/{gid}/swipe"), json!({"index":0}))
-            .await["messages"][0]["content"],
-        "First Swipy User"
-    );
-    assert_eq!(
-        h.post(&format!("/messages/{gid}/swipe"), json!({"index":2}))
-            .await["messages"][0]["content"],
-        "Third Swipy"
-    );
+    for (index, expected) in [(0, "First Swipy User"), (2, "Third Swipy")] {
+        let selected = h
+            .post(&format!("/messages/{gid}/swipe"), json!({"index":index}))
+            .await;
+        assert_eq!(selected["messages"][0]["content"], expected);
+        let upstream = rofu_core::context::build(
+            &c,
+            &json!({}),
+            selected["messages"].as_array().unwrap(),
+            &[],
+            false,
+        );
+        assert_eq!(upstream.last().unwrap()["content"], expected);
+    }
     assert_eq!(
         h.request(
             Method::POST,
@@ -457,10 +463,25 @@ async fn swipe_contract(h: &Harness, mock: &MockServer) {
         json!({"title":"Swipe contract"}),
     )
     .await;
+    let owner = text(&h.get("/auth/me").await, "id");
+    let old_image = h
+        .server
+        .state
+        .db
+        .put_attachment(&owner, "data:image/png;base64,b2xk")
+        .await
+        .unwrap();
+    let new_image = h
+        .server
+        .state
+        .db
+        .put_attachment(&owner, "data:image/png;base64,bmV3")
+        .await
+        .unwrap();
     let events = h
         .events(
             &cid,
-            json!({"content":"Original user","images":["old image"]}),
+            json!({"content":"Original user","images":[old_image.clone()]}),
         )
         .await;
     let user = events.iter().find(|e| e["type"] == "user_message").unwrap()["message"].clone();
@@ -471,8 +492,7 @@ async fn swipe_contract(h: &Harness, mock: &MockServer) {
         .clone();
     let uid = text(&user, "id");
     let aid = text(&assistant, "id");
-    let owner = text(&h.get("/auth/me").await, "id");
-    // Old messages remain uninitialized until their first swipe operation.
+    // Every newly persisted message already has its first snapshot.
     let raw = h
         .server
         .state
@@ -481,7 +501,8 @@ async fn swipe_contract(h: &Harness, mock: &MockServer) {
         .await
         .unwrap()
         .unwrap();
-    assert!(raw.get("swipes").is_none());
+    assert_eq!(raw["swipes"].as_array().unwrap().len(), 1);
+    assert_eq!(raw["swipe_index"], 0);
     assert_eq!(user["swipe_index"], 0);
     assert_eq!(user["swipe_count"], 1);
     assert_eq!(
@@ -596,7 +617,7 @@ async fn swipe_contract(h: &Harness, mock: &MockServer) {
     let edit_events = h
         .events(
             &cid,
-            json!({"edit_message_id":uid,"content":"Edited user","images":["new image"]}),
+            json!({"edit_message_id":uid,"content":"Edited user","images":[new_image.clone()]}),
         )
         .await;
     assert_eq!(edit_events[0]["message"]["swipe_count"], 2);
@@ -605,7 +626,7 @@ async fn swipe_contract(h: &Harness, mock: &MockServer) {
     assert_eq!(edited.len(), 3);
     assert_eq!(edited[1]["swipes"][0]["tail"], json!(original[2..]));
     assert_eq!(edited[1]["swipes"][1]["tail"], json!([]));
-    assert_eq!(edited[1]["parts"]["images"], json!(["new image"]));
+    assert_eq!(edited[1]["parts"]["images"], json!([new_image.clone()]));
     assert_eq!(
         h.get(&format!("/conversations/{cid}/messages?limit=2"))
             .await["messages"][0]["swipe_count"],
@@ -618,7 +639,7 @@ async fn swipe_contract(h: &Harness, mock: &MockServer) {
     assert_eq!(restored["messages"][0]["content"], "Original user");
     assert_eq!(
         restored["messages"][0]["parts"]["images"],
-        json!(["old image"])
+        json!([old_image.clone()])
     );
     let restored_raw = h.server.state.db.messages(&owner, &cid).await.unwrap();
     assert_eq!(restored_raw[2..], original[2..]);
@@ -695,7 +716,7 @@ async fn swipe_contract(h: &Harness, mock: &MockServer) {
         before[2..]
     );
 
-    // Branch copies only active contents; raw persisted copies have no swipe/tail metadata.
+    // Branch copies only active contents and starts a fresh one-swipe history.
     let branch = h
         .post(
             &format!("/messages/{}/branch", text(&before[2], "id")),
@@ -713,7 +734,9 @@ async fn swipe_contract(h: &Harness, mock: &MockServer) {
     for (copy, source) in copies.iter().zip(before.iter()) {
         assert_ne!(copy["id"], source["id"]);
         assert_eq!(copy["content"], source["content"]);
-        for key in ["swipes", "tail", "swipe_index", "swipe_count"] {
+        assert_eq!(copy["swipes"].as_array().unwrap().len(), 1);
+        assert_eq!(copy["swipe_index"], 0);
+        for key in ["tail", "swipe_count"] {
             assert!(copy.get(key).is_none());
         }
     }
@@ -1053,7 +1076,7 @@ async fn conversation_map(h: &Harness) {
             "user",
             "abcdefghijklmnopqrstuvwxyz HELLO_%\\中文 后面还有文字文字",
         ),
-        ("assistant", "Legacy plain HELLO"),
+        ("assistant", "Plain HELLO"),
         ("user", "other text"),
         ("assistant", ""),
     ];
@@ -1063,7 +1086,7 @@ async fn conversation_map(h: &Harness) {
             m["visible"] = json!(false);
         }
         if i == 1 {
-            m["parts"] = json!({"images":["https://example.invalid/test.png"], "segments":[
+            m["parts"] = json!({"images":[h.server.state.db.put_attachment(&uid,"data:image/png;base64,eA==").await.unwrap()], "segments":[
                 {"type":"reasoning","text":"PRIVATE REASONING"},
                 {"type":"text","text":"# Hello "},
                 {"type":"tool","arguments":"PRIVATE ARGUMENTS","result":"PRIVATE RESULT"},
@@ -1253,6 +1276,13 @@ async fn conversation_map(h: &Harness) {
         .post("/conversations", json!({"character_id":character["id"]}))
         .await;
     let cid = text(&conv, "id");
+    let reference = h
+        .server
+        .state
+        .db
+        .put_attachment(&uid, "data:image/png;base64,eA==")
+        .await
+        .unwrap();
     let mut tx = h.server.state.db.pool.begin().await.unwrap();
     for i in 1..=10_000 {
         let mut m = rofu_core::chat::message(
@@ -1267,8 +1297,7 @@ async fn conversation_map(h: &Harness) {
                 {"type":"text","text":m["content"]},
                 {"type":"tool","arguments":"{}","result":"ignored result"}
             ]);
-            m["swipes"] =
-                json!([{"content":"old inactive","parts":{"images":["ignored image"]}},{}]);
+            m["swipes"] = json!([{"content":"old inactive","parts":{"images":[reference]}},{}]);
         }
         sqlx::query(
             "INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5)",
@@ -1348,7 +1377,13 @@ async fn character_pagination(h: &Harness) {
                 {"type":"tool","name":"ignored tool name","arguments":"{\"问\":\"🙂\"}","result":"结果🙂"}
             ]);
             m["actual"] = json!("ignored actual ".repeat(100));
-            m["parts"]["images"] = json!(["ignored image".repeat(100)]);
+            m["parts"]["images"] = json!([h
+                .server
+                .state
+                .db
+                .put_attachment(&uid, "data:image/png;base64,eA==")
+                .await
+                .unwrap()]);
             let active = m.clone();
             let mut inactive = active.clone();
             inactive["content"] = json!("ignored inactive swipe".repeat(100));
@@ -1364,8 +1399,8 @@ async fn character_pagination(h: &Harness) {
     assert!(all.is_array());
     assert_eq!(
         h.get(&format!("/conversations/{cid}/messages?before_seq=0"))
-            .await,
-        all
+            .await["messages"],
+        json!([])
     );
     for (query, start, chars, more) in [
         ("max_chars=0", 5, 18, true),
@@ -1455,45 +1490,6 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
     )
     .await;
     let settings = h.get("/settings").await;
-    for mode in ["instant", "traditional", "unknown"] {
-        let mut legacy = h
-            .post("/characters", json!({"context":{"mode":mode}}))
-            .await;
-        let expected = mode == "instant";
-        assert_eq!(legacy["context"]["instant"], expected);
-        assert_eq!(legacy["context"]["summarize"], true);
-        // Simulate a record written before the new switches existed.
-        legacy["context"].as_object_mut().unwrap().remove("instant");
-        legacy["context"]
-            .as_object_mut()
-            .unwrap()
-            .remove("summarize");
-        sqlx::query("UPDATE entities SET data=$1 WHERE id=$2")
-            .bind(legacy.to_string())
-            .bind(text(&legacy, "id"))
-            .execute(&h.server.state.db.pool)
-            .await
-            .unwrap();
-        let read = h.get(&format!("/characters/{}", text(&legacy, "id"))).await;
-        assert_eq!(read["context"]["instant"], expected);
-        assert_eq!(read["context"]["summarize"], true);
-        let exported = h
-            .get(&format!("/characters/{}/export", text(&legacy, "id")))
-            .await;
-        assert_eq!(exported["context"], read["context"]);
-        let imported = h.post("/characters/import", json!({"json":exported})).await;
-        assert_eq!(imported["context"], read["context"]);
-        let listed = h.get("/characters").await;
-        assert_eq!(
-            listed
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|c| c["id"] == legacy["id"])
-                .unwrap()["context"],
-            read["context"]
-        );
-    }
     for kind in ["openai", "responses"] {
         let (mut model, mut c, _) = h.fixture(mock, kind, "http").await;
         model["max_output"] = json!(73);
@@ -1504,17 +1500,13 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
         )
         .await;
         c["card"] = json!({"system_prompt":"Switch contract"});
-        c["tool_ids"] = json!([]);
+        c["plugin_ids"] = json!([]);
         c["mcp"] = json!([]);
         c["memory"] = json!({"enabled":false});
         let character_path = format!("/characters/{}", text(&c, "id"));
         for (instant, summarize) in [(false, false), (false, true), (true, false), (true, true)] {
-            c["context"] = json!({"instant":instant,"summarize":summarize,"mode":"traditional","keep_recent":1,"display_recent":0,"compress_threshold":1});
+            c["context"] = json!({"instant":instant,"summarize":summarize,"keep_recent":1,"display_recent":0,"compress_threshold":1});
             let saved = h.json(Method::PUT, &character_path, c.clone()).await;
-            assert_eq!(
-                saved["context"]["mode"],
-                if instant { "instant" } else { "traditional" }
-            );
             let conv = h
                 .post("/conversations", json!({"character_id":c["id"]}))
                 .await;
@@ -1627,6 +1619,8 @@ async fn instant_summary_contract(h: &Harness, mock: &MockServer) {
             {"type":"text","text":"DUPLICATE SEGMENT"},
             {"type":"tool","id":"RAW TOOL ID","name":"dice","arguments":"骰".repeat(121),"result":"点".repeat(201)}
         ]);
+        reply["swipes"] = json!([reply.clone()]);
+        reply["swipe_index"] = json!(0);
         sqlx::query("UPDATE messages SET data=$1 WHERE id=$2")
             .bind(reply.to_string())
             .bind(text(&reply, "id"))
@@ -1932,7 +1926,7 @@ async fn attachment_contract(h: &Harness, mock: &MockServer) {
         model,
     )
     .await;
-    character["tool_ids"] = json!([]);
+    character["plugin_ids"] = json!([]);
     character["mcp"] = json!([]);
     character["memory"] = json!({"enabled":false});
     character["context"] = json!({"summarize":false,"instant":false});
@@ -2018,253 +2012,88 @@ async fn attachment_contract(h: &Harness, mock: &MockServer) {
     }
 }
 
-async fn legacy_image_migration(database: &str) {
-    use rofu_core::db::Db;
-    let db = Db::connect(database).await.unwrap();
-    let uid = "legacy-owner";
-    let mut m = rofu_core::chat::message("legacy-conv", 1000, "user", "legacy text");
-    m["parts"]["images"] = json!(["data:image/png;base64,eA=="]);
-    m["swipes"] = json!([{"parts":{"images":["data:image/png;base64,eA=="]},"tail":[m.clone()]}]);
-    sqlx::query(
-        "INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5)",
-    )
-    .bind(text(&m, "id"))
-    .bind(uid)
-    .bind("legacy-conv")
-    .bind(1000i64)
-    .bind(m.to_string())
-    .execute(&db.pool)
-    .await
-    .unwrap();
-    let c = db
-        .save(uid, "character", json!({"name":"Legacy"}))
-        .await
-        .unwrap();
-    let mut raw = c.clone();
-    // Unknown card extensions must survive migration untouched.
-    raw["card"] =
-        json!({"extensions":{"images":[{"arbitrary":"metadata"}],"avatar":"data:not-an-image"}});
-    raw["avatar"] = json!("data:image/png;base64,eA==");
-    sqlx::query("UPDATE entities SET data=$1 WHERE id=$2")
-        .bind(raw.to_string())
-        .bind(text(&c, "id"))
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    sqlx::query("DELETE FROM schema_version WHERE version=2")
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    db.pool.close().await;
-    let db = Db::connect(database).await.unwrap();
-    let migrated = db.message(uid, &text(&m, "id")).await.unwrap().unwrap();
-    assert!(!migrated.to_string().contains("data:image"));
-    assert_eq!(migrated["content"], "legacy text");
-    assert_eq!(migrated["parts"]["images"][0]["bytes"], 1);
-    assert_eq!(
-        db.resolve_image(uid, &migrated["parts"]["images"][0])
-            .await
-            .unwrap(),
-        "data:image/png;base64,eA=="
-    );
-    let avatar = db
-        .get(uid, "character", &text(&c, "id"))
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(text(&avatar, "avatar").starts_with("/api/attachments/"));
-    assert_eq!(avatar["card"], raw["card"]);
-    db.pool.close().await;
-    let db = Db::connect(database).await.unwrap();
-    assert_eq!(
-        db.message(uid, &text(&m, "id")).await.unwrap().unwrap(),
-        migrated
-    );
-    db.pool.close().await;
-}
-
-async fn tool_summary_contract(h: &Harness) {
-    assert_eq!(h.get("/tools?summary=1").await, json!([]));
-    let codes = [
-        format!(
-            "// {}\nfunction main(args) {{ return args; }}",
-            "long code ".repeat(10000)
-        ),
-        "function main() { return '中文工具😀e\u{301}'; }\n// \"quoted\" \\".into(),
-        String::new(),
-    ];
-    let mut full = Vec::new();
-    for (index, code) in codes.iter().enumerate() {
-        let tool = h
-            .post(
-                "/tools",
-                json!({
-                    "name":format!("summary-{index}"), "description":"工具说明",
-                    "parameters":{"type":"object","properties":{"n":{"type":"integer"}}},
-                    "models":["model-filter"], "enabled":true, "code":code,
-                    "code_chars":999999
-                }),
-            )
-            .await;
-        assert_eq!(tool["code"], *code);
-        assert!(tool.get("code_chars").is_none());
-        full.push(tool);
-    }
-    // Preserve the existing created_at/id ordering, including timestamp ties.
-    full.sort_by_key(|tool| (tool["created_at"].as_i64().unwrap(), text(tool, "id")));
-    assert_eq!(h.get("/tools").await, json!(full));
-    for query in ["summary=0", "summary=false", "summary=other"] {
-        assert_eq!(h.get(&format!("/tools?{query}")).await, json!(full));
-    }
-    let expected: Vec<_> = full
-        .iter()
-        .map(|tool| {
-            let mut summary = tool.clone();
-            let code = summary.as_object_mut().unwrap().remove("code").unwrap();
-            summary["code_chars"] = json!(code.as_str().unwrap().chars().count());
-            summary
-        })
-        .collect();
-    for query in ["summary=1", "summary=true"] {
-        assert_eq!(h.get(&format!("/tools?{query}")).await, json!(expected));
-    }
-    for tool in &full {
+async fn extra_body_contract(h: &Harness, mock: &MockServer) {
+    for kind in ["openai", "responses"] {
+        let provider=h.post("/providers",json!({"name":"Overrides","kind":kind,"base_url":mock.url,"extra_body":{"provider":{"order":["anthropic"],"allow_fallbacks":false},"remove":"value"}})).await;
+        let model=h.post("/models",json!({"provider_id":provider["id"],"model_id":"override-model","tool_call":false,"extra_body":{"provider":{"order":["google"]},"remove":null}})).await;
         assert_eq!(
-            h.get(&format!("/tools/{}?summary=1", text(tool, "id")))
-                .await,
-            *tool
+            h.get(&format!("/providers/{}", text(&provider, "id")))
+                .await["extra_body"],
+            provider["extra_body"]
         );
-    }
-    let index = full
-        .iter()
-        .position(|tool| tool["name"] == "summary-1")
-        .unwrap();
-    let path = format!("/tools/{}", text(&full[index], "id"));
-    let mut toggle = expected[index].clone();
-    toggle["enabled"] = json!(false);
-    toggle["code_chars"] = json!(12345);
-    let saved = h.json(Method::PUT, &path, toggle.clone()).await;
-    assert_eq!(saved["code"], full[index]["code"]);
-    assert_eq!(saved["enabled"], false);
-    assert_eq!(saved["created_at"], full[index]["created_at"]);
-    assert!(saved.get("code_chars").is_none());
-    assert_eq!(h.get(&path).await, saved);
-    let persisted = h
-        .server
-        .state
-        .db
-        .get(
-            &text(&h.get("/auth/me").await, "id"),
-            "tool",
-            &text(&saved, "id"),
+        assert_eq!(
+            h.get(&format!("/models/{}", text(&model, "id"))).await["extra_body"],
+            model["extra_body"]
+        );
+        for value in [Value::Null, json!([]), json!("bad"), json!(false), json!(1)] {
+            for path in [
+                "/providers".to_string(),
+                format!("/providers/{}", text(&provider, "id")),
+                "/models".to_string(),
+                format!("/models/{}", text(&model, "id")),
+            ] {
+                let method = if path.matches('/').count() == 1 {
+                    Method::POST
+                } else {
+                    Method::PUT
+                };
+                let response = h
+                    .request(
+                        method,
+                        &path,
+                        json!({"provider_id":provider["id"],"extra_body":value}),
+                    )
+                    .await;
+                assert_eq!(response.status(), 400, "{path}: {value}");
+            }
+        }
+        h.json(
+            Method::PUT,
+            "/settings",
+            json!({"fast_model_id":model["id"]}),
         )
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(persisted, saved);
-    let run = h
-        .post("/tools/run", json!({"code":saved["code"],"args":{}}))
         .await;
-    assert_eq!(run["is_error"], false);
-    assert_eq!(run["result"], "中文工具😀e\u{301}");
-
-    let other = rofu_core::auth::create(
-        &h.server.state.db,
-        &format!("tool-summary-{}", id()),
-        "secret",
-        false,
-    )
-    .await
-    .unwrap();
-    let login = rofu_core::auth::login(
-        &h.server.state.db,
-        &json!({"username":other["username"],"password":"secret"}),
-    )
-    .await
-    .unwrap();
-    for method in [Method::GET, Method::PUT, Method::DELETE] {
-        let response = h
-            .client
-            .request(method, format!("{}{path}", h.base))
-            .bearer_auth(text(&login, "token"))
-            .json(&toggle)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 404);
-    }
-    let foreign = h
-        .server
-        .state
-        .db
-        .save(
-            &text(&other, "id"),
-            "tool",
-            json!({"name":"foreign","code":"秘密"}),
+        let character=h.post("/characters",json!({"name":"Override test","model_id":model["id"],"context":{"instant":true,"summarize":true,"keep_recent":1,"compress_threshold":1},"memory":{"enabled":true,"auto_scan":false}})).await;
+        let conv = h
+            .post("/conversations", json!({"character_id":character["id"]}))
+            .await;
+        let cid = text(&conv, "id");
+        let start = mock.state.requests.lock().await.len();
+        h.events(
+            &cid,
+            json!({"content":"A long story about arriving at the village and choosing a room."}),
         )
-        .await
-        .unwrap();
-    for query in ["", "?summary=1", "?summary=true"] {
-        let ours = h.get(&format!("/tools{query}")).await;
-        assert_eq!(ours.as_array().unwrap().len(), full.len());
-        assert!(!ours
-            .as_array()
-            .unwrap()
+        .await;
+        wait_title(h, &cid).await;
+        h.post(&format!("/conversations/{cid}/memory_scan"), json!({}))
+            .await;
+        let requests = mock.state.requests.lock().await[start..].to_vec();
+        assert!(requests
             .iter()
-            .any(|tool| tool["id"] == foreign["id"]));
-        let theirs: Value = h
-            .client
-            .get(format!("{}/tools{query}", h.base))
-            .bearer_auth(text(&login, "token"))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(theirs.as_array().unwrap().len(), 1);
-        assert_eq!(theirs[0]["id"], foreign["id"]);
-        if !query.is_empty() {
-            assert!(theirs[0].get("code").is_none());
-            assert_eq!(theirs[0]["code_chars"], 2);
+            .any(|r| upstream_system(r).starts_with("Generate a short")));
+        assert!(requests
+            .iter()
+            .any(|r| upstream_system(r).starts_with("Condense one")));
+        assert!(requests
+            .iter()
+            .any(|r| upstream_system(r).starts_with("Summarize")));
+        for body in requests {
+            assert_eq!(
+                body["provider"],
+                json!({"order":["google"],"allow_fallbacks":false})
+            );
+            assert!(body.get("remove").is_none());
         }
     }
-    assert_eq!(h.get(&path).await, saved);
-    toggle["code"] = json!("");
-    let cleared = h.json(Method::PUT, &path, toggle).await;
-    assert_eq!(cleared["code"], "");
-    assert!(cleared.get("code_chars").is_none());
-    assert_eq!(h.get(&path).await, cleared);
-    let summaries = h.get("/tools?summary=1").await;
-    let cleared_summary = summaries
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|tool| tool["id"] == cleared["id"])
-        .unwrap();
-    assert_eq!(cleared_summary["code_chars"], 0);
-    let stored: String = sqlx::query_scalar("SELECT data FROM entities WHERE id=$1 AND user_id=$2")
-        .bind(text(&cleared, "id"))
-        .bind(text(&h.get("/auth/me").await, "id"))
-        .fetch_one(&h.server.state.db.pool)
-        .await
-        .unwrap();
-    let stored: Value = serde_json::from_str(&stored).unwrap();
-    assert_eq!(stored["format"], "legacy-main");
-    assert_eq!(rofu_core::plugins::legacy_tool(stored), cleared);
+    h.json(Method::PUT, "/settings", json!({})).await;
 }
 
 async fn run_suite(database: Option<String>) {
     let is_postgres = database.is_some();
-    let migration_dir = tempfile::tempdir().unwrap();
-    let migration_url = database
-        .clone()
-        .unwrap_or_else(|| format!("sqlite://{}/legacy.db", migration_dir.path().display()));
-    legacy_image_migration(&migration_url).await;
     let mock = MockServer::start().await;
     let h = Harness::new(database).await;
-    tool_summary_contract(&h).await;
     attachment_contract(&h, &mock).await;
+    extra_body_contract(&h, &mock).await;
     instant_summary_contract(&h, &mock).await;
     title_generation(&h, &mock).await;
     character_pagination(&h).await;
@@ -2332,6 +2161,16 @@ async fn run_suite(database: Option<String>) {
         );
         assert_eq!(types.iter().filter(|t| *t == "tool_end").count(), 3);
         assert!(!types.iter().any(|t| t == "error"), "{events:?}");
+        let dice_call = events
+            .iter()
+            .find(|e| e["type"] == "tool_start" && text(e, "name").ends_with("_roll_dice"))
+            .unwrap();
+        let dice = events
+            .iter()
+            .find(|e| e["type"] == "tool_end" && e["id"] == dice_call["id"])
+            .unwrap();
+        assert_eq!(dice["is_error"], false, "{dice}");
+        assert!(text(dice, "result").contains("= **7**"), "{dice}");
         let done = events
             .iter()
             .find(|e| e["type"] == "assistant_done")
@@ -2436,7 +2275,7 @@ async fn run_suite(database: Option<String>) {
         assert_eq!(exported["data"]["extensions"]["assets"], json!(["x"]));
         // Manual compression places the summary immediately before the retained tail.
         let mut cc = c.clone();
-        cc["context"] = json!({"mode":"traditional","keep_recent":1,"compress_threshold":1});
+        cc["context"] = json!({"keep_recent":1,"compress_threshold":1});
         h.json(Method::PUT, &format!("/characters/{}", text(&c, "id")), cc)
             .await;
         let summary = h
@@ -2459,7 +2298,7 @@ async fn run_suite(database: Option<String>) {
         );
         // Instant compression and retry failure keep the display text and fallback history intact.
         let mut cc = h.get(&format!("/characters/{}", text(&c, "id"))).await;
-        cc["context"] = json!({"mode":"instant","display_recent":0});
+        cc["context"] = json!({"instant":true,"display_recent":0});
         h.json(Method::PUT, &format!("/characters/{}", text(&c, "id")), cc)
             .await;
         let ev = h.events(&cid, json!({"content":"instant"})).await;
@@ -2744,7 +2583,7 @@ async fn run_suite(database: Option<String>) {
     )
     .await;
     let mut cc = c.clone();
-    cc["context"] = json!({"mode":"instant"});
+    cc["context"] = json!({"instant":true});
     h.json(Method::PUT, &format!("/characters/{}", text(&c, "id")), cc)
         .await;
     let response = h
@@ -2826,12 +2665,5 @@ async fn postgres_contract_and_agent_suite() {
 async fn sqlite_conversation_map() {
     let h = Harness::new(None).await;
     conversation_map(&h).await;
-    h.server.stop().await.unwrap();
-}
-
-#[tokio::test]
-async fn sqlite_tool_summaries() {
-    let h = Harness::new(None).await;
-    tool_summary_contract(&h).await;
     h.server.stop().await.unwrap();
 }

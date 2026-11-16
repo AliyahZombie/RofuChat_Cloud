@@ -5,7 +5,7 @@ pub mod routes;
 pub mod runtime;
 pub mod storage;
 
-use crate::model::{flag, text};
+use crate::model::text;
 use anyhow::{bail, ensure, Result};
 use serde_json::{json, Value};
 
@@ -15,28 +15,6 @@ pub const MAX_FOLLOW_UPS: usize = 2;
 pub const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 pub const STACK_LIMIT: usize = 1024 * 1024;
 
-pub fn legacy_plugin(mut tool: Value) -> Value {
-    tool["format"] = json!("legacy-main");
-    tool["version"] = json!("1");
-    tool["manifest"] = json!({"api_version":1,"permissions":["network"],"tools":[{
-        "id":"main","name":tool["name"],"description":tool["description"],
-        "parameters":tool["parameters"],"handler":"main"
-    }],"hooks":{},"menus":[]});
-    tool["granted_permissions"] = if flag(&tool, "enabled", true) {
-        json!(["network"])
-    } else {
-        json!([])
-    };
-    tool
-}
-pub fn legacy_tool(mut plugin: Value) -> Value {
-    if let Some(obj) = plugin.as_object_mut() {
-        for key in ["format", "version", "manifest", "granted_permissions"] {
-            obj.remove(key);
-        }
-    }
-    plugin
-}
 pub fn defaults() -> Value {
     json!({"name":"","version":"1","description":"","code":"","enabled":false,"models":[],"format":"module-v1",
         "manifest":{"api_version":1,"permissions":[],"tools":[],"hooks":{},"menus":[]},"granted_permissions":[]})
@@ -52,7 +30,7 @@ pub fn validate(plugin: &Value) -> Result<()> {
         "E_LIMIT: code exceeds 1 MiB"
     );
     ensure!(
-        matches!(plugin["format"].as_str(), Some("module-v1" | "legacy-main")),
+        plugin["format"] == "module-v1",
         "E_VALIDATION: unknown format"
     );
     ensure!(
@@ -249,23 +227,106 @@ pub fn validate_args(schema: &Value, v: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Keep the old tool_ids view while exposing the complete ordered plugin list.
-pub async fn project_character(
-    s: &crate::server::AppState,
-    uid: &str,
-    c: &mut Value,
-) -> Result<()> {
-    c["plugin_ids"] = c["tool_ids"].clone();
-    let mut legacy = vec![];
-    for id in c["plugin_ids"].as_array().into_iter().flatten() {
-        if s.db
-            .get(uid, "tool", id.as_str().unwrap_or(""))
-            .await?
-            .is_some()
-        {
-            legacy.push(id.clone());
+/// Installed once, in the same transaction that creates its owner.
+pub async fn install_dice(tx: &mut sqlx::Transaction<'_, sqlx::Any>, uid: &str) -> Result<()> {
+    let mut plugin = defaults();
+    plugin["id"] = json!(crate::model::id());
+    plugin["name"] = json!("骰子 / Dice");
+    plugin["description"] = json!("D&D / TRPG dice roller");
+    plugin["enabled"] = json!(true);
+    plugin["code"] = json!(include_str!("dice.js"));
+    plugin["manifest"]["tools"] = json!([{
+        "id":"roll_dice", "name":"roll_dice", "handler":"roll_dice",
+        "description":"Roll dice: kh/kl/dl/dh, adv/dis, exploding !/!!, rerolls r/ro, success counting, N#expr, labels, dF and d%.",
+        "parameters":{"type":"object","properties":{"expression":{"type":"string","description":"Dice expression, e.g. 4d6kh3 or 1d20+5 attack"},"reason":{"type":"string"}},"required":["expression"],"additionalProperties":false}
+    }]);
+    let now = crate::model::now();
+    plugin["created_at"] = json!(now);
+    plugin["updated_at"] = json!(now);
+    validate(&plugin)?;
+    sqlx::query("INSERT INTO entities(id,user_id,kind,parent_id,data,created_at,updated_at) VALUES ($1,$2,'plugin','',$3,$4,$4)")
+        .bind(text(&plugin,"id")).bind(uid).bind(plugin.to_string()).bind(now).execute(&mut **tx).await?;
+    sqlx::query(
+        "INSERT INTO plugin_storage(user_id,plugin_id,used_bytes,entry_count) VALUES ($1,$2,0,0)",
+    )
+    .bind(uid)
+    .bind(text(&plugin, "id"))
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod builtin_tests {
+    use super::*;
+    #[tokio::test]
+    async fn dice_full_syntax() {
+        let host: runtime::Host = std::sync::Arc::new(|_, _| {
+            Box::pin(async { anyhow::bail!("dice must not use host permissions") })
+        });
+        for expression in [
+            "4d6kh3",
+            "4d6kl2",
+            "4d6dl1",
+            "4d6dh1",
+            "adv+5",
+            "dis",
+            "d6!",
+            "d6!!",
+            "2d10r1",
+            "2d10ro<2",
+            "10d6>=5",
+            "3#1d20+4 attack",
+            "4dF",
+            "d%",
+            "(1d8+2)*2",
+        ] {
+            let code = format!("Math.random = () => 0.4;\n{}", include_str!("dice.js"));
+            let result = runtime::run(
+                code,
+                "roll_dice".into(),
+                json!({"expression":expression,"reason":"Test"}),
+                json!({}),
+                host.clone(),
+                false,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                result.as_str().unwrap().starts_with("🎲 Test\n"),
+                "{expression}: {result}"
+            );
+            assert!(
+                result.as_str().unwrap().contains("= **"),
+                "{expression}: {result}"
+            );
+        }
+        for (expression, expected) in [
+            ("d6!", "**9**"),
+            ("d6!!", "**9**"),
+            ("d6r6", "**3**"),
+            ("d6ro6", "**3**"),
+        ] {
+            let code = format!(
+                "let draws=[0.99,0.4]; Math.random=()=>draws.shift() ?? 0.4;\n{}",
+                include_str!("dice.js")
+            );
+            let result = runtime::run(
+                code,
+                "roll_dice".into(),
+                json!({"expression":expression}),
+                json!({}),
+                host.clone(),
+                false,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert!(
+                result.as_str().unwrap().contains(expected),
+                "{expression}: {result}"
+            );
         }
     }
-    c["tool_ids"] = json!(legacy);
-    Ok(())
 }

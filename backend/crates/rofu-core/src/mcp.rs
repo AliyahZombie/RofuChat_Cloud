@@ -1,5 +1,4 @@
 use crate::{
-    jstool::sanitize,
     model::text,
     sse::{Decoder, Event},
 };
@@ -201,5 +200,24 @@ impl Connection {
             })
             .unwrap_or_default();
         Ok((content, result["isError"] == true))
+    }
+}
+
+fn sanitize(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    if s.is_empty() {
+        "tool".into()
+    } else {
+        s
     }
 }

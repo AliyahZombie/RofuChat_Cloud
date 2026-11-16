@@ -78,14 +78,6 @@ pub fn build(
             .join("\n");
         blocks.push(format!("Long-term memory (pinned):\n{pinned}\nUse memory_search to recall information; memory_add, memory_update and memory_delete maintain durable memories."));
     }
-    // Keep every instruction in the first message, including legacy system rows.
-    // Only conversational roles participate in recent-history selection below.
-    for m in history
-        .iter()
-        .filter(|m| flag(m, "visible", true) && m["role"] == "system")
-    {
-        blocks.push(text(m, "content"));
-    }
     for m in history
         .iter()
         .filter(|m| flag(m, "visible", true) && m["role"] == "summary")
@@ -123,41 +115,33 @@ pub fn build(
                 continue;
             }
             if let Some(segments) = m["parts"]["segments"].as_array() {
-                if !segments.is_empty() {
-                    let mut buffer = String::new();
-                    for seg in segments {
-                        match seg["type"].as_str().unwrap_or("") {
-                            "text" => {
-                                if !buffer.is_empty() {
-                                    buffer.push_str("\n\n");
-                                }
-                                buffer.push_str(&text(seg, "text"));
+                let mut buffer = String::new();
+                for seg in segments {
+                    match seg["type"].as_str().unwrap_or("") {
+                        "text" => {
+                            if !buffer.is_empty() {
+                                buffer.push_str("\n\n");
                             }
-                            "tool" => {
-                                out.push(json!({"role":"assistant","content":std::mem::take(&mut buffer),"tool_calls":[{"id":seg["id"],"name":seg["name"],"arguments":seg["arguments"]}]}));
-                                out.push(json!({"role":"tool","call_id":seg["id"],"name":seg["name"],"content":seg["result"]}));
-                            }
-                            _ => {}
+                            buffer.push_str(&text(seg, "text"));
                         }
+                        "tool" => {
+                            out.push(json!({"role":"assistant","content":std::mem::take(&mut buffer),"tool_calls":[{"id":seg["id"],"name":seg["name"],"arguments":seg["arguments"]}]}));
+                            out.push(json!({"role":"tool","call_id":seg["id"],"name":seg["name"],"content":seg["result"]}));
+                        }
+                        _ => {}
                     }
-                    if m["tool_calls"].as_array().is_some_and(|a| !a.is_empty()) {
-                        out.push(json!({"role":"assistant","content":buffer,"tool_calls":m["tool_calls"]}));
-                    } else if !buffer.is_empty() {
-                        out.push(json!({"role":"assistant","content":buffer}));
-                    }
-                    continue;
+                }
+                if m["tool_calls"].as_array().is_some_and(|a| !a.is_empty()) {
+                    out.push(
+                        json!({"role":"assistant","content":buffer,"tool_calls":m["tool_calls"]}),
+                    );
+                } else if !buffer.is_empty() {
+                    out.push(json!({"role":"assistant","content":buffer}));
                 }
             }
-            if content.is_empty() && m["tool_calls"].as_array().is_none_or(|a| a.is_empty()) {
-                continue;
-            }
+            continue;
         }
         let mut message = json!({"role":role,"content":content});
-        if role == "assistant" {
-            if let Some(calls) = m.get("tool_calls") {
-                message["tool_calls"] = calls.clone();
-            }
-        }
         if role == "tool" {
             for key in ["call_id", "name"] {
                 if let Some(v) = m.get(key) {
@@ -223,33 +207,11 @@ mod tests {
             tokens(expected) + 4 + tokens("Hello") + 4
         );
 
-        history.push(json!({"role":"assistant","content":"Hi Alice"}));
+        history.push(crate::chat::message("c", 1000, "assistant", "Hi Alice"));
         history.push(json!({"role":"user","content":"Continue"}));
         let next = build(&c, &settings, &history, &memories, false);
         assert_eq!(&next[..out.len()], out.as_slice());
         assert_eq!(next.len(), out.len() + 2);
-    }
-    #[test]
-    fn default_system_and_legacy_instructions() {
-        let out = build(
-            &json!({"memory":{"enabled":false}}),
-            &json!({}),
-            &[
-                json!({"role":"system","content":"Legacy instruction"}),
-                json!({"role":"system","content":"Hidden instruction","visible":false}),
-                json!({"role":"summary","content":"Earlier"}),
-                json!({"role":"user","content":"Hello"}),
-            ],
-            &[],
-            false,
-        );
-        assert_eq!(
-            out,
-            vec![
-                json!({"role":"system","content":"You are a roleplay character. Stay in character and continue the conversation naturally.\n\nLegacy instruction\n\n[Summary of the earlier conversation]\nEarlier"}),
-                json!({"role":"user","content":"Hello"}),
-            ]
-        );
     }
     #[test]
     fn keyword_worldbook_changes_system_when_triggered() {
@@ -267,11 +229,11 @@ mod tests {
     }
     #[test]
     fn history_selection() {
-        let c = json!({"name":"Rofu","context":{"mode":"instant","display_recent":1},"memory":{"enabled":false}});
+        let c = json!({"name":"Rofu","context":{"instant":true,"display_recent":1},"memory":{"enabled":false}});
         let h = vec![
             json!({"role":"user","content":"hidden","visible":false}),
             json!({"role":"summary","content":"summary"}),
-            json!({"role":"assistant","content":"display","actual":"short","actual_status":"ok"}),
+            json!({"role":"assistant","content":"display","parts":{"segments":[{"type":"text","text":"display"}]},"actual":"short","actual_status":"ok"}),
             json!({"role":"assistant","content":"fallback","actual_status":"failed","parts":{"segments":[{"type":"text","text":"before"},{"type":"tool","id":"c","name":"dice","arguments":"{}","result":"7"},{"type":"text","text":"after"}]}}),
             json!({"role":"user","content":"latest"}),
         ];
@@ -288,7 +250,7 @@ mod tests {
         assert_eq!(out[3]["role"], "tool");
         assert_eq!(out[4]["content"], "after");
         let mut traditional = c.clone();
-        traditional["context"]["mode"] = json!("traditional");
+        traditional["context"]["instant"] = json!(false);
         assert_eq!(
             build(&traditional, &json!({}), &h, &[], true)[1]["content"],
             "display"
@@ -296,16 +258,16 @@ mod tests {
     }
 
     #[test]
-    fn explicit_switch_wins_and_hidden_actual_never_enters_context() {
+    fn independent_switches_and_hidden_actual_never_enters_context() {
         let history = vec![
             json!({"role":"assistant","content":"hidden display","actual":"hidden actual","actual_status":"ok","visible":false}),
             json!({"role":"summary","content":"summary"}),
-            json!({"role":"assistant","content":"display","actual":"note","actual_status":"ok"}),
+            json!({"role":"assistant","content":"display","parts":{"segments":[{"type":"text","text":"display"}]},"actual":"note","actual_status":"ok"}),
             json!({"role":"user","content":"recent"}),
         ];
         for summarize in [false, true] {
             for instant in [false, true] {
-                let c = json!({"context":{"mode":"instant","instant":instant,"summarize":summarize,"display_recent":1},"memory":{"enabled":false}});
+                let c = json!({"context":{"instant":instant,"summarize":summarize,"display_recent":1},"memory":{"enabled":false}});
                 let out = build(&c, &json!({}), &history, &[], false);
                 assert_eq!(out.len(), 3);
                 assert_eq!(out[1]["content"], if instant { "note" } else { "display" });

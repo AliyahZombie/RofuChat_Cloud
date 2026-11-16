@@ -16,5 +16,5 @@ serde_json.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
 tempfile = "3"

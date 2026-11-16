@@ -1,6 +1,6 @@
 use crate::{
     api::{self, ApiError, ApiResult},
-    card, chat, convmap, detect, jstool, llm, mcp, memory,
+    card, chat, convmap, detect, llm, mcp, memory,
     model::{id, now, number, text},
     server::AppState,
     swipes,
@@ -28,9 +28,10 @@ fn binary(bytes: Vec<u8>, mime: &str) -> ApiResult<Response> {
         .map_err(|e| ApiError::bad(e.to_string()))
 }
 async fn export_png(s: &AppState, uid: &str, mut c: Value) -> ApiResult<Vec<u8>> {
-    c["avatar"] = s.db.resolve_image(uid, &c["avatar"]).await?;
     let avatar = text(&c, "avatar");
-    if avatar.starts_with("https://") || avatar.starts_with("http://") {
+    if avatar.starts_with("/api/attachments/") {
+        c["avatar"] = s.db.resolve_image(uid, &c["avatar_attachment"]).await?;
+    } else if avatar.starts_with("https://") || avatar.starts_with("http://") {
         let response = s
             .client
             .get(&avatar)
@@ -53,6 +54,8 @@ async fn export_png(s: &AppState, uid: &str, mut c: Value) -> ApiResult<Vec<u8>>
         if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             c["avatar"] = json!(format!("data:image/png;base64,{}", STANDARD.encode(bytes)));
         }
+    } else {
+        c["avatar"] = json!("");
     }
     card::export_png(&c).map_err(|e| ApiError::bad(e.to_string()))
 }
@@ -151,18 +154,14 @@ pub async fn dispatch(
             if url.starts_with("https://") || url.starts_with("http://") {
                 return Ok(Some(Redirect::temporary(&url).into_response()));
             }
+            if !url.starts_with("/api/attachments/") {
+                return Err(ApiError::bad("avatar is not an attachment"));
+            }
             let mut c = c;
-            c["avatar"] = s.db.resolve_image(uid, &c["avatar"]).await?;
+            c["avatar"] = s.db.resolve_image(uid, &c["avatar_attachment"]).await?;
             let (bytes, mime) = card::avatar(&c).map_err(|e| ApiError::bad(e.to_string()))?;
             return Ok(Some(binary(bytes, &mime)?));
         }
-    }
-    if path == "tools/run" && method == Method::POST {
-        return Ok(Some(ok(jstool::run(
-            text(body, "code"),
-            body.get("args").cloned().unwrap_or_else(|| json!({})),
-        )
-        .await)));
     }
     if path == "mcp/test" && method == Method::POST {
         let outcome = mcp::Connection::connect(s.client.clone(), body.clone()).await;
@@ -230,7 +229,10 @@ pub async fn dispatch(
                         if q.contains_key("after_seq") || q.contains_key("around_seq") {
                             return Ok(Some(ok(message_window(s, uid, cid, q).await?)));
                         }
-                        if q.contains_key("limit") || q.contains_key("max_chars") {
+                        if q.contains_key("limit")
+                            || q.contains_key("max_chars")
+                            || q.contains_key("before_seq")
+                        {
                             let limit = q.get("limit").map(|value| {
                                 value.parse::<i64>().ok().filter(|n| *n > 0 && *n < i64::MAX)
                                     .ok_or_else(|| ApiError::bad("limit must be a positive integer less than 9223372036854775807"))
@@ -424,6 +426,7 @@ pub async fn dispatch(
                     .filter(|msg| number(msg, "seq", 0) <= number(&m, "seq", 0))
                 {
                     copy = swipes::active_only(&copy);
+                    swipes::initialize(&mut copy);
                     copy["id"] = json!(id());
                     copy["conversation_id"] = conv["id"].clone();
                     sqlx::query("INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5)").bind(text(&copy,"id")).bind(uid).bind(text(&conv,"id")).bind(number(&copy,"seq",0)).bind(copy.to_string()).execute(&mut *tx).await?;
@@ -498,7 +501,7 @@ async fn message_window(
         .map_err(anyhow::Error::from)?
         .len();
     // Directional pages report whether either side remains for around, and the
-    // requested direction for after. Legacy before-page responses are unchanged.
+    // requested direction for after.
     let has_more = if around.is_some() {
         has_more_before || has_more_after
     } else {

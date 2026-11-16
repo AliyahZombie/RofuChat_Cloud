@@ -340,7 +340,6 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
         "providers" => "provider",
         "models" => "model",
         "characters" => "character",
-        "tools" => "tool",
         "memories" => "memory",
         _ => "",
     };
@@ -366,13 +365,6 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
         }
         if parts.len() == 1 {
             if method == Method::GET {
-                if kind == "tool"
-                    && query
-                        .get("summary")
-                        .is_some_and(|value| value == "1" || value == "true")
-                {
-                    return Ok(ok(json!(s.db.tool_summaries(&uid).await?)));
-                }
                 let mut values = s.db.list(&uid, kind).await?;
                 values.retain(|v| match kind {
                     "model" => query
@@ -396,10 +388,7 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
                     }
                 }
                 for v in &mut values {
-                    if kind == "character" {
-                        crate::plugins::project_character(&s, &uid, v).await?;
-                    }
-                    redact(kind, v, true);
+                    redact(kind, v);
                 }
                 return Ok(ok(json!(values)));
             }
@@ -418,10 +407,7 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
             let eid = parts[1];
             let mut v = required(&s, &uid, kind, eid).await?;
             if method == Method::GET {
-                if kind == "character" {
-                    crate::plugins::project_character(&s, &uid, &mut v).await?;
-                }
-                redact(kind, &mut v, false);
+                redact(kind, &mut v);
                 return Ok(ok(v));
             }
             if method == Method::PUT {
@@ -450,12 +436,9 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
     }
     Err(ApiError::not_found())
 }
-fn redact(kind: &str, v: &mut Value, list: bool) {
+fn redact(kind: &str, v: &mut Value) {
     if kind == "provider" {
         v["api_key"] = json!(mask(&text(v, "api_key")));
-    }
-    if kind == "character" && list && text(v, "avatar").starts_with("data:") {
-        v["avatar"] = json!(format!("/api/characters/{}/avatar", text(v, "id")));
     }
 }
 async fn save_entity(
@@ -483,12 +466,14 @@ async fn save_entity(
             ensure_character_idle(s, uid, &character_id, running).await?;
         }
     }
+    if matches!(kind, "provider" | "model")
+        && input.get("extra_body").is_some_and(|v| !v.is_object())
+    {
+        return Err(ApiError::bad("extra_body must be an object"));
+    }
     let mut v = normalized(kind, input);
     v.as_object_mut().unwrap().remove("id");
     v.as_object_mut().unwrap().remove("created_at");
-    if kind == "tool" {
-        v.as_object_mut().unwrap().remove("code_chars");
-    }
     if let Some(ref old) = old {
         v["id"] = old["id"].clone();
         v["created_at"] = old["created_at"].clone();
@@ -497,9 +482,6 @@ async fn save_entity(
                 || text(&v, "api_key") == mask(&text(old, "api_key")))
         {
             v["api_key"] = old["api_key"].clone();
-        }
-        if kind == "tool" && input.get("code").is_none() {
-            v["code"] = old["code"].clone();
         }
     }
     if kind == "model" {
@@ -526,40 +508,19 @@ async fn save_entity(
         if !text(&v, "model_id").is_empty() {
             required(s, uid, "model", &text(&v, "model_id")).await?;
         }
-        if let Some(ids) = v["tool_ids"].as_array() {
-            for tid in ids {
-                required(s, uid, "tool", tid.as_str().unwrap_or("")).await?;
+        let ids = v["plugin_ids"]
+            .as_array()
+            .ok_or_else(|| ApiError::bad("plugin_ids must be an array"))?;
+        let mut unique = std::collections::HashSet::new();
+        for id in ids {
+            let id = id
+                .as_str()
+                .ok_or_else(|| ApiError::bad("plugin_ids must contain strings"))?;
+            if !unique.insert(id) {
+                return Err(ApiError::bad("duplicate plugin ID"));
             }
+            required(s, uid, "plugin", id).await?;
         }
-        if let Some(old) = &old {
-            let mut legacy = v["tool_ids"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-                .into_iter();
-            let mut order = vec![];
-            for id in old["tool_ids"].as_array().into_iter().flatten() {
-                if s.db
-                    .get(uid, "tool", id.as_str().unwrap_or(""))
-                    .await?
-                    .is_some()
-                {
-                    if let Some(next) = legacy.next() {
-                        order.push(next);
-                    }
-                } else if s
-                    .db
-                    .get(uid, "plugin", id.as_str().unwrap_or(""))
-                    .await?
-                    .is_some()
-                {
-                    order.push(id.clone());
-                }
-            }
-            order.extend(legacy);
-            v["tool_ids"] = json!(order);
-        }
-        v.as_object_mut().unwrap().remove("plugin_ids");
     }
     if kind == "memory" {
         v["source"] = json!("user");
@@ -568,10 +529,7 @@ async fn save_entity(
         }
     }
     let mut out = s.db.save(uid, kind, v).await?;
-    if kind == "character" {
-        crate::plugins::project_character(s, uid, &mut out).await?;
-    }
-    redact(kind, &mut out, false);
+    redact(kind, &mut out);
     Ok(out)
 }
 

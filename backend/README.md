@@ -75,13 +75,13 @@ Set `ROFU_DATABASE=sqlite:///data/rofuchat.db` in the environment file. No exter
 
 ## API and tools
 
-The stable HTTP/SSE contract is in `../docs/backend-spec.md` §6. Additive response details are recorded in `../docs/api.md`. Login at `POST /api/auth/login`, then send `Authorization: Bearer <token>` to protected routes; image/download URLs also accept `?token=`. Provider keys are masked in responses. Each user owns separate providers, models, characters, tools, conversations and memories.
+The stable HTTP/SSE contract is in `../docs/backend-spec.md` §6. Additive response details are recorded in `../docs/api.md`. Login at `POST /api/auth/login`, then send `Authorization: Bearer <token>` to protected routes; image/download URLs also accept `?token=`. Provider keys are masked in responses. Each user owns separate providers, models, characters, plugins, conversations and memories.
 
 Both provider kinds stream through the same agent loop. A chat continues after its SSE subscriber disconnects; only `/stop` or shutdown cancels it. The service saves partial replies every second. Reverse proxies should pass SSE without buffering and preserve the 15-second heartbeat.
 
-Local JS tools run in isolated QuickJS runtimes (64MB heap, 1MB stack, 10-second budget). `main(args)` may return a Promise. `console.log/info/warn/error` are collected; synchronous `http(method,url,body,headers)` returns `{status,body}`, caps responses at 1MB, and uses rustls. Loopback HTTP bypasses environment proxies. Tool errors become tool results rather than failing the entire agent turn.
+Plugins run API-1 ES modules in isolated QuickJS runtimes (64MB heap, 1MB stack, 10-second invocation budget). Named exports use async rofu APIs. Every new user receives an enabled Dice plugin; edit, disable or delete it through /api/plugins.
 
-MCP supports Streamable HTTP and legacy HTTP+SSE, custom headers, initialization, pagination and session IDs. Connections are reused within an agent turn. Failed MCP connections produce notices and are skipped after a 20-second timeout.
+MCP supports Streamable HTTP and HTTP+SSE, custom headers, initialization, pagination and session IDs. Connections are reused within an agent turn. Failed MCP connections produce notices and are skipped after a 20-second timeout.
 
 Traditional context compression preserves raw messages and adds a summary card; instant compression preserves display content and stores a separate `actual` value, falling back to full content on failure. Long-term memory loads only pinned entries into the prompt; tools retrieve other memories. The idle scanner checks every two minutes and advances its cursor even after a failed model request to avoid repeated charges. Disable it with `--no-memory-scanner`.
 

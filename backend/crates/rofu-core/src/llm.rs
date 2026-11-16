@@ -100,7 +100,27 @@ if let Some(calls)=m["tool_calls"].as_array(){for call in calls{input.push(json!
                 body[key] = self.params[key].clone();
             }
         }
+        merge_extra_body(&mut body, &self.provider["extra_body"]);
+        merge_extra_body(&mut body, &self.model["extra_body"]);
         body
+    }
+}
+/// Literal request overrides: objects recurse, null deletes, other values replace.
+fn merge_extra_body(body: &mut Value, extra: &Value) {
+    if let Some(extra) = extra.as_object() {
+        if !body.is_object() {
+            *body = json!({});
+        }
+        let object = body.as_object_mut().unwrap();
+        for (key, value) in extra {
+            if value.is_null() {
+                object.remove(key);
+            } else if value.is_object() {
+                merge_extra_body(object.entry(key.clone()).or_insert(Value::Null), value);
+            } else {
+                object.insert(key.clone(), value.clone());
+            }
+        }
     }
 }
 pub fn headers(
@@ -378,6 +398,30 @@ pub async fn complete(client: &reqwest::Client, request: Request) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn extra_body_merges_last_for_both_apis() {
+        for kind in ["openai", "responses"] {
+            let request = Request {
+                provider: json!({"kind":kind,"extra_body":{"provider":{"order":["anthropic"],"allow_fallbacks":false},"stream_options":{"include_usage":null,"custom":1},"replace":{"before":1},"nested":{"a":1,"b":2},"stream":false,"temperature":0.9}}),
+                model: json!({"model_id":"model","extra_body":{"provider":{"order":["google"]},"replace":[1,2],"nested":{"a":null,"c":3},"stream_options":{"custom":2},"store":null,"temperature":null,"new":{"absent":null,"present":true}}}),
+                messages: vec![],
+                params: json!({"temperature":0.2}),
+                tools: vec![],
+            };
+            let body = request.body();
+            assert_eq!(
+                body["provider"],
+                json!({"order":["google"],"allow_fallbacks":false})
+            );
+            assert_eq!(body["stream"], false);
+            assert_eq!(body["stream_options"], json!({"custom":2}));
+            assert_eq!(body["replace"], json!([1, 2]));
+            assert_eq!(body["nested"], json!({"b":2,"c":3}));
+            assert_eq!(body["new"], json!({"present":true}));
+            assert!(body.get("store").is_none());
+            assert!(body.get("temperature").is_none());
+        }
+    }
     #[test]
     fn request_shapes() {
         let mut req = Request {

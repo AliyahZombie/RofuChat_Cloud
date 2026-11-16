@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 pub async fn enabled(s: &AppState, uid: &str, character: &Value) -> Result<Vec<Value>> {
     let mut out = vec![];
-    if let Some(ids) = character["tool_ids"].as_array() {
+    if let Some(ids) = character["plugin_ids"].as_array() {
         for id in ids {
             if let Some(plugin) = s.db.get(uid, "plugin", id.as_str().unwrap_or("")).await? {
                 if flag(&plugin, "enabled", false) {

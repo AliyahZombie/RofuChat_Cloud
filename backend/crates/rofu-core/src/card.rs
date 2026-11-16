@@ -33,19 +33,6 @@ pub fn parse_card(input: &Value) -> Value {
             card[*field] = x.clone();
         }
     }
-    for (old, new) in [
-        ("char_name", "name"),
-        ("char_persona", "description"),
-        ("world_scenario", "scenario"),
-        ("char_greeting", "first_mes"),
-        ("example_dialogue", "mes_example"),
-    ] {
-        if text(&card, new).is_empty() {
-            if let Some(x) = v.get(old) {
-                card[new] = x.clone();
-            }
-        }
-    }
     if !card["extensions"].is_object() {
         card["extensions"] = json!({});
     }
@@ -226,7 +213,6 @@ mod tests {
     #[test]
     fn versions_and_png() {
         for v in [
-            json!({"char_name":"Rofu","char_persona":"kind"}),
             json!({"spec":"chara_card_v2","data":{"name":"Rofu","description":"kind"}}),
             json!({"spec":"chara_card_v3","data":{"name":"Rofu","description":"kind","assets":[]}}),
         ] {

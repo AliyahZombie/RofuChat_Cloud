@@ -23,14 +23,13 @@ const FIELDS: &[&str] = &[
 pub fn count(m: &Value) -> usize {
     m["swipes"]
         .as_array()
-        .filter(|a| !a.is_empty())
-        .map_or(1, Vec::len)
+        .expect("stored message must have swipes")
+        .len()
 }
 pub fn index(m: &Value) -> usize {
     m["swipe_index"]
         .as_u64()
-        .map_or(0, |i| i as usize)
-        .min(count(m) - 1)
+        .expect("stored message must have swipe_index") as usize
 }
 pub fn snapshot(m: &Value) -> Value {
     let mut swipe = json!({});
@@ -42,30 +41,28 @@ pub fn snapshot(m: &Value) -> Value {
     }
     swipe
 }
-pub fn ensure(m: &mut Value) {
-    if m["swipes"].as_array().is_none_or(|a| a.is_empty()) {
-        m["swipes"] = json!([snapshot(m)]);
-        m["swipe_index"] = json!(0);
-    }
+/// Initialize new messages only; stored messages always carry snapshots.
+pub fn initialize(m: &mut Value) {
+    m["swipes"] = json!([snapshot(m)]);
+    m["swipe_index"] = json!(0);
 }
 /// Update the active snapshot while preserving its archived user branch.
 pub fn sync(m: &mut Value) {
-    if m["swipes"].as_array().is_some_and(|a| !a.is_empty()) {
-        let i = index(m);
-        let mut swipe = snapshot(m);
-        if m["role"] == "user" {
-            swipe["tail"] = m["swipes"][i]["tail"]
-                .as_array()
-                .cloned()
-                .map(Value::Array)
-                .unwrap_or_else(|| json!([]));
-        }
-        let mut preserved = m["swipes"][i].clone();
-        crate::model::merge(&mut preserved, &swipe);
-        m["swipes"][i] = preserved;
-        m["swipe_index"] = json!(i);
+    let i = index(m);
+    let mut swipe = snapshot(m);
+    if m["role"] == "user" {
+        swipe["tail"] = m["swipes"][i]["tail"]
+            .as_array()
+            .cloned()
+            .map(Value::Array)
+            .unwrap_or_else(|| json!([]));
     }
+    let mut preserved = m["swipes"][i].clone();
+    crate::model::merge(&mut preserved, &swipe);
+    m["swipes"][i] = preserved;
+    m["swipe_index"] = json!(i);
 }
+
 pub fn activate(m: &mut Value, i: usize) {
     let swipe = m["swipes"][i].clone();
     for key in FIELDS {
@@ -74,7 +71,6 @@ pub fn activate(m: &mut Value, i: usize) {
     m["swipe_index"] = json!(i);
 }
 pub fn append(m: &mut Value, fresh: &Value) {
-    ensure(m);
     sync(m);
     let swipes = m["swipes"].as_array_mut().unwrap();
     swipes.push(snapshot(fresh));
@@ -115,7 +111,6 @@ pub async fn archive_tail(
     uid: &str,
     m: &mut Value,
 ) -> anyhow::Result<()> {
-    ensure(m);
     sync(m);
     let cid = text(m, "conversation_id");
     let seq = number(m, "seq", 0);
@@ -193,7 +188,6 @@ pub async fn change(
     if delete && count(&m) == 1 {
         return Err(ApiError::bad("cannot delete the only swipe"));
     }
-    ensure(&mut m);
     sync(&mut m);
     let current = index(&m);
     let switching = requested != current && !delete || delete && requested == current;

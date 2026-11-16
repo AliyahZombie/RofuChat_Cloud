@@ -11,7 +11,6 @@ pub mod chat;
 pub mod context;
 mod convmap;
 pub mod detect;
-pub mod jstool;
 pub mod llm;
 pub mod mcp;
 pub mod memory;

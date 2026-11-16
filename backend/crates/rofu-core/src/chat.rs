@@ -1,6 +1,6 @@
 use crate::{
     api::{self, ApiError, ApiResult},
-    card, context, jstool, llm, mcp, memory,
+    card, context, llm, mcp, memory,
     model::{flag, id, instant, normalized, now, number, summarize, text},
     plugins::{
         self,
@@ -33,7 +33,9 @@ fn emit(tx: &Events, v: Value) {
     let _ = tx.send(v);
 }
 pub fn message(cid: &str, seq: i64, role: &str, content: &str) -> Value {
-    json!({"id":id(),"conversation_id":cid,"seq":seq,"role":role,"content":content,"actual":null,"actual_status":"none","actual_error":null,"visible":true,"parts":{"segments":[],"images":[],"error":null},"model":"","model_name":"","model_icon":"","usage":{"input":0,"output":0,"cached":0,"reasoning":0,"duration_ms":0,"ttft_ms":0,"estimated":true,"last_input":0},"created_at":now()})
+    let mut m = json!({"id":id(),"conversation_id":cid,"seq":seq,"role":role,"content":content,"actual":null,"actual_status":"none","actual_error":null,"visible":true,"parts":{"segments":if role == "assistant" && !content.is_empty() {json!([{"type":"text","text":content}])} else {json!([])},"images":[],"error":null},"model":"","model_name":"","model_icon":"","usage":{"input":0,"output":0,"cached":0,"reasoning":0,"duration_ms":0,"ttft_ms":0,"estimated":true,"last_input":0},"created_at":now()});
+    crate::swipes::initialize(&mut m);
+    m
 }
 pub async fn resolve(
     s: &AppState,
@@ -304,6 +306,7 @@ pub async fn create_conversation(s: &AppState, uid: &str, body: &Value) -> ApiRe
                     &text(&c, "name"),
                     &text(&settings, "user_name")
                 ));
+                swipes::edit_text(&mut version);
                 swipes::snapshot(&version)
             })
             .collect::<Vec<_>>());
@@ -343,8 +346,7 @@ pub async fn begin(s: AppState, uid: String, cid: String, body: Value) -> ApiRes
     let conv = api::conversation(&s, &uid, &cid).await?;
     let character = api::required(&s, &uid, "character", &text(&conv, "character_id")).await?;
     let (model, provider) = resolve(&s, &uid, &character, false).await?;
-    if body.get("plugin_protocol").is_some_and(|v| v != 1)
-        || body.get("client_id").is_some_and(|v| !v.is_string())
+    if body.get("client_id").is_some_and(|v| !v.is_string())
         || body
             .get("ui_capabilities")
             .is_some_and(|v| !v.as_array().is_some_and(|a| a.iter().all(Value::is_string)))
@@ -642,7 +644,6 @@ pub(crate) async fn tool_definitions(
 }
 struct Toolbox {
     definitions: Vec<Value>,
-    local: HashMap<String, Value>,
     plugins: HashMap<String, (Value, Value)>,
     mcp: Vec<mcp::Connection>,
     remote: HashMap<String, (usize, String)>,
@@ -652,7 +653,6 @@ impl Toolbox {
     async fn load(s: &AppState, uid: &str, c: &Value, model: &Value, tx: &Events) -> Result<Self> {
         let mut this = Self {
             definitions: vec![],
-            local: HashMap::new(),
             plugins: HashMap::new(),
             mcp: vec![],
             remote: HashMap::new(),
@@ -665,7 +665,7 @@ impl Toolbox {
             this.memory = true;
             this.definitions.extend(memory::definitions());
         }
-        if let Some(ids) = c["tool_ids"].as_array() {
+        if let Some(ids) = c["plugin_ids"].as_array() {
             for tid in ids {
                 if let Some(t) = s.db.get(uid, "plugin", tid.as_str().unwrap_or("")).await? {
                     if !flag(&t, "enabled", true) {
@@ -677,26 +677,13 @@ impl Toolbox {
                     {
                         continue;
                     }
-                    if t["format"] == "module-v1" {
-                        if let Some(tools) = t["manifest"]["tools"].as_array() {
-                            for tool in tools {
-                                let name = format!("p_{}_{}", text(&t, "id"), text(tool, "id"));
-                                this.definitions.push(json!({"name":name,"description":tool["description"],"parameters":tool["parameters"]}));
-                                this.plugins.insert(name, (t.clone(), tool.clone()));
-                            }
+                    if let Some(tools) = t["manifest"]["tools"].as_array() {
+                        for tool in tools {
+                            let name = format!("p_{}_{}", text(&t, "id"), text(tool, "id"));
+                            this.definitions.push(json!({"name":name,"description":tool["description"],"parameters":tool["parameters"]}));
+                            this.plugins.insert(name, (t.clone(), tool.clone()));
                         }
-                        continue;
                     }
-                    let name = jstool::sanitize(&text(&t, "name"));
-                    if this.definitions.iter().any(|d| d["name"] == name) {
-                        emit(
-                            tx,
-                            json!({"type":"notice","message":format!("Duplicate tool name: {name}")}),
-                        );
-                        continue;
-                    }
-                    this.definitions.push(json!({"name":name,"description":t["description"],"parameters":t["parameters"]}));
-                    this.local.insert(name, t);
                 }
             }
         }
@@ -775,10 +762,6 @@ impl Toolbox {
                     (e.to_string(), true)
                 }
             };
-        }
-        if let Some(tool) = self.local.get(&name) {
-            let v = jstool::run(text(tool, "code"), args).await;
-            return (text(&v, "result"), flag(&v, "is_error", false));
         }
         if let Some((index, raw)) = self.remote.get(&name) {
             return match self.mcp[*index].call(raw, args).await {
@@ -900,7 +883,6 @@ async fn run(
                 let args=serde_json::from_str::<Value>(&text(&call,"arguments"));
                 let name=text(&call,"name");
                 let tool=if let Some((plugin,definition))=toolbox.plugins.get(&name){json!({"kind":"plugin","plugin_id":plugin["id"],"id":definition["id"],"name":name})}
-                    else if let Some(plugin)=toolbox.local.get(&name){json!({"kind":"plugin","plugin_id":plugin["id"],"id":"main","name":name})}
                     else {json!({"kind":if toolbox.remote.contains_key(&name){"mcp"}else{"memory"},"plugin_id":null,"id":name,"name":name})};
                 let parameters=toolbox.definitions.iter().find(|d|d["name"]==call["name"]).map(|d|d["parameters"].clone()).unwrap_or_else(||json!({}));
                 let mut payload=json!({"assistant_id":assistant["id"],"tool":tool,"call_id":call["id"],"args":args.as_ref().ok(),"parameters":parameters});
@@ -1360,7 +1342,7 @@ async fn context_info_with_tools(
     let max = number(&model, "context_length", 32768).max(1);
     let threshold = number(&c["context"], "compress_threshold", 0);
     Ok(
-        json!({"tokens":count,"max":max,"estimated":estimated,"mode":if instant(&c){"instant"}else{"traditional"},"instant":instant(&c),"summarize":summarize(&c),"threshold":if threshold>0{threshold}else{max/4*3+(max%4)*3/4}}),
+        json!({"tokens":count,"max":max,"estimated":estimated,"instant":instant(&c),"summarize":summarize(&c),"threshold":if threshold>0{threshold}else{max/4*3+(max%4)*3/4}}),
     )
 }
 

@@ -107,12 +107,26 @@ async fn llm(State(state): State<Mock>, Json(body): Json<Value>) -> Response {
     let tools = body["tools"].as_array().is_some_and(|t| !t.is_empty())
         && !has_tool_result
         && body["model"] == "mock-tool";
+    let dice_name = body["tools"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| {
+            if responses {
+                &t["name"]
+            } else {
+                &t["function"]["name"]
+            }
+        })
+        .filter_map(Value::as_str)
+        .find(|name| name.ends_with("_roll_dice"))
+        .unwrap_or("missing_dice");
     let mut chunks = vec![];
     if responses {
         chunks.push(json!({"type":"response.reasoning_summary_text.delta","delta":"reasoning"}));
         if tools {
             for (i, name, args) in [
-                (0, "dice", json!({"n":6})),
+                (0, dice_name, json!({"expression":"6+1","reason":"test"})),
                 (1, "search__lookup", json!({"q":"forest"})),
                 (2, "memory_add", json!({"content":"Alice likes forest tea"})),
             ] {
@@ -132,7 +146,7 @@ async fn llm(State(state): State<Mock>, Json(body): Json<Value>) -> Response {
             chunks.push(json!({"choices":[{"delta":{"content":"nk>thought</thi"}}]}));
             chunks.push(json!({"choices":[{"delta":{"content":"nk>I will use tools"}}]}));
             for (i, name, args) in [
-                (0, "dice", json!({"n":6})),
+                (0, dice_name, json!({"expression":"6+1","reason":"test"})),
                 (1, "search__lookup", json!({"q":"forest"})),
                 (2, "memory_add", json!({"content":"Alice likes forest tea"})),
             ] {

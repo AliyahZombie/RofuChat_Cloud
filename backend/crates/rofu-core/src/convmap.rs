@@ -10,11 +10,11 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use std::{collections::VecDeque, fmt};
 
-#[derive(Default, Deserialize)]
-#[serde(default)]
+#[derive(Deserialize)]
 struct Segment {
     #[serde(rename = "type")]
     kind: String,
+    #[serde(default)]
     text: String,
 }
 
@@ -24,10 +24,10 @@ fn array_len<'de, D: Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
     impl<'de> de::Visitor<'de> for Count {
         type Value = usize;
         fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            f.write_str("an array or null")
+            f.write_str("an array or a projected array count")
         }
-        fn visit_unit<E: de::Error>(self) -> Result<usize, E> {
-            Ok(0)
+        fn visit_u64<E: de::Error>(self, count: u64) -> Result<usize, E> {
+            usize::try_from(count).map_err(E::custom)
         }
         fn visit_seq<A: de::SeqAccess<'de>>(self, mut a: A) -> Result<usize, A::Error> {
             let mut n = 0;
@@ -40,8 +40,7 @@ fn array_len<'de, D: Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
     d.deserialize_any(Count)
 }
 
-#[derive(Default, Deserialize)]
-#[serde(default)]
+#[derive(Deserialize)]
 struct Parts {
     segments: Vec<Segment>,
     #[serde(deserialize_with = "array_len")]
@@ -53,21 +52,13 @@ struct MapMessage {
     id: String,
     seq: i64,
     role: String,
-    #[serde(default = "yes")]
     visible: bool,
     #[serde(default)]
     kind: Option<String>,
-    #[serde(default)]
     content: String,
-    #[serde(default)]
     parts: Parts,
-    #[serde(default, deserialize_with = "array_len")]
+    #[serde(deserialize_with = "array_len")]
     swipes: usize,
-    #[serde(default)]
-    swipe_count: Option<usize>,
-}
-fn yes() -> bool {
-    true
 }
 
 #[derive(Serialize)]
@@ -197,15 +188,13 @@ fn find(input: &str, needle: &str) -> Option<(usize, usize)> {
 
 impl MapMessage {
     fn item(self, width: usize, needle: Option<&str>) -> Option<MapItem> {
-        let active = if self.role == "assistant" && !self.parts.segments.is_empty() {
+        let active = if self.role == "assistant" {
             self.parts
                 .segments
                 .iter()
                 .filter(|s| s.kind == "text")
                 .map(|s| s.text.as_str())
                 .collect::<String>()
-        } else if self.role == "assistant" {
-            crate::chat::strip_think(&self.content)
         } else {
             self.content
         };
@@ -248,7 +237,7 @@ impl MapMessage {
             preview,
             chars,
             has_images: self.parts.images > 0,
-            swipe_count: self.swipe_count.unwrap_or(self.swipes).max(1),
+            swipe_count: self.swipes,
             match_start: highlight.map(|(start, _)| start + usize::from(prefix)),
             match_len: highlight.map(|(_, len)| len),
         })
@@ -294,9 +283,9 @@ pub async fn map(
     let sql = if db.pool.connect_options().database_url.scheme() == "sqlite" {
         r#"SELECT json_object(
             'id',id,'seq',seq,'role',data->>'role',
-            'visible',json(COALESCE(data->'visible','true')),
-            'kind',data->>'kind','content',COALESCE(data->>'content',''),
-            'swipe_count',COALESCE(json_array_length(data->'swipes'),1),
+            'visible',json(data->'visible'),
+            'kind',data->>'kind','content',data->>'content',
+            'swipes',json_array_length(data->'swipes'),
             'parts',json_object(
                 'images',json(CASE WHEN json_array_length(data->'parts'->'images')>0 THEN '[null]' ELSE '[]' END),
                 'segments',json(COALESCE((SELECT json_group_array(json_object(
@@ -341,7 +330,7 @@ mod tests {
 
     fn item(content: &str, width: usize, q: Option<&str>) -> Value {
         serde_json::from_value::<MapMessage>(json!({
-            "id":"m", "seq":1000, "role":"user", "content":content,
+            "id":"m", "seq":1000, "role":"user", "visible":true, "content":content, "parts":{"images":[],"segments":[]},"swipes":[{}],
         }))
         .unwrap()
         .item(
@@ -420,16 +409,10 @@ mod tests {
         assert_eq!(v["swipe_count"], 2);
         assert!(!v.to_string().contains("secret"));
         let m: MapMessage = serde_json::from_value(json!({
-            "id":"m", "seq":0, "role":"assistant", "content":"secret fallback",
-            "parts":{"segments":[{"type":"reasoning","text":"secret"}]}
+            "id":"m", "seq":0, "role":"assistant", "visible":true,"swipes":[{}], "content":"secret fallback",
+            "parts":{"images":[],"segments":[{"type":"reasoning","text":"secret"}]}
         }))
         .unwrap();
         assert!(m.item(48, Some("secret")).is_none());
-        let m: MapMessage = serde_json::from_value(json!({
-            "id":"m", "seq":0, "role":"assistant",
-            "content":"<think>private</think>Legacy<thinking>hidden</thinking> text"
-        }))
-        .unwrap();
-        assert_eq!(m.item(48, None).unwrap().preview, "Legacy text");
     }
 }

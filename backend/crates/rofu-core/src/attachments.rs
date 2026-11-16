@@ -40,78 +40,36 @@ impl Db {
         )?)
     }
 
-    /// Also visits inactive swipes and archived tails so switching never revives inline bytes.
-    pub fn externalize_images<'a>(
-        &'a self,
-        uid: &'a str,
-        value: &'a mut Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(async move {
-            match value {
-                Value::Object(object) => {
-                    if let Some(images) = object.get_mut("images").and_then(Value::as_array_mut) {
-                        for image in images {
-                            if let Some(url) = image.as_str().filter(|s| s.starts_with("data:")) {
-                                *image = self.put_attachment(uid, url).await?;
-                            } else if let Some(id) = image.get("id").and_then(Value::as_str) {
-                                *image = self.attachment_reference(uid, id).await?;
-                            } else if !image.is_string() {
-                                bail!("image must be a data URL, URL or attachment reference");
-                            }
-                        }
-                    }
-                    if let Some(url) = object
-                        .get("avatar")
-                        .and_then(Value::as_str)
-                        .filter(|s| s.starts_with("data:"))
-                    {
-                        let reference = self.put_attachment(uid, url).await?;
-                        object.insert(
-                            "avatar".into(),
-                            json!(format!(
-                                "/api/attachments/{}",
-                                reference["id"].as_str().unwrap()
-                            )),
-                        );
-                        object.insert("avatar_attachment".into(), reference);
-                    }
-                    // Visit only the message/snapshot containers. Arbitrary card/tool
-                    // extension JSON may have unrelated fields named images or avatar.
-                    for key in ["parts", "swipes", "tail"] {
-                        if let Some(child) = object.get_mut(key) {
-                            self.externalize_images(uid, child).await?;
-                        }
-                    }
-                }
-                Value::Array(array) => {
-                    for child in array {
-                        self.externalize_images(uid, child).await?;
-                    }
-                }
-                _ => {}
-            }
-            Ok(())
-        })
+    /// Store a new avatar upload; persisted avatars already reference attachments.
+    pub async fn store_avatar_upload(&self, uid: &str, value: &mut Value) -> Result<()> {
+        if let Some(url) = value["avatar"].as_str().filter(|s| s.starts_with("data:")) {
+            let reference = self.put_attachment(uid, url).await?;
+            value["avatar"] = json!(format!(
+                "/api/attachments/{}",
+                reference["id"].as_str().unwrap()
+            ));
+            value["avatar_attachment"] = reference;
+        } else if let Some(id) = value["avatar"]
+            .as_str()
+            .and_then(|url| url.strip_prefix("/api/attachments/"))
+        {
+            value["avatar_attachment"] = self.attachment_reference(uid, id).await?;
+        }
+        Ok(())
     }
 
     pub async fn resolve_image(&self, uid: &str, image: &Value) -> Result<Value> {
-        let id = image.get("id").and_then(Value::as_str).or_else(|| {
-            image
-                .as_str()
-                .and_then(|s| s.strip_prefix("/api/attachments/"))
-        });
-        if let Some(id) = id {
-            let (bytes, mime) = self
-                .attachment(uid, id)
-                .await?
-                .context("image attachment not found")?;
-            Ok(json!(format!(
-                "data:{mime};base64,{}",
-                STANDARD.encode(bytes)
-            )))
-        } else {
-            Ok(image.clone())
-        }
+        let id = image["id"]
+            .as_str()
+            .context("stored image must be an attachment reference")?;
+        let (bytes, mime) = self
+            .attachment(uid, id)
+            .await?
+            .context("image attachment not found")?;
+        Ok(json!(format!(
+            "data:{mime};base64,{}",
+            STANDARD.encode(bytes)
+        )))
     }
 
     /// Only call on the already-selected provider context (never on API history).
@@ -187,9 +145,15 @@ impl Db {
                                 *image = blob.reference.clone();
                                 blobs.push(blob);
                             } else if let Some(id) = image.get("id").and_then(Value::as_str) {
-                                *image = self.attachment_reference(uid, id).await?;
-                            } else if !image.is_string() {
-                                bail!("image must be a data URL, URL or attachment reference");
+                                *image = if let Some(blob) =
+                                    blobs.iter().find(|blob| blob.reference["id"] == id)
+                                {
+                                    blob.reference.clone()
+                                } else {
+                                    self.attachment_reference(uid, id).await?
+                                };
+                            } else {
+                                bail!("image must be a data URL upload or attachment reference");
                             }
                         }
                     }

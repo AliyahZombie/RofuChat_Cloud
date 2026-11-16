@@ -2,7 +2,6 @@ mod support;
 use futures_util::StreamExt;
 use reqwest::{Client, Method};
 use rofu_core::{
-    db::Db,
     model::{id, text},
     plugins::{self, storage},
     sse::Decoder,
@@ -111,7 +110,7 @@ impl Harness {
         self.json(
             Method::PUT,
             &format!("/characters/{}/plugins", text(c, "id")),
-            json!(plugins.iter().map(|p| p["id"].clone()).collect::<Vec<_>>()),
+            json!({"plugin_ids":plugins.iter().map(|p| p["id"].clone()).collect::<Vec<_>>()}),
         )
         .await;
     }
@@ -160,38 +159,6 @@ async fn contract_suite(database: String) {
         .unwrap();
     let uid = text(&uid, "id");
     assert_eq!(h.uid, uid);
-    // Legacy tools are single-tool plugins, and omitted code survives a summary edit.
-    let legacy = h
-        .post(
-            "/tools",
-            json!({"name":"dice","code":"function main(a){return a.n+1}"}),
-        )
-        .await;
-    let summary = h.get("/tools?summary=1").await;
-    assert!(summary[0].get("code").is_none());
-    assert!(summary[0]["code_chars"].as_u64().unwrap() > 0);
-    h.json(
-        Method::PUT,
-        &format!("/tools/{}", text(&legacy, "id")),
-        json!({"name":"dice renamed"}),
-    )
-    .await;
-    assert_eq!(
-        h.get(&format!("/tools/{}", text(&legacy, "id"))).await["code"],
-        legacy["code"]
-    );
-    assert_eq!(
-        h.get(&format!("/plugins/{}", text(&legacy, "id"))).await["format"],
-        "legacy-main"
-    );
-    assert_eq!(
-        h.post(
-            "/tools/run",
-            json!({"code":"async function main(a){return a.n+1}","args":{"n":4}})
-        )
-        .await["result"],
-        "5"
-    );
     let p=h.plugin(r#"export async function run(input) {
       if (input.action === 'foreign') {try {await rofu.messages.get(input.id);return false;}catch(e){return e.code==='E_NOT_FOUND';}}
       if (input.action === 'read') return {v:await rofu.kv.get('global'), named:await rofu.kv.table(rofu.invocation.character_id).list('pre')};
@@ -215,7 +182,7 @@ async fn contract_suite(database: String) {
       const context=await rofu.context.get();
       return {updated,immutable,seq,memories,swipes,context,conversation:await rofu.conversation.get(),character:await rofu.character.get(),page:await rofu.messages.list(),missing:typeof await rofu.kv.get('missing')};
     }"#,manifest(json!(["read","write","storage"]),json!({}),true)).await;
-    h.attach(&c, &[p.clone(), legacy.clone()]).await;
+    h.attach(&c, std::slice::from_ref(&p)).await;
     assert!(h
         .get("/plugins")
         .await
@@ -224,8 +191,7 @@ async fn contract_suite(database: String) {
         .iter()
         .all(|p| p.get("code").is_none()));
     let projected = h.get(&format!("/characters/{}", text(&c, "id"))).await;
-    assert_eq!(projected["tool_ids"], json!([legacy["id"]]));
-    assert_eq!(projected["plugin_ids"], json!([p["id"], legacy["id"]]));
+    assert_eq!(projected["plugin_ids"], json!([p["id"]]));
     h.json(
         Method::PUT,
         &format!("/characters/{}", text(&c, "id")),
@@ -234,7 +200,7 @@ async fn contract_suite(database: String) {
     .await;
     assert_eq!(
         h.get(&format!("/characters/{}", text(&c, "id"))).await["plugin_ids"],
-        json!([p["id"], legacy["id"]])
+        json!([p["id"]])
     );
     assert_eq!(
         h.get(&format!("/conversations/{cid}/plugin_menus")).await[0]["id"],
@@ -252,7 +218,7 @@ async fn contract_suite(database: String) {
     assert_eq!(value["seq"], true);
     assert_eq!(value["missing"], "undefined");
     assert_eq!(value["context"]["messages"][0]["role"], "system");
-    assert!(text(&value["context"]["messages"][0], "content").contains("system from plugin"));
+    assert!(!text(&value["context"]["messages"][0], "content").contains("system from plugin"));
     assert_eq!(
         value["context"]["messages"]
             .as_array()
@@ -432,7 +398,7 @@ async fn hook_suite(database: String) {
     let (c, conv) = h.fixture(&mock).await;
     let cid = text(&conv, "id");
     let first=h.plugin(r#"export async function before(p){await rofu.kv.set('order','first');return {patch:{content:p.content+' A',params:{temperature:0.25}}};}
-      export async function beforeTool(p){if(p.tool.name==='dice')return {args:{n:9}};if(p.tool.name==='search__lookup')return {skip:{result:'skipped by plugin',is_error:false}};}
+      export async function beforeTool(p){if(p.tool.name.endsWith('_roll_dice'))return {args:{expression:'9'}};if(p.tool.name==='search__lookup')return {skip:{result:'skipped by plugin',is_error:false}};}
       export async function afterTool(p){return {result:p.result+' [after]',is_error:false};}
       export async function after(p){const m=await rofu.messages.get(p.assistant.id);await rofu.messages.update(m.id,{content:m.content+' patched',actual:'explicit note',model:'plugin model'});}
     "#,manifest(json!(["hooks","read","write","storage"]),json!({"beforeSend":"before","beforeToolCall":"beforeTool","afterToolCall":"afterTool","afterReply":"after"}),false)).await;
@@ -443,12 +409,7 @@ async fn hook_suite(database: String) {
         )
         .await;
     let throwing=h.plugin("export async function before(){await rofu.kv.set('rollback',1);await rofu.messages.insert({role:'system',content:'should roll back'});throw Error('bad plugin');}",manifest(json!(["hooks","write","storage"]),json!({"beforeSend":"before"}),false)).await;
-    let tool = h
-        .post(
-            "/tools",
-            json!({"name":"dice","code":"function main(a){return 'roll '+a.n}"}),
-        )
-        .await;
+    let tool = h.get("/plugins").await[0].clone();
     let model = h.get(&format!("/models/{}", text(&c, "model_id"))).await;
     let mut tool_model = model.clone();
     tool_model["model_id"] = json!("mock-tool");
@@ -472,7 +433,7 @@ async fn hook_suite(database: String) {
     let events = h
         .events(
             &format!("/conversations/{cid}/chat"),
-            json!({"content":"root","plugin_protocol":1}),
+            json!({"content":"root"}),
         )
         .await;
     assert_eq!(
@@ -491,12 +452,12 @@ async fn hook_suite(database: String) {
         .iter()
         .filter(|e| e["type"] == "tool_start")
         .collect::<Vec<_>>();
-    assert_eq!(calls[0]["arguments"], "{\"n\":9}");
+    assert_eq!(calls[0]["arguments"], "{\"expression\":\"9\"}");
     let ends = events
         .iter()
         .filter(|e| e["type"] == "tool_end")
         .collect::<Vec<_>>();
-    assert_eq!(ends[0]["result"], "roll 9 [after]");
+    assert!(text(ends[0], "result").contains("**9** [after]"));
     assert_eq!(ends[1]["result"], "skipped by plugin [after]");
     let done = events
         .iter()
@@ -530,7 +491,12 @@ async fn hook_suite(database: String) {
         .fetch_one(&h.server.state.db.pool)
         .await
         .unwrap();
-    let events=h.events(&format!("/conversations/{cid}/chat"),json!({"content":"cancel me","images":["data:image/png;base64,eA=="],"plugin_protocol":1})).await;
+    let events = h
+        .events(
+            &format!("/conversations/{cid}/chat"),
+            json!({"content":"cancel me","images":["data:image/png;base64,eA=="]}),
+        )
+        .await;
     assert!(events.iter().any(|e| e["type"] == "plugin_cancelled"));
     assert!(!events.iter().any(|e| e["type"] == "user_message"));
     assert_eq!(
@@ -577,7 +543,7 @@ async fn hook_suite(database: String) {
     let events = h
         .events(
             &format!("/conversations/{fc}/chat"),
-            json!({"content":"root","plugin_protocol":1}),
+            json!({"content":"root"}),
         )
         .await;
     assert_eq!(
@@ -747,113 +713,6 @@ async fn postgres_plugin_dialogs() {
     cleanup(pool, schema).await;
 }
 
-async fn migration_suite(database: String) {
-    let db = Db::connect(&database).await.unwrap();
-    let uid = id();
-    let tool = rofu_core::model::normalized(
-        "tool",
-        &json!({"name":"legacy","enabled":true,"code":"function main(a){return a.n}","parameters":{"type":"object"}}),
-    );
-    let good = db.save(&uid, "tool", tool.clone()).await.unwrap();
-    let bad = db.save(&uid, "tool", tool).await.unwrap();
-    let c = db
-        .save(
-            &uid,
-            "character",
-            json!({"tool_ids":[good["id"],bad["id"]]}),
-        )
-        .await
-        .unwrap();
-    sqlx::query("UPDATE entities SET kind='tool',data=$1 WHERE id=$2")
-        .bind(good.to_string())
-        .bind(text(&good, "id"))
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE entities SET kind='tool',data='invalid JSON' WHERE id=$1")
-        .bind(text(&bad, "id"))
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    for sql in [
-        "DELETE FROM schema_version WHERE version=3",
-        "DROP TABLE plugin_kv",
-        "DROP TABLE plugin_storage",
-    ] {
-        sqlx::query(sql).execute(&db.pool).await.unwrap();
-    }
-    // Failure must roll back the entire schema and every previously migrated tool.
-    assert!(Db::connect(&database).await.is_err());
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_version")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM entities WHERE kind='tool'")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap(),
-        2
-    );
-    sqlx::query("UPDATE entities SET data=$1 WHERE id=$2")
-        .bind(bad.to_string())
-        .bind(text(&bad, "id"))
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    db.pool.close().await;
-    let db = Db::connect(&database).await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_version")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap(),
-        3
-    );
-    assert_eq!(
-        db.get(&uid, "tool", &text(&good, "id"))
-            .await
-            .unwrap()
-            .unwrap(),
-        good
-    );
-    let plugin = db
-        .get(&uid, "plugin", &text(&good, "id"))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(plugin["manifest"]["tools"][0]["handler"], "main");
-    assert_eq!(plugin["granted_permissions"], json!(["network"]));
-    assert_eq!(
-        db.get(&uid, "character", &text(&c, "id"))
-            .await
-            .unwrap()
-            .unwrap()["tool_ids"],
-        c["tool_ids"]
-    );
-    db.pool.close().await;
-    let db = Db::connect(&database).await.unwrap();
-    assert_eq!(db.list(&uid, "plugin").await.unwrap().len(), 2);
-    db.pool.close().await;
-}
-#[tokio::test]
-async fn sqlite_plugin_migration() {
-    let dir = tempfile::tempdir().unwrap();
-    migration_suite(format!("sqlite://{}/migration.db", dir.path().display())).await;
-}
-#[tokio::test]
-async fn postgres_plugin_migration() {
-    let Ok(url) = std::env::var("ROFU_TEST_PG_URL") else {
-        return;
-    };
-    let (url, pool, schema) = pg_schema(&url).await;
-    migration_suite(url).await;
-    cleanup(pool, schema).await;
-}
-
 #[tokio::test]
 async fn async_runtime_limits_isolation_and_syntax_only_compile() {
     use rofu_core::plugins::runtime;
@@ -981,7 +840,7 @@ async fn module_suite(database: String) {
     let events = h
         .events(
             &format!("/conversations/{cid}/chat"),
-            json!({"content":"run module","plugin_protocol":1}),
+            json!({"content":"run module"}),
         )
         .await;
     no_errors(&events);

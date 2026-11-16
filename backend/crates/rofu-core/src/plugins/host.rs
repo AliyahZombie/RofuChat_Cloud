@@ -48,7 +48,6 @@ pub struct FollowUps {
 pub struct Operation {
     pub tx: UnboundedSender<Value>,
     pub cancel: CancellationToken,
-    pub protocol: bool,
     pub client_id: String,
     pub capabilities: Vec<String>,
     pub root_turn_id: String,
@@ -60,7 +59,6 @@ impl Operation {
         Self {
             tx,
             cancel,
-            protocol: body["plugin_protocol"] == 1,
             client_id: text(body, "client_id"),
             capabilities: body["ui_capabilities"]
                 .as_array()
@@ -76,9 +74,7 @@ impl Operation {
         }
     }
     pub fn emit(&self, value: Value) {
-        if self.protocol {
-            let _ = self.tx.send(value);
-        }
+        let _ = self.tx.send(value);
     }
 }
 #[derive(Clone)]
@@ -267,10 +263,8 @@ impl Session {
                         }
                     }
                     validate_swipes(&edited, &self.uid, &text(&self.conversation, "id"))?;
-                    if edited.get("swipes").is_some() {
-                        let index = swipes::index(&edited);
-                        swipes::activate(&mut edited, index);
-                    }
+                    let index = swipes::index(&edited);
+                    swipes::activate(&mut edited, index);
                 }
                 for (k, v) in patch.as_object().unwrap() {
                     if matches!(k.as_str(), "id" | "user_id" | "conversation_id") {
@@ -283,11 +277,6 @@ impl Session {
                     edited["parts"].is_object(),
                     "E_VALIDATION: parts must be object"
                 );
-                if let Some(display) = patch.get("display") {
-                    ensure!(display.is_string(), "E_VALIDATION: display must be string");
-                    edited["content"] = display.clone();
-                    edited.as_object_mut().unwrap().remove("display");
-                }
                 for field in ["images", "segments"] {
                     if let Some(v) = patch.get(field) {
                         edited["parts"][field] = v.clone();
@@ -295,7 +284,7 @@ impl Session {
                     }
                 }
                 validate_content(&edited)?;
-                if (patch.get("content").is_some() || patch.get("display").is_some())
+                if patch.get("content").is_some()
                     && patch.get("segments").is_none()
                     && patch.get("parts").and_then(|p| p.get("segments")).is_none()
                 {
@@ -382,6 +371,7 @@ impl Session {
                 if let Some(images) = input.get("images") {
                     m["parts"]["images"] = images.clone();
                 }
+                swipes::sync(&mut m);
                 rows.push(m.clone());
                 rows.sort_by_key(|m| number(m, "seq", 0));
                 validate_shape(&rows, &self.uid, &text(&self.conversation, "id"))?;
@@ -390,7 +380,6 @@ impl Session {
             }
             "swipes.list" => {
                 let mut m = self.messages[self.message_index(&a[0])?].clone();
-                swipes::ensure(&mut m);
                 swipes::sync(&mut m);
                 json!({"items":m["swipes"],"next_cursor":null})
             }
@@ -554,7 +543,6 @@ impl Session {
         let i = self.message_index(&a[0])?;
         let mut m = self.messages[i].clone();
         let mut rows = self.messages.clone();
-        swipes::ensure(&mut m);
         swipes::sync(&mut m);
         let current = swipes::index(&m);
         let mut next = current;
@@ -761,8 +749,7 @@ impl Session {
     }
     async fn ui(&self, method: &str, a: &Value) -> Result<Value> {
         let kind = method.strip_prefix("ui.").unwrap();
-        let delivered = self.operation.protocol
-            && !self.operation.client_id.is_empty()
+        let delivered = !self.operation.client_id.is_empty()
             && self.operation.capabilities.iter().any(|c| c == kind)
             && !self.operation.tx.is_closed();
         let payload = if kind == "toast" {
@@ -1154,30 +1141,26 @@ fn validate_content(m: &Value) -> Result<()> {
     Ok(())
 }
 fn validate_swipes(m: &Value, uid: &str, cid: &str) -> Result<()> {
-    if let Some(swipes) = m.get("swipes") {
-        let a = swipes
-            .as_array()
-            .ok_or_else(|| anyhow!("E_VALIDATION: swipes must be array"))?;
-        ensure!(
-            !a.is_empty()
-                && m["swipe_index"]
-                    .as_u64()
-                    .is_some_and(|i| (i as usize) < a.len()),
-            "E_VALIDATION: invalid swipe index"
-        );
-        for swipe in a {
-            validate_content(swipe)?;
-            if let Some(tail) = swipe.get("tail") {
-                validate_messages(
-                    tail.as_array()
-                        .ok_or_else(|| anyhow!("E_VALIDATION: tail must be array"))?,
-                    uid,
-                    cid,
-                )?;
-            }
+    let a = m["swipes"]
+        .as_array()
+        .ok_or_else(|| anyhow!("E_VALIDATION: swipes must be array"))?;
+    ensure!(
+        !a.is_empty()
+            && m["swipe_index"]
+                .as_u64()
+                .is_some_and(|i| (i as usize) < a.len()),
+        "E_VALIDATION: invalid swipe index"
+    );
+    for swipe in a {
+        validate_content(swipe)?;
+        if let Some(tail) = swipe.get("tail") {
+            validate_messages(
+                tail.as_array()
+                    .ok_or_else(|| anyhow!("E_VALIDATION: tail must be array"))?,
+                uid,
+                cid,
+            )?;
         }
-    } else if let Some(i) = m.get("swipe_index") {
-        ensure!(i == 0, "E_VALIDATION: swipe_index requires swipes");
     }
     Ok(())
 }

@@ -1,13 +1,13 @@
 # Backend API implementation notes
 
-The routes, event names and required fields are defined by `backend-spec.md` §6 and remain unchanged.
+The current routes, events and required fields are defined by `backend-spec.md` §6 and this document. Only this contract is supported.
 
 Additive response fields:
 
-- Provider, Model, Character, LocalTool and Memory entities include server-managed `created_at` and `updated_at` in Unix milliseconds. IDs supplied during creation are ignored.
+- Provider, Model, Character, Plugin and Memory entities include server-managed `created_at` and `updated_at` in Unix milliseconds. IDs supplied during creation are ignored.
 - Settings responses may include server-managed `id`, `created_at`, and `updated_at`; clients can ignore these fields.
 - Assistant `usage` includes `estimated` (boolean), `last_input` and `last_output` (token counts for the last upstream request). `input`, `output`, `cached` and `reasoning` remain accumulated for the entire agent turn.
-- The SSE `context` event includes the same `estimated`, `mode`, `instant`, `summarize`, and `threshold` fields as `GET /api/conversations/{id}/context`, in addition to `tokens` and `max`.
+- The SSE `context` event includes the same `estimated`, `instant`, `summarize`, and `threshold` fields as `GET /api/conversations/{id}/context`, in addition to `tokens` and `max`.
 
 Operational details:
 
@@ -16,15 +16,9 @@ Operational details:
 - PNG export defaults to a generated solid-color image when the character does not have a PNG avatar. HTTP(S) avatars are fetched for PNG export (20-second timeout, 32MB limit). JSON export uses Character Card V2.
 - `POST /api/conversations/{id}/memory_scan` returns zero counts when no new messages are available. A failed scan advances the scan cursor as required by the specification.
 
-## Tool list summaries
-
-`GET /api/tools?summary=1` (also `summary=true`) returns the usual array with each tool's `code` omitted and `code_chars` added. `code_chars` counts Unicode scalar values (Rust `chars()`), not UTF-8 bytes or grapheme clusters. All other fields, including `id`, `name`, `description`, `parameters`, `models`, `enabled`, `created_at` and `updated_at`, are retained. Omitting `summary` or using another value keeps the full list response unchanged. `GET /api/tools/{id}` always returns the full tool, including code.
-
-`PUT /api/tools/{id}` preserves stored code when the request object has no `code` key, allowing summary objects to be saved when toggling `enabled`. An explicit `"code":""` clears it. `code_chars` is response-only and ignored on both tool creation and update; it is never persisted. Other missing fields retain their existing defaulting behavior. All reads and writes remain scoped to the authenticated user. Chat tool execution and `POST /api/tools/run` are unchanged.
-
 ## Upstream context and token estimates
 
-Normal sends and regenerate requests build exactly one system message at the start of the upstream context. Its blocks, separated by blank lines with character/user macros expanded, are ordered as follows: card `system_prompt` (or the built-in default), description, personality, scenario, user persona, matching worldbook entries, `mes_example`, long-term memory, visible compression summaries in seq order (each prefixed with `[Summary of the earlier conversation]\n`), then `post_history_instructions`. Legacy visible system rows are merged after memory and before summaries. The remaining history contains only user/assistant/tool messages; summaries remain available as Message objects through the HTTP API.
+Normal sends and regenerate requests build exactly one system message at the start of the upstream context. Its blocks, separated by blank lines with character/user macros expanded, are ordered as follows: card `system_prompt` (or the built-in default), description, personality, scenario, user persona, matching worldbook entries, `mes_example`, long-term memory, visible compression summaries in seq order (each prefixed with `[Summary of the earlier conversation]\n`), then `post_history_instructions`. Stored system-role rows are excluded from upstream history; configure instructions in the character card `system_prompt`. The remaining history contains only user/assistant/tool messages; summaries remain available as Message objects through the HTTP API.
 
 Responses providers receive the merged system text in `instructions`, with no system or developer messages in `input`. With unchanged card/settings, worldbook matches, memory and summaries, consecutive turns keep the same system text. Traditional history grows by appending messages; instant mode still selects display/actual according to `display_recent`, counting only user/assistant/tool history. Keyword-triggered worldbook matches can change the system text as the conversation changes; this is expected.
 
@@ -35,14 +29,14 @@ Token estimates, including `GET /api/conversations/{id}/context` and SSE `contex
 Character `context` adds `summarize` (default `true`) and `instant` (default `false`). They work independently: summarize controls automatic threshold compression and manual `POST /api/conversations/{id}/compress`; instant controls per-reply actual generation and display/actual selection. Existing threshold, keep_recent and display_recent fields keep their meanings. Example with both enabled:
 
 ```json
-{"context":{"summarize":true,"instant":true,"mode":"instant","compress_threshold":0,"keep_recent":6,"display_recent":4}}
+{"context":{"summarize":true,"instant":true,"compress_threshold":0,"keep_recent":6,"display_recent":4}}
 ```
 
-For missing switches, legacy `mode:"instant"` means instant=true and summarize=true; all other modes mean instant=false and summarize=true. Explicit switches take priority. Reads (including lists), writes and exports expose both keys; `mode` mirrors instant for old clients. Character Card V2 JSON exports and embedded PNG JSON add a top-level `context` object, preserved on import. Cards without it use defaults.
+Reads, writes and exports expose `instant` and `summarize`; there is no `mode` field. Creation uses the defaults above. Character Card V2 JSON exports and embedded PNG JSON include a top-level `context` object, preserved on import. External cards without application context use creation defaults.
 
 After a completed reply, actual compression runs first if enabled, then threshold summary compression if enabled. Summary input uses each active assistant's successful actual, otherwise content and available tool results, without inactive swipes/tails. A summary hides old messages with visible=false; hidden messages never reappear through actual selection. With instant disabled, new replies have no automatic actual; the manual actual endpoint and existing actual editing remain available. Summary input can still use existing successful actuals.
 
-With summarize=false, manual compression returns HTTP 400 and an error containing `summary compression is disabled (context.summarize=false)`. Successful compression still returns a summary Message, or 204 when there is nothing to compress. Existing routes and SSE event names are unchanged. `GET /api/conversations/{id}/context` and SSE `context` add the two boolean switches; mode and threshold remain available even with summarization disabled.
+With summarize=false, manual compression returns HTTP 400 and an error containing `summary compression is disabled (context.summarize=false)`. Successful compression still returns a summary Message, or 204 when there is nothing to compress. Existing routes and SSE event names are unchanged. `GET /api/conversations/{id}/context` and SSE `context` add the two boolean switches; threshold remains available even with summarization disabled.
 
 Instant compression receives only visible content with think/thinking blocks removed, followed by one `[tool] name(args) → result` line per tool (arguments ≤120 Unicode characters, result ≤200, whitespace collapsed). The user message is `Condense the following roleplay reply.\n<reply>\n...\n</reply>`; the system explicitly treats the tagged reply as source material to summarize, never dialogue to answer or continue. Requests omit `max_tokens` and `max_output_tokens`, including the model's `max_output` default, so models with mandatory thinking can finish reasoning before writing the note. They send no reasoning/thinking parameters or inherited character generation parameters. Length is controlled by the existing cleaned-content checks and one retry, not an upstream output-token cap. It never receives reasoning segments, duplicate text segments or raw segments JSON. The system prompt supplies character/user names and requests a faithful third-person, past-tense note in the reply's language, only plot facts, no invented or unrelated material, no title/commentary/markdown, roughly ≤1/5 length and ≤120 CJK characters or 80 English words, usually 1–3 short sentences. Fast-model resolution is unchanged.
 
@@ -60,7 +54,7 @@ Missing/unresolvable/disabled fast models, failed calls, or empty cleaned output
 
 ## Message pagination
 
-`GET /api/conversations/{id}/messages` without `after_seq`/`around_seq` and without either `limit` or `max_chars` continues to return the full array, including hidden messages and summaries; a standalone `before_seq` remains ignored for compatibility. Supplying either bound returns a page object with `messages`, `has_more`, `chars` and `bytes`. `limit` is a positive signed 64-bit integer less than `9223372036854775807`; `max_chars` is an unsigned 64-bit integer (including zero). Optional `before_seq` is an exclusive signed 64-bit seq cursor. Invalid pagination values return 400.
+`GET /api/conversations/{id}/messages` without `after_seq`/`around_seq` and without either `limit` or `max_chars` continues to return the full array, including hidden messages and summaries; a standalone `before_seq` returns a page before that exclusive cursor. Supplying either bound returns a page object with `messages`, `has_more`, `chars` and `bytes`. `limit` is a positive signed 64-bit integer less than `9223372036854775807`; `max_chars` is an unsigned 64-bit integer (including zero). Optional `before_seq` is an exclusive signed 64-bit seq cursor. Invalid pagination values return 400.
 
 Messages are selected newest first, strictly before `before_seq` when supplied, and returned in ascending seq order. `max_chars` counts Unicode scalar values (Rust `chars()`) in each message's active `content`, plus `parts.segments` entries of type `reasoning` (`text`) or `tool` (`arguments` and `result`, both stored strings). Text segments are already represented in `content` and are not counted again. Images, metadata, `actual`, inactive swipes and archived branch tails do not contribute. Hidden messages and summaries remain eligible and their content counts normally.
 
@@ -89,7 +83,7 @@ Response (Message objects abbreviated):
 {"items":[{"id":"a1","seq":3000,"role":"assistant","visible":true,"preview":"Hello 中文","chars":10,"has_images":false,"swipe_count":2}],"total":1,"has_more":false}
 ```
 
-The map includes hidden messages (`visible:false`) and summaries (`role:"summary",kind:"summary"`). Existing stored `kind` values are preserved. Each entry describes only active contents; it omits full content, actual, reasoning, tool payloads, image metadata/bytes, inactive swipes and archived tails. `has_images` flags a nonempty active `parts.images`; `swipe_count` is at least one. Assistant text is the concatenation of `type:"text"` segments in order; legacy assistants with no segments use `content` with `<think>`/`<thinking>` blocks removed. Reasoning/tool-only assistants have empty previews. Other roles use active `content`.
+The map includes hidden messages (`visible:false`) and summaries (`role:"summary",kind:"summary"`). Existing stored `kind` values are preserved. Each entry describes only active contents; it omits full content, actual, reasoning, tool payloads, image metadata/bytes, inactive swipes and archived tails. `has_images` flags a nonempty active `parts.images`; `swipe_count` is at least one. Assistant text is the concatenation of `type:"text"` segments in order. Reasoning/tool-only assistants have empty previews. Other roles use active `content`.
 
 `chars` in an item is the full visible source text's Unicode scalar count, before preview cleanup/truncation; it excludes reasoning/tools. The query parameter `chars` controls preview size (default 48, signed integer clamped to 8–200). Previews collapse Unicode whitespace/newlines to one space and trim outer whitespace. Heading `#`, quote `>`, unordered/ordered list prefixes at line starts and code-fence delimiter/language lines are removed; code inside fences remains visible. A normal preview contains the first requested number of cleaned Unicode scalars.
 
@@ -117,9 +111,9 @@ All Message objects returned over HTTP (including full/paged lists, `GET /api/me
 {"id":"a1","conversation_id":"c1","seq":3000,"role":"assistant","content":"Current reply","swipe_index":1,"swipe_count":2}
 ```
 
-Examples abbreviate the other existing Message fields; those fields keep their original names and types. Full `swipes` arrays and archived `tail` messages are never included in these responses. Legacy messages without stored swipes report index 0 and count 1; their arrays are initialized lazily when needed.
+Examples abbreviate the other existing Message fields; those fields keep their original names and types. Full `swipes` arrays and archived `tail` messages are never included in these responses. Every stored message has an initialized, nonempty `swipes` array and a valid `swipe_index`, created with the message.
 
-Stored swipes live inside the existing message JSON; no table migration is required. Each snapshot contains `content`, `parts` (including images, segments and errors), `actual`, `actual_status`, `actual_error`, `usage`, `model`, `model_name`, `model_icon`, and `created_at`. User snapshots also contain `tail`, an archive of complete following messages, including their own swipe history. Identity, conversation, seq, role and visibility belong to the message. The top-level mutable fields always match the active snapshot. Context building, compression and memory scanning use only the active contents and never consume inactive swipes or tails.
+Stored swipes live inside message JSON. Each snapshot contains `content`, `parts` (including images, segments and errors), `actual`, `actual_status`, `actual_error`, `usage`, `model`, `model_name`, `model_icon`, and `created_at`. User snapshots also contain `tail`, an archive of complete following messages, including their own swipe history. Identity, conversation, seq, role and visibility belong to the message. The top-level mutable fields always match the active snapshot. Context building, compression and memory scanning use only the active contents and never consume inactive swipes or tails.
 
 ### Regenerate and edit
 
@@ -188,26 +182,26 @@ Creating a conversation initializes its greeting versions as `[first_mes, ...alt
 
 ## Image attachments
 
-Message `parts.images` accepts existing data-URL strings on chat/edit uploads and now also accepts attachment references. New and migrated messages return metadata references instead of inline bytes, including in SSE `user_message`, full history, paging, single-message and swipe responses:
+Chat `images` accepts data-URL uploads (used by the current app) or owner-scoped attachment references. Stored message `parts.images` contains only metadata references, including in SSE `user_message`, full history, paging, single-message and swipe responses:
 
 ```json
 {"parts":{"images":[{"id":"<opaque-id>","mime":"image/png","width":640,"height":480,"bytes":18234}]}}
 ```
 
-`width`/`height` are optional (currently extracted from PNG headers); `bytes` is the decoded blob size. Existing HTTP(S) image strings remain supported. Reference ids belong to the authenticated user and supplied reference metadata is replaced by the stored metadata. A reference owned by another user is rejected.
+`width`/`height` are optional (currently extracted from PNG headers); `bytes` is the decoded blob size. Remote URL image strings are not accepted. Reference ids belong to the authenticated user and supplied reference metadata is replaced by the stored metadata. A reference owned by another user is rejected.
 
 - `POST /api/attachments` with `{"data_url":"data:image/png;base64,..."}` optionally uploads an image ahead of sending and returns its reference. Sending a data URL directly continues to upload automatically. Supported MIME types: PNG, JPEG, GIF, WebP, AVIF and BMP. Decoded images are limited to 24 MiB; the existing 32 MiB JSON body limit still applies.
 - `GET /api/attachments/{id}` returns the original image bytes and MIME type. Authenticate with the existing bearer header or `?token=` mechanism (including browser images and the embedded loopback server). Unknown/other-owner ids return 404; missing authentication returns 401. Responses use `ETag: "<id>"`, `Cache-Control: private, max-age=31536000, immutable`, and `X-Content-Type-Options: nosniff`. A matching `If-None-Match` returns 304 after authentication/ownership checks. Ids include the owner, MIME type and content in a SHA-256 digest; repeated uploads by that owner deduplicate.
 
 Character `avatar` retains its string type. Inline avatar uploads/imports are stored as blobs and returned as `/api/attachments/{id}`, with additive `avatar_attachment` reference metadata. The existing character avatar and PNG export routes resolve stored blobs, preserving export behavior. HTTP(S) avatars keep their existing behavior.
 
-Schema version 2 performs an idempotent startup migration of existing message attachments (including inactive swipes and archived branch tails) and inline character avatars on both SQLite and PostgreSQL. It marks completion only after all rows have been persisted; an interrupted upgrade safely retries. This can make the first startup after upgrade longer. Blob bytes are stored separately from JSON. Blobs remain available for shared references and swipe history; deleting a user removes that user's blobs.
+Database schema version is **4**, created as one fresh baseline on SQLite and PostgreSQL. Startup rejects any other version with an error telling the operator to delete/recreate the database. No upgrades, conversion passes or completion markers exist. Blob bytes are stored separately from message JSON. Blobs remain available for shared references and swipe history; deleting a user removes that user's blobs.
 
 Only the selected vision-provider context resolves image references back to data URLs, server-side, for both Chat Completions and Responses. API history never does this. Pagination `max_chars` continues to ignore images; page `bytes` still measures the compact public JSON array, which now includes only reference metadata, never the referenced blob bytes.
 
-The Flutter client reserves image geometry before loading, loads near the viewport (including the eager newest-turn sliver), caches providers/decoded images, requests display-sized decoding, fades with the emphasized-decelerate curve, and offers retry after failure. Legacy data URLs use an isolate and a bounded shared byte cache on native platforms; web delegates them to the browser's asynchronous image loader. Avatars share memoized image providers across rebuilds.
+The Flutter client reserves image geometry before loading, loads near the viewport (including the eager newest-turn sliver), caches providers/decoded images, requests display-sized decoding, fades with the emphasized-decelerate curve, and offers retry after failure. Avatars share memoized image providers across rebuilds.
 
-## Plugins (schema 3, JavaScript API 1)
+## Plugins (JavaScript API 1)
 
 Plugins are owned by the authenticated user. Character attachments are ordered; tools, hooks and menus come from a static manifest. Saving or listing a module never evaluates its code. Each handler executes in a fresh QuickJS async runtime (64 MiB heap, 1 MiB stack); hooks have a 2-second invocation deadline and tools/menus have 10 seconds. The deadlines include host I/O. Two runtime workers are available per server. Imports, OS/file/environment access and timers are not provided. Await host calls. Persistent state belongs in KV.
 
@@ -244,21 +238,23 @@ Limits: code 1 MiB UTF-8, 32 tools and 16 menus per plugin. Tool/menu ids are 1�
 | PUT | `/api/plugins/{id}` | Save package (missing ordinary fields use defaults); omitted code preserves stored code. Id/created_at are retained. |
 | DELETE | `/api/plugins/{id}` | 204; removes package, KV and accounting. Stale character attachments are ignored. |
 | POST or PUT | `/api/plugins/{id}/enable` | `{enabled?:boolean}` (default true); returns full package with declared permissions granted, or grants cleared when disabled. |
-| PUT | `/api/characters/{id}/plugins` | Ordered plugin id array, or `{plugin_ids:[...]}`; rejects foreign/unknown/duplicate ids. Returns `{plugin_ids:[...]}`. |
+| PUT | `/api/characters/{id}/plugins` | `{plugin_ids:[...]}`; rejects foreign/unknown/duplicate ids. Returns `{plugin_ids:[...]}`. |
 | GET | `/api/plugins/{id}/storage` | `{plugin_id,used_bytes,entry_count,quota_bytes,tables:[{name,used_bytes,entry_count}]}`. |
 | DELETE | `/api/plugins/{id}/storage` | 204; clears all plugin KV tables. |
 | DELETE | `/api/plugins/{id}/storage/{table}` | 204; clears that table. |
 | GET | `/api/conversations/{id}/plugin_menus` | Array of `{plugin_id,plugin_name,id,label,icon}` in character/plugin manifest order; missing icon is null. Only enabled attached plugins are listed. |
-| POST | `/api/plugins/{id}/menus/{menu_id}/invoke` | SSE. `{conversation_id,input?:Json,plugin_protocol?:1,client_id?:string,ui_capabilities?:string[]}`. Omitted input is null. Protocol defaults to 1 for menus. |
+| POST | `/api/plugins/{id}/menus/{menu_id}/invoke` | SSE. `{conversation_id,input?:Json,client_id?:string,ui_capabilities?:string[]}`. Omitted input is null. |
 | POST | `/api/plugins/calls/{call_id}` | `{client_id,action:string|null,input?:string|null}`; dialog reply, 204. `action:null` dismisses and returns the dialog default. Wrong user/client, expired or already answered call: 404. Invalid action/input: 400. |
 
 Every plugin/conversation/character/call lookup is scoped to the authenticated user. HTTP validation errors use the existing `{error:string}` envelope, with `E_VALIDATION:` for plugin shape errors. Independent conversation/message/swipe/branch/title/memory/menu mutations return 409 during an operation; reads remain available. Character memory/order changes are also blocked while an affected conversation is active. Hooks from the owning generation use the internal staged APIs and can mutate their conversation. Plugin enable/revoke remains available. Stop cancels the operation, its dialogs and queued sends. The coordinator is in-process: run one backend process per database.
 
-Schema 2→3 transactionally converts every LocalTool into an entity of kind `plugin`, `format:"legacy-main"`, with a single `main` tool and declared/granted `network` permission when enabled. IDs, code, models, enable state and character order are preserved. All `/api/tools` routes retain their old JSON shapes, summary/code-preservation behavior, execution names and `main(args)`/synchronous `http(...)` behavior; they expose only legacy plugins. Use those routes to create/edit legacy tools. Character `tool_ids` over HTTP remains the legacy-only ordered view; additive `plugin_ids` contains the full order. A legacy character PUT replaces legacy slots while preserving module attachments, then appends extra legacy ids. Internally `tool_ids` is the sole canonical full order.
+Characters use one ordered list, `plugin_ids`, in storage and in every HTTP response. Character POST/PUT accepts `{"plugin_ids":["<plugin-id>"]}` alongside its other fields; PUT replaces the list. `PUT /api/characters/{id}/plugins` accepts exactly `{"plugin_ids":["<plugin-id>"]}` and returns the same shape. IDs must be unique and belong to the user.
+
+Every new user, including root on a fresh database, receives one enabled normal plugin named **骰子 / Dice**. Its code is included in the backend binary, format is `module-v1`, manifest API is 1, permissions and grants are `[]`, and models is `[]`. It exposes `roll_dice` (upstream name `p_<plugin-id>_roll_dice`) with arguments `{"expression":"4d6kh3","reason":"Ability score"}`; `expression` is required and `reason` optional. It returns the dice roller's formatted string and supports kh/kl/dl/dh, adv/dis, !/!!, r/ro, success counting, N#expr, labels, dF and d%. Attach its ID to a character to use it. Users can edit, disable or delete it; startup/login never reinstalls it.
 
 ### Invocation, reads and messages
 
-All `rofu` I/O methods return Promises. Returned values are copies; mutate using the methods below. `Json` denotes a JSON value, `Image` the existing URL/data URL/owner-scoped attachment-reference shape, and `Message` the complete stored message, including swipes/tails (unlike the public HTTP message projection). Host results and handler results are limited to 1 MiB UTF-8; use pagination. Default page size is 50, maximum 100; `next_cursor:null` ends a list. Cursors are opaque strings, with no optimistic revision requirement.
+All `rofu` I/O methods return Promises. Returned values are copies; mutate using the methods below. `Json` denotes a JSON value, `Image` a data URL upload or owner-scoped attachment reference, and `Message` the complete stored message, including swipes/tails (unlike the public HTTP message projection). Host results and handler results are limited to 1 MiB UTF-8; use pagination. Default page size is 50, maximum 100; `next_cursor:null` ends a list. Cursors are opaque strings, with no optimistic revision requirement.
 
 ```ts
 rofu.invocation: Readonly<{
@@ -296,11 +292,11 @@ rofu.messages.swipes.select(id:string,index:number): Promise<{messages:Message[]
 rofu.messages.swipes.remove(id:string,index:number): Promise<{messages:Message[]}>;
 ```
 
-Every message field is readable/writable, including role, seq, content/display, actual/status/error, visibility, images, segments, usage, model/provenance, timestamps, custom JSON and swipes. Only `id`, `user_id`, `conversation_id` are immutable; foreign ids never resolve. `display` aliases `content`; top-level `images` and `segments` alias `parts.images` and `parts.segments`. A content-only edit updates text segments while retaining reasoning/tools. An actual-only edit sets status `ok` (or `none` for null) and clears its error; explicit actual_status/actual_error override these defaults. Explicit fields override defaults from a selected swipe.
+Every message field is readable/writable, including role, seq, content, actual/status/error, visibility, images, segments, usage, model/provenance, timestamps, custom JSON and swipes. Only `id`, `user_id`, `conversation_id` are immutable; foreign ids never resolve. Top-level `images` and `segments` alias `parts.images` and `parts.segments`. A content-only edit updates text segments while retaining reasoning/tools. An actual-only edit sets status `ok` (or `none` for null) and clears its error; explicit actual_status/actual_error override these defaults. Explicit fields override defaults from a selected swipe.
 
 Validation checks shapes rather than restricting categories: role/field types, JSON arguments, seq uniqueness in the conversation, valid swipe index/nonempty versions, and tool call/result pairing. Invalid shapes return `E_VALIDATION`. Native combined tool segments contain `{type:"tool",id,name,arguments:<JSON string>,result:<string>,is_error:<boolean>,duration_ms?}`. Explicit cross-message calls may use assistant `tool_calls:[{id,name,arguments:<JSON string>}]` paired with a tool message's `call_id`; `name` is optional on a tool result. Pairing is checked at handler commit so a handler can stage both sides. Swipe operations retain at least one version; selecting user versions archives/restores subsequent rows transactionally. Inactive snapshots/tails are readable and editable through the full swipes field.
 
-Insert allocates a server id and places the message immediately after `after_seq`, shifting later seq values if needed; omission appends. It never calls the LLM. A tool-role insert needs a paired call (`call_id`/`name` are additive inputs for that purpose). All visible system-role rows, wherever inserted/resequenced, are merged into the one leading system message in seq order; none is emitted mid-history or at the end. Automatic summaries also avoid seq collisions after plugin insertion/resequencing.
+Insert allocates a server id and places the message immediately after `after_seq`, shifting later seq values if needed; omission appends. It never calls the LLM. A tool-role insert needs a paired call (`call_id`/`name` are additive inputs for that purpose). System-role rows are stored but excluded from provider context; configure instructions in the character card `system_prompt`. Automatic summaries also avoid seq collisions after plugin insertion/resequencing.
 
 ### Memory and storage
 
@@ -349,7 +345,7 @@ rofu.ui.dialog(opts:{
 
 Dialogs require unique nonempty action ids and a matching default_action. Default timeout is 5000ms; accepted range 1–30000ms, shortened to fit the remaining invocation deadline. Input defaults to a maximum of 4096 Unicode characters (maximum supported limit 65536). Dismissal/timeout/unavailable choose the default action with null input. Without an attached, negotiated capable client, dialogs immediately resolve `unavailable`; toast/notify return `delivered:false`. A disconnect during a dialog also resolves `unavailable`; other generation work continues. Stop cancels instead. `delivered:true` means an event was queued to that stream, not a client acknowledgement.
 
-Chat requests add optional fields `{plugin_protocol:1,client_id:"<client-instance>",ui_capabilities:["toast","notify","dialog"]}`. Omit them for old clients. Plugin events are emitted only with protocol 1 (menus default to 1). Unknown UI capabilities grant no additional access. The frontend renders UI and posts dialog answers using the same authenticated user and client_id. No durable calls, request idempotency or acknowledgement receipts exist.
+Chat requests add optional fields `{client_id:"<client-instance>",ui_capabilities:["toast","notify","dialog"]}`. Plugin events are always emitted; clients must handle the current plugin SSE events. Unknown UI capabilities grant no additional access. The frontend renders UI and posts dialog answers using the same authenticated user and client_id. No durable calls, request idempotency or acknowledgement receipts exist.
 
 Each event retains the existing SSE framing (`data: <JSON>\n\n`) and `type` discriminator:
 
@@ -400,3 +396,31 @@ export async function beforeSend(payload) {
 ```json
 {"api_version":1,"permissions":["write","storage","ui","hooks"],"tools":[],"hooks":{"beforeSend":"beforeSend"},"menus":[{"id":"remember","label":"Remember instruction","handler":"remember"}]}
 ```
+
+## Provider and model request overrides
+
+Provider and Model each expose `extra_body`, an optional JSON object on POST/PUT, default `{}`. Explicit null, arrays, strings, numbers and booleans return HTTP 400 `{"error":"extra_body must be an object"}`. GET/list/save responses include the object. PUT uses replacement semantics; omitting it resets it to `{}`. Model batch creation follows the same validation.
+
+Example provider save input (alongside the provider's other fields):
+
+```json
+{"name":"OpenRouter","kind":"openai","base_url":"https://openrouter.ai/api/v1","api_key":"<key>","extra_body":{"provider":{"order":["anthropic"],"allow_fallbacks":false}}}
+```
+
+Model example (alongside the model's other fields):
+
+```json
+{"provider_id":"<provider-id>","model_id":"anthropic/claude-sonnet-4.5","extra_body":{"provider":{"order":["google"]},"temperature":null}}
+```
+
+After building the complete upstream body, the backend deep-merges provider overrides, then model overrides. Objects merge recursively, other values replace (including arrays), and `null` deletes a key, including nested keys. In the examples the final body has `"provider":{"order":["google"],"allow_fallbacks":false}` and no `temperature`. The merge is literal: it can override/delete any generated key, including `model`, messages/input, tools, token limits, `stream` or stream options. Setting `stream:false` is allowed; response parsing still expects SSE, so the operator must supply parameters compatible with the upstream response protocol.
+
+There is no standalone `rofu.llm` API in the current plugin runtime; `rofu.chat.send` queues normal generation through this shared request path. Both Chat Completions and Responses use this path. Title generation, actual compression, summary compression, memory scanning, provider testing and plugin-triggered chat calls apply the resolved provider/model's overrides through the same `llm::Request::body()`.
+
+## Current-contract cleanup
+
+`/api/tools`, `/api/tools/{id}`, `/api/tools/run`, their summary option, LocalTool, `legacy-main`, synchronous `http(...)`, and global `main(args)` are removed. Use `/api/plugins` and named ES-module exports. Plugin message updates use `content`; the `display` alias is removed. Character `tool_ids` and context `mode` are removed; use `plugin_ids`, `context.instant`, and `context.summarize`. Context HTTP/SSE shape is `{"tokens":123,"max":32768,"estimated":true,"instant":false,"summarize":true,"threshold":24576}`. No response event names changed.
+
+Upload with `POST /api/attachments` body `{"data_url":"data:image/png;base64,..."}` to receive `{"id":"<id>","mime":"image/png","bytes":123,"width":10,"height":10}` (dimensions optional), then chat with `{"content":"Describe this","images":[{"id":"<id>"}]}`. Direct chat `{"content":"Describe this","images":["data:image/png;base64,..."]}` remains an upload path; SSE/history/swipes always return canonical attachment metadata. Remote URL strings and stored inline images are not supported. Avatar data-URL saves/imports remain uploads and return `/api/attachments/{id}` plus `avatar_attachment` metadata.
+
+Renamed character-card keys `char_name`, `char_persona`, `world_scenario`, `char_greeting`, `example_dialogue` are removed. Standard card fields, V2/V3 containers and PNG metadata import remain available.

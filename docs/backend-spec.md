@@ -19,7 +19,7 @@ RofuChat 是 Agent-Native 的角色扮演引擎。后端负责**全部数据与�
 
 - Rust stable（edition 2021），异步运行时 tokio。
 - HTTP：axum 0.8；CORS 全开（`tower-http` CorsLayer，允许任意 Origin、`Authorization`/`Content-Type` 头），供 Web 前端跨域。
-- 数据库：sqlx 0.8 的 `Any` 驱动，同时支持 **SQLite**（默认，`sqlite://path?mode=rwc`）和 **PostgreSQL**（`postgres://...`）。只用两库通用的类型与语法（TEXT / BIGINT / `$n` 占位符），**不得使用编译期 `query!` 宏**（避免构建依赖数据库）。启动时自动建表/迁移（用 `schema_version` 记录版本，迁移脚本按版本递增执行）。
+- 数据库：sqlx 0.8 的 `Any` 驱动，同时支持 **SQLite**（默认，`sqlite://path?mode=rwc`）和 **PostgreSQL**（`postgres://...`）。只用两库通用的类型与语法（TEXT / BIGINT / `$n` 占位符），**不得使用编译期 `query!` 宏**（避免构建依赖数据库）。首次启动创建完整 schema 4（`schema_version` 只存版本 4）。已有数据库版本不一致时启动失败，明确要求删除并重建数据库；不提供升级或数据转换。
 - HTTP 客户端：reqwest（rustls，不依赖 OpenSSL，保证 Android/Windows 交叉编译）。
 - JS 引擎：rquickjs（QuickJS）。
 - 密码：argon2。
@@ -82,12 +82,13 @@ void rofu_free_string(char* s);
 
 ## 4. 数据模型
 
-所有 id 为字符串（UUID v4 simple 格式即可）。时间戳为 **毫秒 Unix 时间（i64）**。JSON 字段一律 `snake_case`。反序列化对缺失字段使用默认值（向前兼容），未知字段忽略。
+所有 id 为字符串（UUID v4 simple 格式即可）。时间戳为 **毫秒 Unix 时间（i64）**。JSON 字段一律 `snake_case`。创建实体时应用声明的默认值；读取持久化记录不修复缺失字段。
 
 ### 4.1 Provider（模型供应商）
 ```json
 {
   "id": "…", "name": "OpenRouter",
+  "extra_body": {},         // 最终请求体深合并覆盖
   "kind": "openai",            // "openai" = Chat Completions 兼容；"responses" = OpenAI Responses API
   "base_url": "https://openrouter.ai/api/v1",
   "api_key": "sk-…",           // GET 时返回掩码 "sk-…abcd"（前4后4），PUT 时若传入掩码值或空串则保持原值
@@ -100,6 +101,7 @@ void rofu_free_string(char* s);
 ```json
 {
   "id": "…", "provider_id": "…",
+  "extra_body": {},         // JSON 对象，覆盖 provider.extra_body
   "model_id": "anthropic/claude-sonnet-4.5",  // 发给 API 的名字
   "name": "Claude Sonnet 4.5",                // 显示名
   "context_length": 200000,
@@ -128,33 +130,24 @@ void rofu_free_string(char* s);
   "card": { /* SillyTavern V2 data 段，见 4.3.1 */ },
   "mcp": [ {"name": "search", "url": "https://…/mcp", "transport": "http", "headers": {"Authorization": "Bearer …"}, "enabled": true} ],
                               // transport: "http" = Streamable HTTP；"sse" = 旧版 HTTP+SSE
-  "tool_ids": ["…"],         // 启用的本地工具 LocalTool.id
-  "context": {"mode": "traditional", "compress_threshold": 0, "keep_recent": 6, "display_recent": 4},
+  "plugin_ids": ["…"],       // 有序 Plugin.id 列表
+  "context": {"summarize": true, "instant": false, "compress_threshold": 0, "keep_recent": 6, "display_recent": 4},
   "memory": {"enabled": true, "auto_scan": true, "share_global": true},
   "params": {"temperature": null, "top_p": null, "max_tokens": null, "reasoning_effort": ""},  // "", "low", "medium", "high"
   "sort": 0
 }
 ```
-- 头像继续接受 data URL；保存/导入时移到独立 blob，列表和单个 GET 的 `avatar` 均为 `/api/attachments/{id}`，附加 `avatar_attachment` 元数据。原 `/api/characters/{id}/avatar` 和 PNG 导出仍可用。鉴权、缓存和升级迁移见 `api.md` 的 Image attachments。
+- 头像继续接受 data URL；保存/导入时移到独立 blob，列表和单个 GET 的 `avatar` 均为 `/api/attachments/{id}`，附加 `avatar_attachment` 元数据。原 `/api/characters/{id}/avatar` 和 PNG 导出仍可用。鉴权、缓存和上传见 `api.md` 的 Image attachments。
 
 #### 4.3.1 SillyTavern 角色卡兼容
 - `card` 字段 = Character Card V2 的 `data`：`name, description, personality, scenario, first_mes, mes_example, creator_notes, system_prompt, post_history_instructions, alternate_greetings[], character_book, tags[], creator, character_version, extensions{}`。
-- 导入 `POST /api/characters/import`：body 为 `{"json": <卡片 JSON>}` 或 `{"png_base64": "…"}`。支持 V1（顶层字段，含 `char_name/char_persona/world_scenario/char_greeting/example_dialogue` 旧名）、V2（`spec=chara_card_v2`）、V3（`spec=chara_card_v3`，读 `data` 中兼容字段，其余放 extensions）。PNG 读取 `tEXt`/`iTXt` 中 keyword `ccv3`（优先）或 `chara` 的 base64 JSON；PNG 本身作为头像（转 data URL）。
+- 导入 `POST /api/characters/import`：body 为 `{"json": <卡片 JSON>}` 或 `{"png_base64": "…"}`。支持标准字段、V2（`spec=chara_card_v2`）、V3（`spec=chara_card_v3`，读 `data` 中兼容字段，其余放 extensions）。PNG 读取 `tEXt`/`iTXt` 中 keyword `ccv3`（优先）或 `chara` 的 base64 JSON；PNG 本身作为头像（转 data URL）。
 - 导出 `GET /api/characters/{id}/export?format=json|png`：json 为 V2；png 把 V2 写入 `chara` tEXt chunk（有 PNG 头像时嵌入该头像，否则生成 1 张纯色 PNG）。
 - 宏：`{{char}}` `{{user}}` `<BOT>` `<USER>`（大小写变体）在 system prompt、first_mes、示例对话、post_history_instructions 中替换。
 - `character_book`（世界书）：条目 `enabled != false` 且（`constant` 或 任一 `keys` 出现在最近 N=6 条可见消息中，忽略大小写）时注入，按 `insertion_order` 升序。
 
-### 4.4 LocalTool（本地 JS 工具）
-```json
-{
-  "id": "…", "name": "dice", "description": "Roll dice like 2d6",
-  "parameters": {"type": "object", "properties": {"expr": {"type": "string"}}, "required": ["expr"]},
-  "code": "function main(args) { … return {total: 7}; }",
-  "models": [],        // Model.id 列表；空 = 所有模型可用；非空则仅这些模型启用
-  "enabled": true
-}
-```
-见第 9 节执行规则。
+### 4.4 Plugin
+插件使用 `module-v1` ES module，静态 manifest 的 `api_version=1`，handler 指向命名 export。完整实体与 HTTP 契约见第 9 节及 `api.md` Plugins。新用户创建事务中安装启用的普通插件“骰子 / Dice”，无权限要求，工具为 roll_dice(expression, reason?)。用户可编辑、停用或删除，启动不会重新安装。
 
 ### 4.5 Conversation
 `{id, character_id, title, created_at, updated_at, memory_scanned_seq}`。创建时若角色有 `first_mes`（或指定 `greeting_index` 选 alternate_greetings），插入一条 assistant 消息作为开场白（宏替换后）。`title` 初始为空串，第一轮回复后仅在用户明确配置且能解析 Fast model 时自动生成；否则使用用户首条消息的回退标题，清洗及截断规则见 §5.4。
@@ -177,7 +170,7 @@ void rofu_free_string(char* s);
       {"type": "tool", "id": "call_1", "name": "search__scrape", "arguments": "{…}", "result": "…", "is_error": false, "duration_ms": 4700},
       {"type": "text", "text": "以下为…"}
     ],
-    "images": [],                 // user 图片引用 {id,mime,width?,height?,bytes}，兼容 HTTP(S) 字符串；上传仍接受 data URL
+    "images": [],                 // user 图片引用 {id,mime,width?,height?,bytes}，仅保存附件引用；聊天上传接受 data URL
     "error": null                 // 生成失败的错误信息
   },
   "model": "…",                   // 生成它的 Model.id
@@ -203,7 +196,7 @@ void rofu_free_string(char* s);
 ```
 
 ### 4.9 存储
-推荐：`users`、`sessions`、`kv`、`conversations`、`messages` 为独立表；Provider/Model/Character/LocalTool/Memory/Settings 可以用通用表 `entities(id, user_id, kind, parent_id, data TEXT(JSON), created_at, updated_at)` + 索引 `(user_id, kind)`，也可以分表，由实现者决定，但必须两种数据库都能跑。`messages` 需索引 `(conversation_id, seq)`。删除 Provider 级联删除其 Model；删除 Character 级联删除其会话、消息、角色专属记忆；删除会话级联删除消息。
+推荐：`users`、`sessions`、`kv`、`conversations`、`messages` 为独立表；Provider/Model/Character/Plugin/Memory/Settings 可以用通用表 `entities(id, user_id, kind, parent_id, data TEXT(JSON), created_at, updated_at)` + 索引 `(user_id, kind)`，也可以分表，由实现者决定，但必须两种数据库都能跑。`messages` 需索引 `(conversation_id, seq)`。删除 Provider 级联删除其 Model；删除 Character 级联删除其会话、消息、角色专属记忆；删除会话级联删除消息。
 
 ## 5. LLM 接入
 
@@ -233,7 +226,7 @@ void rofu_free_string(char* s);
 ### 5.5 Token 计数
 - 优先使用供应商 usage。
 - 估算函数：CJK 字符每个约 1 token，其余约 4 字符 1 token，每条消息 +4，图片每张 +800。
-- `GET /api/conversations/{id}/context` 返回当前上下文：`{"tokens": 12345, "max": 200000, "estimated": true, "mode": "traditional", "threshold": 150000}`。`tokens` = 按当前规则构建上下文（系统提示 + 历史 + 工具定义）的估算值；如果最后一条 assistant 的 usage 来自供应商且其后没有新消息，则用 `该轮最后一次请求的 input + output`（需在 usage 里额外记录 `last_input`）。
+- `GET /api/conversations/{id}/context` 返回当前上下文：`{"tokens": 12345, "max": 200000, "estimated": true, "instant": false, "summarize": true, "threshold": 150000}`。`tokens` = 按当前规则构建上下文（系统提示 + 历史 + 工具定义）的估算值；如果最后一条 assistant 的 usage 来自供应商且其后没有新消息，则用 `该轮最后一次请求的 input + output`（需在 usage 里额外记录 `last_input`）。
 
 ## 6. HTTP API 契约
 
@@ -285,11 +278,8 @@ void rofu_free_string(char* s);
 | PUT | `/api/characters/order` | `["id1","id2",…]` 重排 sort |
 | POST | `/api/mcp/test` | body 为一个 McpServer，返回 `{ok, tools:[{name,description,input_schema}], error}` |
 
-### 6.6 LocalTool
-| GET/POST | `/api/tools` | |
-|---|---|---|
-| GET/PUT/DELETE | `/api/tools/{id}` | |
-| POST | `/api/tools/run` | `{code, args}` → `{result, logs[], is_error, duration_ms}`（编辑器里“试运行”） |
+### 6.6 Plugin
+`/api/plugins` CRUD、权限、storage、menus、calls 及角色有序 plugin_ids 完整契约见 `api.md` Plugins。角色插件替换：`PUT /api/characters/{id}/plugins` 输入和输出均为 `{"plugin_ids":["<plugin-id>"]}`。
 
 ### 6.7 Memory
 | GET | `/api/memories?character_id=&q=` | `character_id=global` 只列全局；不传列全部；`q` 关键词搜索 |
@@ -361,12 +351,12 @@ void rofu_free_string(char* s);
 
 ## 8. 上下文管理（独立开关，按角色配置）
 
-`character.context` 使用两个独立布尔开关：`summarize` 默认 `true`，控制阈值/手动摘要压缩；`instant` 默认 `false`，控制每条回复的 actual 压缩与历史选择。两者可以同时开启或关闭。新字段缺失时按旧数据兼容：`mode="instant"` → `instant=true, summarize=true`，其他 mode → `instant=false, summarize=true`；显式的新字段优先。保存、GET/列表和导出均包含新字段，`mode` 始终镜像 instant（true 为 `"instant"`，false 为 `"traditional"`）。JSON/PNG 角色卡导出在顶层附加 `context`，导入时恢复它；无此字段的外部角色卡使用默认值。
+`character.context` 使用两个独立布尔开关：`summarize` 默认 `true`，控制阈值/手动摘要压缩；`instant` 默认 `false`，控制每条回复的 actual 压缩与历史选择。两者可以同时开启或关闭。创建时使用上述默认值。仅使用 instant/summarize 两个开关，不再提供 mode。JSON/PNG 角色卡导出在顶层附加 `context`，导入时恢复它；无此字段的外部角色卡使用默认值。
 
 ### 8.1 上下文组装（所有开关组合共用）
-1. 只生成一条 System，且必须是 messages 的第一条。内容顺序：角色卡 `system_prompt`（为空则用内置默认 RP 提示）→ description → personality → scenario → 用户 persona → 世界书命中条目 → mes_example → 长期记忆块（pinned 记忆 + 记忆工具使用说明）→ 可见压缩摘要（每条以 `[Summary of the earlier conversation]\n` 开头，多条按 seq 顺序）→ `post_history_instructions`。各块以空行分隔，全部做宏替换。兼容历史中已有的可见 system 行时，将其内容按 seq 合入长期记忆块之后、摘要之前。
+1. 只生成一条 System，且必须是 messages 的第一条。内容顺序：角色卡 `system_prompt`（为空则用内置默认 RP 提示）→ description → personality → scenario → 用户 persona → 世界书命中条目 → mes_example → 长期记忆块（pinned 记忆 + 记忆工具使用说明）→ 可见压缩摘要（每条以 `[Summary of the earlier conversation]\n` 开头，多条按 seq 顺序）→ `post_history_instructions`。各块以空行分隔，全部做宏替换。存储的 system 行不进入上游上下文；指令配置在角色卡 system_prompt。
 2. 历史：按 seq 遍历 `visible=true` 的 user/assistant/tool 消息（跳过内容为空且无 segments 的失败 assistant）；summary/system 不再作为独立历史消息发送。assistant 带工具片段时还原为 “assistant(tool_calls) → tool 结果 → assistant 文本” 的正确序列；user 图片仅在模型 vision 时附带。
-3. 角色卡、用户设置不变且世界书命中、记忆和摘要未变时，连续两轮的 System 内容保持一致，关闭 instant 时历史仅在末尾追加（摘要压缩仍可隐藏旧消息）；开启时按 display_recent 选择 display/actual。关键词触发的世界书条目改变时，System 内容随之变化，这是预期行为。token 估算（含 context 接口）使用上述合并后的结构。开启 instant 或存在可见 summary 时，使用当前实际组装上下文的估算值（estimated=true），避免供应商压缩前的 usage 覆盖压缩后的结果；其他情况沿用最近 assistant 的供应商 usage 优先规则。GET context 与 SSE context 均附加 `instant`、`summarize` 布尔字段，并保留 mode/threshold/tokens/max/estimated。
+3. 角色卡、用户设置不变且世界书命中、记忆和摘要未变时，连续两轮的 System 内容保持一致，关闭 instant 时历史仅在末尾追加（摘要压缩仍可隐藏旧消息）；开启时按 display_recent 选择 display/actual。关键词触发的世界书条目改变时，System 内容随之变化，这是预期行为。token 估算（含 context 接口）使用上述合并后的结构。开启 instant 或存在可见 summary 时，使用当前实际组装上下文的估算值（estimated=true），避免供应商压缩前的 usage 覆盖压缩后的结果；其他情况沿用最近 assistant 的供应商 usage 优先规则。GET context 与 SSE context 均附加 `instant`、`summarize` 布尔字段，并保留 threshold/tokens/max/estimated。
 
 ### 8.2 摘要压缩（`context.summarize = true`）
 - 每轮结束后（开启 instant 时先生成 actual）计算上下文 tokens；≥ 阈值（`compress_threshold`，0 表示模型 `context_length` 的 75%）时触发压缩；也可手动 `POST /compress`。
@@ -382,30 +372,29 @@ void rofu_free_string(char* s);
 - Fast model 解析规则不变（用户 fast_model_id → 角色 model_id → 用户 default_model_id；选中配置后解析失败仍按原规则报错）。输入只使用 content 可见正文，删除 `<think>` / `<thinking>` 块；不输入 reasoning/text segments 或整个 segments JSON。每个 tool segment 仅追加一行 `[tool] name(args) → result`，参数最多 120 个 Unicode 字符，结果最多 200 个，行内空白折叠。
 - 系统提示要求：只输出一条角色扮演上下文笔记，无前言、标题、引号、Markdown 或评论；使用回复本身语言、第三人称、过去时，只保留情节相关的行为、对话大意、状态、地点、物品、关系变化、承诺及骰子/工具结果；删除描写、气氛、重复及回复以外的信息，禁止编造。目标不超过原文约 1/5，且不超过 120 个 CJK 字符或 80 个英文词，通常 1–3 个短句；提示中提供角色名和 persona 设置中的 user_name，要求用姓名消除代词歧义，不输入 persona 背景事实。
 - 输出清洗：删除 think/thinking 块、前缀 `摘要：` / `Summary:` / `压缩：`、外围引号和 Markdown 标记，折叠空白。清洗后为空或 Unicode 字符数不小于输入时，只重试一次，在原系统提示追加 `Too long. Output at most N characters.`（N = 输入字符数 / 5，限制在 1–120）。仍无效则 actual=null、actual_status=failed，actual_error 明确说明两次尝试未得到更短非空笔记；模型调用失败保留原错误。
-- 构建上下文时：可见 user/assistant/tool 历史中**最后 `display_recent` 条**用 display（content/完整 segments），已合入 System 的摘要/system 行不占此名额；更早的 assistant 消息若 `actual_status=ok` 用 actual（作为纯文本 assistant 消息，不含工具片段），否则**回退完整内容**。user 消息始终用原文。
+- 构建上下文时：可见 user/assistant/tool 历史中**最后 `display_recent` 条**用 display（content/完整 segments），摘要和 system 行不占此名额；更早的 assistant 消息若 `actual_status=ok` 用 actual（作为纯文本 assistant 消息，不含工具片段），否则**回退完整内容**。user 消息始终用原文。
 - 失败不弹任何东西，前端在消息上显示感叹号（据 `actual_status=failed`），点击后展示 `actual_error`，并可调用 `POST /api/messages/{id}/actual` 重试。
 - 允许用户 PATCH 手动编辑 actual。
 - 切换开关不改历史数据；关闭 instant 时已有 actual 不参与普通历史上下文选择，但摘要输入仍优先使用成功的 actual。关闭 instant 后新回复不自动生成 actual，手动 actual 重试端点保持可用。无论 instant 是否开启，visible=false 的消息均不进入上下文。
 
-## 9. 插件与兼容本地工具（QuickJS）
+## 9. 插件（QuickJS）
 
-插件 API 的完整路由、JSON/SSE 结构、JS 签名和示例以 `docs/api.md` 的 Plugins 节为准；原 `/api/tools` HTTP 契约不变。仅后端实现，前端通过可选协议字段接入。
+插件 API 的完整路由、JSON/SSE 结构、JS 签名和示例以 `docs/api.md` 的 Plugins 节为准。仅支持当前插件格式与协议。
 
-- schema 3 在一个事务中创建 plugin_storage/plugin_kv 并将原 tool 实体转为单工具 `legacy-main` 插件。保留 id、代码、模型过滤、启用状态和角色顺序；失败整体回滚。旧工具默认声明 network，启用时授予。旧 `/tools` 只投影 legacy 插件，并保留 summary/省略 code 的更新语义。模块插件使用 `/plugins`。
-- 插件 manifest 静态声明 api_version=1、permissions、tools、hooks、menus；代码为 ES module，handler 指向命名 export。保存仅编译语法，不执行用户代码。列表不含 code，附 code_chars。最多 32 tools、16 menus；模型工具名 `p_<plugin-id>_<tool-id>`，无冲突。models 仅过滤工具，不过滤菜单/钩子。角色内部 tool_ids 是完整插件顺序；HTTP tool_ids 是旧工具视图，plugin_ids 是完整视图；PUT `/characters/{id}/plugins` 替换完整顺序。
+- 插件 manifest 静态声明 api_version=1、permissions、tools、hooks、menus；代码为 ES module，handler 指向命名 export。保存仅编译语法，不执行用户代码。列表不含 code，附 code_chars。最多 32 tools、16 menus；模型工具名 `p_<plugin-id>_<tool-id>`，无冲突。models 仅过滤工具，不过滤菜单/钩子。角色存储及 HTTP 均只使用 plugin_ids 完整有序列表；PUT `/characters/{id}/plugins` 替换完整顺序。
 - 权限为 read、write、storage、hooks、send、ui、network；可选 network origins allowlist（空允许任意 HTTP(S) origin，重定向也检查）。用户启用时将 manifest 权限保存为 grants；声明权限变化时禁用直到重新启用。无细粒度矩阵、hash grants、plugin_runs、request_id、idempotency、UI ack、强制 revision 或 DNS/private-IP 策略。
 - AsyncRuntime/AsyncContext，每次调用新建隔离运行时；64 MiB heap、1 MiB stack；hook 2s、tool/menu 10s 为代码常量，包含宿主等待。最多 2 个运行 worker，CPU 循环不阻塞服务线程；中断/取消/超时会终止调用。JS 与宿主交换 owned JSON，网络为异步；无文件/环境/OS/模块加载/timer。
 - rofu 提供 invocation（当前用户的 plugin/conversation/character/source/phase/root/round）、conversation.get、character.get（不含凭证）、真实组装 context.get、当前角色 memory CRUD、完整 messages CRUD/insert/swipes、插件 KV、http.request、chat.send、ui.toast/notify/dialog。每个 I/O 方法返回 Promise，返回数据为副本。读列表默认 50、最大 100，响应 1 MiB 限制。memory 不继承 share_global 写权限，禁用时拒绝；context 可按角色配置读取全局记忆。
-- 消息任意字段可读写：role、seq、content/display、actual/status/error、visible、images、segments、usage、model、时间戳、swipes 和自定义 JSON。仅 id/user_id/conversation_id 不可变。只做形状校验：JSON、字段类型、会话内 seq 唯一、工具 call/result 配对、版本索引等，错误 E_VALIDATION。工具可采用现有合并 segment 或显式 assistant tool_calls/tool call_id；配对在 handler commit 检查，以允许一次 handler 暂存两侧。
-- messages.insert 接受任意 user/assistant/system/tool，服务端 id，after_seq 后插入或默认追加；不触发模型。所有 visible system 行按 seq 合入唯一的开头 system（长期记忆之后、摘要之前），绝不在中间或结尾发送。summary 分配 seq 时避开现有值。插件历史/记忆写入后上下文重新估算，避免旧供应商 usage 覆盖修改。
+- 消息任意字段可读写：role、seq、content、actual/status/error、visible、images、segments、usage、model、时间戳、swipes 和自定义 JSON。仅 id/user_id/conversation_id 不可变。只做形状校验：JSON、字段类型、会话内 seq 唯一、工具 call/result 配对、版本索引等，错误 E_VALIDATION。工具可采用现有合并 segment 或显式 assistant tool_calls/tool call_id；配对在 handler commit 检查，以允许一次 handler 暂存两侧。
+- messages.insert 接受任意 user/assistant/system/tool，服务端 id，after_seq 后插入或默认追加；不触发模型。system 行只存储，不进入上游上下文；指令配置在角色卡 system_prompt。summary 分配 seq 时避开现有值。插件历史/记忆写入后上下文重新估算，避免旧供应商 usage 覆盖修改。
 - KV 按 user+plugin+table，跨角色全局；默认 table=default，可 `kv.table(name)` 自选命名（包括角色 id）。无强制 character scope。10 MiB/plugin、64 KiB/value、10000 entries、16 tables、key 256 UTF-8 bytes、table 128 ASCII bytes；计 table+key+compact JSON 的 UTF-8 字节。usage/clear 提供总计和按表数据。事务先更新 accounting row 序列化并发；SQLite/PG 相同。
 - 所有会话操作复用单进程 coordinator，生成中独立菜单/写入返回 409，当前 generation 自己的 hooks 允许变更；不跨 JS/HTTP/UI 等待持有 DB 事务或全局 map 锁。stop 取消 hooks、对话框和后续发送；关闭等待后台任务。每库仅运行一个后端进程。
 - 每个 handler 读快照和 read-your-writes overlay；成功后短事务提交 message/memory/KV/attachments，异常/超时/验证失败丢弃本插件修改，发 plugin_error 后继续。memory 使用存储值冲突检查。网络/UI 已发送的外部效果不能回滚。beforeSend 整条链延迟到 prepare 一起提交；取消则全部丢弃，且取消前无 DB 写入。
 - beforeSend 在任何用户写入/归档/版本分配之前，返回 content/images/turn-local params patch 或 cancel；regenerate 不改用户 content/images。beforeToolCall 接受 args 或 skip；afterToolCall 可改 result/is_error，执行于持久化/tool_end 前，对成功/失败/skip 均运行，最后截断 20000 Unicode 字符。afterReply 在工具循环成功结束后、assistant_done 和 actual/summary 之前，允许 mutation 和 send；重新加载提交的 assistant，避免旧副本覆盖。hooks 按角色顺序串行，工具过滤关闭不影响 hooks。
 - chat.send 仅 afterReply/menu，暂存普通 user+generation，handler/本轮后处理结束后排队执行，同一 SSE owner 最后只发一次 done。每 handler 一次，每 root 最多 2 个额外 round（常量 MAX_FOLLOW_UPS）。不调用公开 chat 路由，不递归重入 coordinator，不重放。
-- 菜单查询 `/conversations/{id}/plugin_menus`，调用 `/plugins/{id}/menus/{menu_id}/invoke` 为 SSE；对话框应答 `/plugins/calls/{call_id}` 校验用户、client、action/input，过期/重复 404。dialog 必须 default_action，默认 5s，最多 30s 且缩短到调用剩余预算；无能力客户端或断线立即 unavailable/default，无 ack。chat 可带 plugin_protocol:1/client_id/ui_capabilities；老客户端不发插件事件。新增事件 plugin_ui、plugin_error、plugin_cancelled、plugin_messages_changed、plugin_result，精确结构见 api.md。
+- 菜单查询 `/conversations/{id}/plugin_menus`，调用 `/plugins/{id}/menus/{menu_id}/invoke` 为 SSE；对话框应答 `/plugins/calls/{call_id}` 校验用户、client、action/input，过期/重复 404。dialog 必须 default_action，默认 5s，最多 30s 且缩短到调用剩余预算；无能力客户端或断线立即 unavailable/default，无 ack。chat 可带 client_id/ui_capabilities；始终发送当前插件事件。新增事件 plugin_ui、plugin_error、plugin_cancelled、plugin_messages_changed、plugin_result，精确结构见 api.md。
 
-兼容 legacy-main：用户代码定义 `function main(args)`（允许 async），字符串原样返回，其他 JSON.stringify，undefined 为 "undefined"；console 附加到结果。旧同步 http(method,url,body?,headers?) 保留，10s 执行超时、64MB/1MB、独立 spawn_blocking Runtime，工具名 sanitize，旧启用/model 条件保持。新模块使用异步 rofu.http.request。
+插件使用异步 rofu.http.request，不提供全局 main 或同步 http。
 
 ## 10. MCP
 
@@ -450,3 +439,6 @@ void rofu_free_string(char* s);
 - `backend/README.md`：构建、运行、部署（含 systemd 示例、Docker 示例 `Dockerfile`）、配置项说明。
 - `docs/api.md` 若与本文第 6 节有任何补充（例如新增字段），在此记录。
 - `.github/workflows/backend.yml`：test（sqlite + postgres service）、clippy、android ndk 构建、windows 构建，上传 `rofu-server` 与各平台 `rofu_ffi` 产物。
+
+## 11. 请求体扩展
+Provider 和 Model 的 `extra_body` 均为可选 JSON 对象，默认 `{}`；保存非对象（含 null）返回 400。所有上游请求（openai / responses）完整组装后先深合并 provider.extra_body，再深合并 model.extra_body；对象递归合并，其他值替换，null 删除键，模型优先。允许覆盖或删除 stream 等任意字段，字面执行，不限制。标题、摘要、actual、memory、插件 rofu.chat.send 触发的生成均经过同一 Request 路径。OpenRouter 示例和精确 HTTP JSON 见 `api.md` Provider and model request overrides。

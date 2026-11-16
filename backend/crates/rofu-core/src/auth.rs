@@ -42,6 +42,7 @@ pub async fn create(db: &Db, username: &str, password: &str, root: bool) -> ApiR
         return Err(ApiError::conflict("username already exists"));
     }
     let user = json!({"id":id(),"username":username,"is_root":root,"created_at":now()});
+    let mut tx = db.pool.begin().await?;
     sqlx::query(
         "INSERT INTO users(id,username,password_hash,is_root,created_at) VALUES ($1,$2,$3,$4,$5)",
     )
@@ -50,8 +51,10 @@ pub async fn create(db: &Db, username: &str, password: &str, root: bool) -> ApiR
     .bind(hash(password.to_owned()).await?)
     .bind(i64::from(root))
     .bind(now())
-    .execute(&db.pool)
+    .execute(&mut *tx)
     .await?;
+    crate::plugins::install_dice(&mut tx, &text(&user, "id")).await?;
+    tx.commit().await?;
     Ok(user)
 }
 pub async fn initialize(db: &Db, password: Option<&str>) -> anyhow::Result<()> {

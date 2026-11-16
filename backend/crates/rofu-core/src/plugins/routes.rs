@@ -73,9 +73,8 @@ pub async fn dispatch(
         let running = s.generating.lock().await;
         let mut character = api::required(s, uid, "character", parts[1]).await?;
         api::ensure_character_idle(s, uid, parts[1], &running).await?;
-        let ids = body
+        let ids = body["plugin_ids"]
             .as_array()
-            .or_else(|| body["plugin_ids"].as_array())
             .ok_or_else(|| ApiError::bad("E_VALIDATION: expected plugin ID array"))?;
         let mut unique = std::collections::HashSet::new();
         for id in ids {
@@ -87,9 +86,9 @@ pub async fn dispatch(
             }
             api::required(s, uid, "plugin", id).await?;
         }
-        character["tool_ids"] = json!(ids);
+        character["plugin_ids"] = json!(ids);
         let character = s.db.save(uid, "character", character).await?;
-        return Ok(Some(ok(json!({"plugin_ids":character["tool_ids"]}))));
+        return Ok(Some(ok(json!({"plugin_ids":character["plugin_ids"]}))));
     }
     if parts[0] != "plugins" {
         return Ok(None);
@@ -168,22 +167,14 @@ async fn save(s: &AppState, uid: &str, input: &Value, old: Option<Value>) -> Api
         if input.get("code").is_none() {
             value["code"] = old["code"].clone();
         }
-        if input.get("format").is_none() {
-            value["format"] = old["format"].clone();
-        }
         if old["manifest"]["permissions"] != value["manifest"]["permissions"] {
             value["enabled"] = json!(false);
         }
     }
-    if value["format"] == "legacy-main" {
-        value = super::legacy_plugin(value);
-    }
     super::validate(&value).map_err(validation)?;
-    if value["format"] == "module-v1" {
-        runtime::compile(text(&value, "code"))
-            .await
-            .map_err(validation)?;
-    }
+    runtime::compile(text(&value, "code"))
+        .await
+        .map_err(validation)?;
     value["granted_permissions"] = if flag(&value, "enabled", false) {
         value["manifest"]["permissions"].clone()
     } else {
@@ -202,8 +193,7 @@ async fn menu(
     if s.shutdown.is_cancelled() {
         return Err(ApiError::conflict("server is stopping"));
     }
-    if body.get("plugin_protocol").is_some_and(|v| v != 1)
-        || body.get("client_id").is_some_and(|v| !v.is_string())
+    if body.get("client_id").is_some_and(|v| !v.is_string())
         || body
             .get("ui_capabilities")
             .is_some_and(|v| !v.as_array().is_some_and(|a| a.iter().all(Value::is_string)))
@@ -214,7 +204,7 @@ async fn menu(
     let conv = api::conversation(s, uid, &cid).await?;
     let character = api::required(s, uid, "character", &text(&conv, "character_id")).await?;
     if !flag(plugin, "enabled", false)
-        || !character["tool_ids"]
+        || !character["plugin_ids"]
             .as_array()
             .is_some_and(|ids| ids.contains(&plugin["id"]))
     {
@@ -237,11 +227,7 @@ async fn menu(
         running.insert(cid.clone(), cancel.clone());
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut negotiation = body.clone();
-    if negotiation.get("plugin_protocol").is_none() {
-        negotiation["plugin_protocol"] = json!(1);
-    }
-    let operation = super::host::Operation::new(tx.clone(), cancel, &negotiation);
+    let operation = super::host::Operation::new(tx.clone(), cancel, body);
     let input = body.get("input").cloned().unwrap_or(Value::Null);
     let menu_id = menu_id.to_owned();
     s.tasks.clone().spawn(async move {

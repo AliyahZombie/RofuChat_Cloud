@@ -349,3 +349,80 @@ async fn authentication_lifecycle_and_admin_controls() {
     .is_ok());
     server.stop().await.unwrap();
 }
+
+async fn fresh_schema_and_dice(database: &str) {
+    let db = Db::connect(database).await.unwrap();
+    rofu_core::auth::initialize(&db, Some("secret"))
+        .await
+        .unwrap();
+    let login = rofu_core::auth::login(&db, &json!({"username":"root","password":"secret"}))
+        .await
+        .unwrap();
+    let root = login["user"]["id"].as_str().unwrap();
+    let dice = db.list(root, "plugin").await.unwrap();
+    assert_eq!(dice.len(), 1);
+    assert_eq!(dice[0]["name"], "骰子 / Dice");
+    assert_eq!(dice[0]["enabled"], true);
+    assert_eq!(dice[0]["format"], "module-v1");
+    assert_eq!(dice[0]["manifest"]["permissions"], json!([]));
+    assert_eq!(dice[0]["granted_permissions"], json!([]));
+    let user = rofu_core::auth::create(&db, "new-user", "secret", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.list(user["id"].as_str().unwrap(), "plugin")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    db.delete(root, "plugin", dice[0]["id"].as_str().unwrap())
+        .await
+        .unwrap();
+    rofu_core::auth::initialize(&db, None).await.unwrap();
+    assert!(db.list(root, "plugin").await.unwrap().is_empty());
+    db.pool.close().await;
+    let db = Db::connect(database).await.unwrap();
+    rofu_core::auth::initialize(&db, None).await.unwrap();
+    assert!(db.list(root, "plugin").await.unwrap().is_empty());
+    for version in [1, 2, 3, 5] {
+        sqlx::query("UPDATE schema_version SET version=$1")
+            .bind(version as i64)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let error = match Db::connect(database).await {
+            Ok(_) => panic!("accepted schema {version}"),
+            Err(e) => e.to_string(),
+        };
+        assert!(error.contains("Delete/recreate the database"), "{error}");
+    }
+    db.pool.close().await;
+}
+#[tokio::test]
+async fn sqlite_fresh_schema_and_dice() {
+    let dir = tempfile::tempdir().unwrap();
+    fresh_schema_and_dice(&format!("sqlite://{}/fresh.db", dir.path().display())).await;
+}
+#[tokio::test]
+async fn postgres_fresh_schema_and_dice() {
+    let Ok(url) = std::env::var("ROFU_TEST_PG_URL") else {
+        return;
+    };
+    sqlx::any::install_default_drivers();
+    let pool = sqlx::AnyPool::connect(&url).await.unwrap();
+    let schema = format!("fresh_{}", rofu_core::model::id());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut url = url::Url::parse(&url).unwrap();
+    url.query_pairs_mut()
+        .append_pair("options", &format!("-c search_path={schema}"));
+    fresh_schema_and_dice(url.as_str()).await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}

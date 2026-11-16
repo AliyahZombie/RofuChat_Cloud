@@ -1,8 +1,8 @@
-use crate::model::{id, normalize_context, now, text};
+use crate::model::{id, now, text};
 use anyhow::{bail, Result};
 use futures_util::TryStreamExt;
 use serde_json::{json, Value};
-use sqlx::{any::AnyPoolOptions, AnyPool, Row};
+use sqlx::{any::AnyPoolOptions, AnyPool};
 
 /// Active content already contains text segments; count only additional segment text.
 pub fn message_chars(message: &Value) -> u64 {
@@ -40,107 +40,46 @@ impl Db {
             .connect(&url)
             .await?;
         let db = Self { pool };
-        db.migrate().await?;
+        db.initialize_schema().await?;
         Ok(db)
     }
-    async fn migrate(&self) -> Result<()> {
+    async fn initialize_schema(&self) -> Result<()> {
+        const VERSION: i64 = 4;
         sqlx::query("CREATE TABLE IF NOT EXISTS schema_version (version BIGINT PRIMARY KEY)")
             .execute(&self.pool)
             .await?;
         let mut tx = self.pool.begin().await?;
-        let version: Option<i64> = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
-            .fetch_one(&mut *tx)
+        let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM schema_version")
+            .fetch_all(&mut *tx)
             .await?;
-        if version.unwrap_or(0) < 1 {
-            for q in [
-                "CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, is_root BIGINT NOT NULL, created_at BIGINT NOT NULL)",
-                "CREATE TABLE sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at BIGINT NOT NULL, last_used BIGINT NOT NULL)",
-                "CREATE INDEX sessions_user ON sessions(user_id)",
-                "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-                "CREATE TABLE entities (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL, parent_id TEXT NOT NULL, data TEXT NOT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)",
-                "CREATE INDEX entities_owner ON entities(user_id,kind)",
-                "CREATE TABLE conversations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, character_id TEXT NOT NULL, data TEXT NOT NULL, updated_at BIGINT NOT NULL)",
-                "CREATE INDEX conversations_owner ON conversations(user_id,character_id)",
-                "CREATE TABLE messages (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, conversation_id TEXT NOT NULL, seq BIGINT NOT NULL, data TEXT NOT NULL)",
-                "CREATE INDEX messages_order ON messages(conversation_id,seq)",
-                "INSERT INTO schema_version(version) VALUES (1)",
-            ] { sqlx::query(q).execute(&mut *tx).await?; }
-        }
-        // BYTEA accepts binary bindings on both SQLite and PostgreSQL.
-        sqlx::query("CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, mime TEXT NOT NULL, data BYTEA NOT NULL, metadata TEXT NOT NULL)").execute(&mut *tx).await?;
-        tx.commit().await?;
-        let images_migrated: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM schema_version WHERE version=2")
-                .fetch_one(&self.pool)
-                .await?;
-        if images_migrated == 0 {
-            // Idempotent migration, including inactive swipes and archived branches. Mark
-            // complete only after every row is persisted; interruption safely retries.
-            for table in ["messages", "entities"] {
-                let filter = if table == "entities" {
-                    " AND kind='character'"
-                } else {
-                    ""
-                };
-                let mut cursor = String::new();
-                // Keep one row in memory, even when upgrading large image histories.
-                while let Some(row) = sqlx::query(&format!(
-                    "SELECT id,user_id,data FROM {table} WHERE id>$1{filter} ORDER BY id LIMIT 1"
-                ))
-                .bind(&cursor)
-                .fetch_optional(&self.pool)
-                .await?
-                {
-                    cursor = row.try_get("id")?;
-                    let uid: String = row.try_get("user_id")?;
-                    let original: String = row.try_get("data")?;
-                    let mut value: Value = serde_json::from_str(&original)?;
-                    self.externalize_images(&uid, &mut value).await?;
-                    let serialized = value.to_string();
-                    if serialized != original {
-                        sqlx::query(&format!(
-                            "UPDATE {table} SET data=$1 WHERE id=$2 AND user_id=$3"
-                        ))
-                        .bind(serialized)
-                        .bind(row.try_get::<String, _>("id")?)
-                        .bind(&uid)
-                        .execute(&self.pool)
-                        .await?;
-                    }
-                }
+        if !versions.is_empty() {
+            if versions != [VERSION] {
+                bail!("Unsupported database schema version {versions:?}; expected {VERSION}. Delete/recreate the database; schema upgrades are not supported.");
             }
-            sqlx::query(
-                "INSERT INTO schema_version(version) VALUES (2) ON CONFLICT(version) DO NOTHING",
-            )
-            .execute(&self.pool)
-            .await?;
+            return Ok(());
         }
-        if version.unwrap_or(0) < 3 {
-            let mut tx = self.pool.begin().await?;
-            for q in [
-                "CREATE TABLE IF NOT EXISTS plugin_storage (user_id TEXT NOT NULL, plugin_id TEXT NOT NULL, used_bytes BIGINT NOT NULL, entry_count BIGINT NOT NULL, PRIMARY KEY(user_id,plugin_id))",
-                "CREATE TABLE IF NOT EXISTS plugin_kv (user_id TEXT NOT NULL, plugin_id TEXT NOT NULL, table_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, bytes BIGINT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY(user_id,plugin_id,table_name,key))",
-            ] { sqlx::query(q).execute(&mut *tx).await?; }
-            let rows = sqlx::query("SELECT id,user_id,data FROM entities WHERE kind='tool'")
-                .fetch_all(&mut *tx)
-                .await?;
-            for row in rows {
-                let value: Value = serde_json::from_str(row.try_get("data")?)?;
-                let plugin = crate::plugins::legacy_plugin(value);
-                sqlx::query("UPDATE entities SET kind='plugin',data=$1 WHERE id=$2")
-                    .bind(plugin.to_string())
-                    .bind(row.try_get::<String, _>("id")?)
-                    .execute(&mut *tx)
-                    .await?;
-                sqlx::query("INSERT INTO plugin_storage(user_id,plugin_id,used_bytes,entry_count) VALUES ($1,$2,0,0) ON CONFLICT(user_id,plugin_id) DO NOTHING").bind(row.try_get::<String,_>("user_id")?).bind(row.try_get::<String,_>("id")?).execute(&mut *tx).await?;
-            }
-            sqlx::query(
-                "INSERT INTO schema_version(version) VALUES (3) ON CONFLICT(version) DO NOTHING",
-            )
+        for statement in [
+            "CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, is_root BIGINT NOT NULL, created_at BIGINT NOT NULL)",
+            "CREATE TABLE sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at BIGINT NOT NULL, last_used BIGINT NOT NULL)",
+            "CREATE INDEX sessions_user ON sessions(user_id)",
+            "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "CREATE TABLE entities (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL, parent_id TEXT NOT NULL, data TEXT NOT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL)",
+            "CREATE INDEX entities_owner ON entities(user_id,kind)",
+            "CREATE TABLE conversations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, character_id TEXT NOT NULL, data TEXT NOT NULL, updated_at BIGINT NOT NULL)",
+            "CREATE INDEX conversations_owner ON conversations(user_id,character_id)",
+            "CREATE TABLE messages (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, conversation_id TEXT NOT NULL, seq BIGINT NOT NULL, data TEXT NOT NULL)",
+            "CREATE INDEX messages_order ON messages(conversation_id,seq)",
+            "CREATE TABLE attachments (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, mime TEXT NOT NULL, data BYTEA NOT NULL, metadata TEXT NOT NULL)",
+            "CREATE TABLE plugin_storage (user_id TEXT NOT NULL, plugin_id TEXT NOT NULL, used_bytes BIGINT NOT NULL, entry_count BIGINT NOT NULL, PRIMARY KEY(user_id,plugin_id))",
+            "CREATE TABLE plugin_kv (user_id TEXT NOT NULL, plugin_id TEXT NOT NULL, table_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, bytes BIGINT NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY(user_id,plugin_id,table_name,key))",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+        sqlx::query("INSERT INTO schema_version(version) VALUES ($1)")
+            .bind(VERSION)
             .execute(&mut *tx)
             .await?;
-            tx.commit().await?;
-        }
+        tx.commit().await?;
         Ok(())
     }
     pub async fn registration(&self) -> Result<bool> {
@@ -157,97 +96,33 @@ impl Db {
         Ok(())
     }
     pub async fn list(&self, uid: &str, kind: &str) -> Result<Vec<Value>> {
-        let rows = sqlx::query(
+        let rows: Vec<String> = sqlx::query_scalar(
             "SELECT data FROM entities WHERE user_id=$1 AND kind=$2 ORDER BY created_at,id",
         )
         .bind(uid)
-        .bind(if kind == "tool" { "plugin" } else { kind })
+        .bind(kind)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter()
-            .map(|r| {
-                let mut data = serde_json::from_str(r.try_get::<&str, _>("data")?)?;
-                if kind == "character" {
-                    normalize_context(&mut data);
-                }
-                Ok(data)
-            })
-            .collect::<Result<Vec<Value>>>()
-            .map(|values| {
-                values
-                    .into_iter()
-                    .filter(|v| kind != "tool" || v["format"] == "legacy-main")
-                    .map(|v| {
-                        if kind == "tool" {
-                            crate::plugins::legacy_tool(v)
-                        } else {
-                            v
-                        }
-                    })
-                    .collect()
-            })
-    }
-    pub async fn tool_summaries(&self, uid: &str) -> Result<Vec<Value>> {
-        let mut rows = sqlx::query(
-            "SELECT data FROM entities WHERE user_id=$1 AND kind='plugin' ORDER BY created_at,id",
-        )
-        .bind(uid)
-        .fetch(&self.pool);
-        let mut summaries = Vec::new();
-        // The portable TEXT store requires reading JSON, but retain only one row's
-        // code at a time and count it without cloning the potentially large string.
-        while let Some(row) = rows.try_next().await? {
-            let mut data: Value = serde_json::from_str(row.try_get("data")?)?;
-            if data["format"] != "legacy-main" {
-                continue;
-            }
-            data = crate::plugins::legacy_tool(data);
-            let code = data.as_object_mut().unwrap().remove("code");
-            let code_chars = code
-                .as_ref()
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .chars()
-                .count();
-            data["code_chars"] = json!(code_chars);
-            summaries.push(data);
-        }
-        Ok(summaries)
+            .map(|raw| Ok(serde_json::from_str(&raw)?))
+            .collect()
     }
     pub async fn get(&self, uid: &str, kind: &str, eid: &str) -> Result<Option<Value>> {
-        let row = sqlx::query("SELECT data FROM entities WHERE user_id=$1 AND kind=$2 AND id=$3")
-            .bind(uid)
-            .bind(if kind == "tool" { "plugin" } else { kind })
-            .bind(eid)
-            .fetch_optional(&self.pool)
-            .await?;
-        row.map(|r| {
-            let mut data = serde_json::from_str(r.try_get::<&str, _>("data")?)?;
-            if kind == "character" {
-                normalize_context(&mut data);
-            }
-            Ok(data)
-        })
-        .transpose()
-        .map(|value: Option<Value>| {
-            value
-                .filter(|v| kind != "tool" || v["format"] == "legacy-main")
-                .map(|v| {
-                    if kind == "tool" {
-                        crate::plugins::legacy_tool(v)
-                    } else {
-                        v
-                    }
-                })
-        })
+        let raw: Option<String> =
+            sqlx::query_scalar("SELECT data FROM entities WHERE user_id=$1 AND kind=$2 AND id=$3")
+                .bind(uid)
+                .bind(kind)
+                .bind(eid)
+                .fetch_optional(&self.pool)
+                .await?;
+        raw.map(|raw| Ok(serde_json::from_str(&raw)?)).transpose()
     }
     pub async fn save(&self, uid: &str, kind: &str, mut data: Value) -> Result<Value> {
-        if kind == "tool" {
-            data = crate::plugins::legacy_plugin(data);
+        if matches!(kind, "provider" | "model") && !data["extra_body"].is_object() {
+            bail!("extra_body must be an object");
         }
         if kind == "character" {
-            normalize_context(&mut data);
-            self.externalize_images(uid, &mut data).await?;
+            self.store_avatar_upload(uid, &mut data).await?;
         }
         if text(&data, "id").is_empty() {
             data["id"] = json!(if kind == "memory" {
@@ -273,15 +148,11 @@ impl Db {
             bail!("resource not found");
         }
         sqlx::query("INSERT INTO entities(id,user_id,kind,parent_id,data,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO UPDATE SET data=excluded.data,parent_id=excluded.parent_id,updated_at=excluded.updated_at")
-            .bind(text(&data,"id")).bind(uid).bind(if kind=="tool" {"plugin"} else {kind}).bind(parent).bind(data.to_string()).bind(data["created_at"].as_i64().unwrap_or_else(now)).bind(now()).execute(&self.pool).await?;
-        if kind == "tool" || kind == "plugin" {
+            .bind(text(&data,"id")).bind(uid).bind(kind).bind(parent).bind(data.to_string()).bind(data["created_at"].as_i64().unwrap_or_else(now)).bind(now()).execute(&self.pool).await?;
+        if kind == "plugin" {
             sqlx::query("INSERT INTO plugin_storage(user_id,plugin_id,used_bytes,entry_count) VALUES ($1,$2,0,0) ON CONFLICT(user_id,plugin_id) DO NOTHING").bind(uid).bind(text(&data,"id")).execute(&self.pool).await?;
         }
-        Ok(if kind == "tool" {
-            crate::plugins::legacy_tool(data)
-        } else {
-            data
-        })
+        Ok(data)
     }
     pub async fn delete(&self, uid: &str, kind: &str, eid: &str) -> Result<()> {
         let mut tx = self.pool.begin().await?;
@@ -305,7 +176,7 @@ impl Db {
                 .execute(&mut *tx)
                 .await?;
         }
-        if kind == "tool" || kind == "plugin" {
+        if kind == "plugin" {
             sqlx::query("UPDATE entities SET updated_at=updated_at WHERE user_id=$1 AND kind='plugin' AND id=$2").bind(uid).bind(eid).execute(&mut *tx).await?;
             for table in ["plugin_kv", "plugin_storage"] {
                 sqlx::query(&format!(
@@ -319,7 +190,7 @@ impl Db {
         }
         sqlx::query("DELETE FROM entities WHERE user_id=$1 AND kind=$2 AND id=$3")
             .bind(uid)
-            .bind(if kind == "tool" { "plugin" } else { kind })
+            .bind(kind)
             .bind(eid)
             .execute(&mut *tx)
             .await?;
@@ -511,7 +382,6 @@ impl Db {
     }
     pub async fn save_message(&self, uid: &str, v: &Value) -> Result<()> {
         let mut v = v.clone();
-        self.externalize_images(uid, &mut v).await?;
         crate::swipes::sync(&mut v);
         let v = &v;
         sqlx::query("INSERT INTO messages(id,user_id,conversation_id,seq,data) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET data=excluded.data,seq=excluded.seq WHERE messages.user_id=excluded.user_id")
