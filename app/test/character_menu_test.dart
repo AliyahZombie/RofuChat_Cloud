@@ -6,6 +6,7 @@ import 'package:rofuchat/core/storage.dart';
 import 'package:rofuchat/core/theme.dart';
 import 'package:rofuchat/features/sidebar/sidebar.dart';
 import 'package:rofuchat/state/app_state.dart';
+import 'package:rofuchat/widgets/motion.dart';
 import 'package:rofuchat/widgets/slide_drawer.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -77,8 +78,23 @@ void main() {
               .read(selectedConversationIdProvider.notifier)
               .select('old-chat');
           await t.pumpAndSettle();
+          // Short screens scroll the character row with the chats.
+          final sideScroll = find
+              .descendant(
+                of: find.byType(Sidebar),
+                matching: find.byType(Scrollable),
+              )
+              .first;
+          await t.scrollUntilVisible(
+            find.byType(TurnChevron),
+            50,
+            scrollable: sideScroll,
+          );
+          await t.pumpAndSettle();
           if (picker) {
             await t.tap(find.text('Alice').last);
+            await t.pumpAndSettle();
+            await t.ensureVisible(find.text('Alice').last);
             await t.pumpAndSettle();
           }
           await t.longPress(find.text('Alice').last);

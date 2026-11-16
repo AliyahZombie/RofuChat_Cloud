@@ -253,8 +253,8 @@ class _SidebarState extends ConsumerState<Sidebar> {
   }
 
   /// Watch and phone (as in RikkaHub): the chats scroll in the middle; the current character
-  /// and a row of round buttons stay fixed at the bottom. Tapping the character expands a
-  /// picker above it.
+  /// and a row of round buttons stay fixed at the bottom, or scroll after the chats when the
+  /// window is under 560dp tall. Tapping the character expands a picker above it.
   Widget _rikkaLayout(List<Character> chars, Character? current, Widget convs, AppState app, double inset, bool watch) {
     final scheme = Theme.of(context).colorScheme;
     final h = MediaQuery.sizeOf(context).height;
@@ -267,6 +267,112 @@ class _SidebarState extends ConsumerState<Sidebar> {
       icon: Icon(icon),
       style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.padded, visualDensity: VisualDensity.standard),
     );
+    // Short screens (watches, landscape phones): the character row and the buttons scroll
+    // with the chats instead of pinning, so the list keeps its room.
+    final pinned = h >= 560;
+    final pickerList = ListView(
+      shrinkWrap: true,
+      primary: false,
+      physics: pinned ? null : const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.symmetric(horizontal: inset + Insets.x2),
+      children: [
+        for (final c in chars)
+          ListTile(
+            minTileHeight: 48,
+            contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
+            shape: const StadiumBorder(),
+            selected: c.id == current?.id,
+            selectedTileColor: scheme.secondaryContainer,
+            selectedColor: scheme.onSecondaryContainer,
+            leading: CharacterAvatar(character: c, size: watch ? 24 : 32),
+            title: Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+            trailing: c.id == current?.id ? const Icon(Icons.check_rounded) : null,
+            onTap: () {
+              ref.read(selectedCharacterIdProvider.notifier).select(c.id);
+              ref.read(selectedConversationIdProvider.notifier).select(null);
+              setState(() => _charsOpen = false);
+            },
+            onLongPress: () => _charMenu(c),
+          ),
+        if (!watch)
+          ListTile(
+            minTileHeight: 48,
+            contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
+            shape: const StadiumBorder(),
+            leading: CircleAvatar(radius: 16, backgroundColor: scheme.surfaceContainerHighest, child: const Icon(Icons.add_rounded, size: 20)),
+            title: Text(t('添加角色', 'Add character')),
+            onTap: () {
+              setState(() => _charsOpen = false);
+              _addCharacter();
+            },
+          ),
+      ],
+    );
+    final charTile = Padding(
+      padding: EdgeInsets.symmetric(horizontal: inset + Insets.x2),
+      child: ListTile(
+        minTileHeight: watch ? 48 : 56,
+        shape: const StadiumBorder(),
+        contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x3),
+        leading: current == null ? const Icon(Icons.person_outline_rounded) : CharacterAvatar(character: current, size: watch ? 26 : 32),
+        title: Text(current?.name ?? t('选择角色', 'Pick a character'), maxLines: 1, overflow: TextOverflow.ellipsis),
+        trailing: TurnChevron(open: !_charsOpen),
+        onTap: () => setState(() => _charsOpen = !_charsOpen),
+        onLongPress: current == null ? null : () => _charMenu(current),
+      ),
+    );
+    final buttons = Padding(
+      padding: EdgeInsets.fromLTRB(inset + Insets.x1, 0, inset + Insets.x1, Insets.x2),
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        spacing: watch ? 0 : 8,
+        children: [
+          round(Icons.psychology_alt_rounded, t('记忆', 'Memory'), () => _push(const MemoryPage())),
+          round(Icons.extension_rounded, t('插件', 'Plugins'), () => _push(const PluginsPage())),
+          round(Icons.swap_horiz_rounded, t('连接', 'Connection'), () => ref.read(appProvider.notifier).showConnect()),
+          round(Icons.settings_rounded, t('设置', 'Settings'), () => _push(const SettingsPage())),
+        ],
+      ),
+    );
+    final top = <Widget>[
+      if (!watch && current != null)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(Insets.x1, Insets.x1, Insets.x1, Insets.x2),
+          child: _searchField(),
+        ),
+      if (current != null)
+        ListTile(
+          minTileHeight: compact ? 48 : 56,
+          contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
+          shape: const StadiumBorder(),
+          leading: const Icon(Icons.add_comment_rounded),
+          title: Text(t('新对话', 'New chat')),
+          onTap: () {
+            _close();
+            widget.onNewConversation(current);
+          },
+        ),
+    ];
+    if (!pinned) {
+      return SafeArea(
+        child: Material(
+          color: Colors.transparent,
+          child: ListView(
+            padding: EdgeInsets.fromLTRB(0, Insets.x2, 0, Insets.x2),
+            children: [
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: inset + Insets.x2),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...top, convs]),
+              ),
+              const SizedBox(height: Insets.x2),
+              Collapsible(open: _charsOpen, child: pickerList),
+              charTile,
+              buttons,
+            ],
+          ),
+        ),
+      );
+    }
     return SafeArea(
       child: Material(
         color: Colors.transparent,
@@ -275,99 +381,18 @@ class _SidebarState extends ConsumerState<Sidebar> {
             Expanded(
               child: ListView(
                 padding: EdgeInsets.fromLTRB(inset + Insets.x2, Insets.x2, inset + Insets.x2, Insets.x2),
-                children: [
-                  if (!watch && current != null)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(Insets.x1, Insets.x1, Insets.x1, Insets.x2),
-                      child: _searchField(),
-                    ),
-                  if (current != null)
-                    ListTile(
-                      minTileHeight: compact ? 48 : 56,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
-                      shape: const StadiumBorder(),
-                      leading: const Icon(Icons.add_comment_rounded),
-                      title: Text(t('新对话', 'New chat')),
-                      onTap: () {
-                        _close();
-                        widget.onNewConversation(current);
-                      },
-                    ),
-                  convs,
-                ],
+                children: [...top, convs],
               ),
             ),
             Flexible(
               fit: FlexFit.loose,
               child: Collapsible(
                 open: _charsOpen,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(maxHeight: h * 0.45),
-                  child: ListView(
-                    shrinkWrap: true,
-                    padding: EdgeInsets.symmetric(horizontal: inset + Insets.x2),
-                    children: [
-                      for (final c in chars)
-                        ListTile(
-                          minTileHeight: 48,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
-                          shape: const StadiumBorder(),
-                          selected: c.id == current?.id,
-                          selectedTileColor: scheme.secondaryContainer,
-                          selectedColor: scheme.onSecondaryContainer,
-                          leading: CharacterAvatar(character: c, size: watch ? 24 : 32),
-                          title: Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                          trailing: c.id == current?.id ? const Icon(Icons.check_rounded) : null,
-                          onTap: () {
-                            ref.read(selectedCharacterIdProvider.notifier).select(c.id);
-                            ref.read(selectedConversationIdProvider.notifier).select(null);
-                            setState(() => _charsOpen = false);
-                          },
-                          onLongPress: () => _charMenu(c),
-                        ),
-                      if (!watch)
-                        ListTile(
-                          minTileHeight: 48,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x4),
-                          shape: const StadiumBorder(),
-                          leading: CircleAvatar(radius: 16, backgroundColor: scheme.surfaceContainerHighest, child: const Icon(Icons.add_rounded, size: 20)),
-                          title: Text(t('添加角色', 'Add character')),
-                          onTap: () {
-                            setState(() => _charsOpen = false);
-                            _addCharacter();
-                          },
-                        ),
-                    ],
-                  ),
-                ),
+                child: ConstrainedBox(constraints: BoxConstraints(maxHeight: h * 0.45), child: pickerList),
               ),
             ),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: inset + Insets.x2),
-              child: ListTile(
-                minTileHeight: watch ? 48 : 56,
-                shape: const StadiumBorder(),
-                contentPadding: const EdgeInsets.symmetric(horizontal: Insets.x3),
-                leading: current == null ? const Icon(Icons.person_outline_rounded) : CharacterAvatar(character: current, size: watch ? 26 : 32),
-                title: Text(current?.name ?? t('选择角色', 'Pick a character'), maxLines: 1, overflow: TextOverflow.ellipsis),
-                trailing: TurnChevron(open: !_charsOpen),
-                onTap: () => setState(() => _charsOpen = !_charsOpen),
-                onLongPress: current == null ? null : () => _charMenu(current),
-              ),
-            ),
-            Padding(
-              padding: EdgeInsets.fromLTRB(inset + Insets.x1, 0, inset + Insets.x1, Insets.x2),
-              child: Wrap(
-                alignment: WrapAlignment.center,
-                spacing: watch ? 0 : 8,
-                children: [
-                  round(Icons.psychology_alt_rounded, t('记忆', 'Memory'), () => _push(const MemoryPage())),
-                  round(Icons.extension_rounded, t('插件', 'Plugins'), () => _push(const PluginsPage())),
-                  round(Icons.swap_horiz_rounded, t('连接', 'Connection'), () => ref.read(appProvider.notifier).showConnect()),
-                  round(Icons.settings_rounded, t('设置', 'Settings'), () => _push(const SettingsPage())),
-                ],
-              ),
-            ),
+            charTile,
+            buttons,
           ],
         ),
       ),

@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/form_factor.dart';
 import '../core/format.dart';
 import '../core/i18n.dart';
 import '../core/image_providers.dart';
@@ -299,7 +300,7 @@ Future<bool> confirm(BuildContext context, String title, {String? body, String? 
         TextButton(onPressed: () => Navigator.pop(c, false), child: Text(t('取消', 'Cancel'))),
         TextButton(onPressed: () => Navigator.pop(c, true), child: Text(ok ?? t('确定', 'OK'))),
       ];
-      if (MediaQuery.sizeOf(c).shortestSide < 300) {
+      if (c.isWatch) {
         return Dialog.fullscreen(
           child: SafeArea(
             child: ListView(

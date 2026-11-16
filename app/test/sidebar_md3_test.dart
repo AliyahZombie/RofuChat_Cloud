@@ -19,7 +19,7 @@ class _Chars extends CharactersCtl {
 }
 
 void main() {
-  for (final size in const [Size(192, 192), Size(360, 800), Size(1280, 800)]) {
+  for (final size in const [Size(192, 192), Size(400, 480), Size(360, 800), Size(1280, 800)]) {
     testWidgets('sidebar at ${size.width}x${size.height}: no overflow, footer targets >= 48dp', (t) async {
       t.view.physicalSize = size;
       t.view.devicePixelRatio = 1;

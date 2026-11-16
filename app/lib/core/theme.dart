@@ -31,6 +31,10 @@ class Appearance {
   /// back as you scroll up.
   final int windowMessages;
 
+  /// Device shape: 'auto' (Wear OS feature flag / screen roundness from Android, else the
+  /// shortestSide < 300 rule), 'round' or 'square' (watch layout), or 'phone'.
+  final String deviceShape;
+
   const Appearance({
     this.themeMode = 'system',
     this.colorSource = 'seed',
@@ -46,6 +50,7 @@ class Appearance {
     this.swipeZone = 6,
     this.autoLoadHistory = true,
     this.windowMessages = 1000,
+    this.deviceShape = 'auto',
   });
 
   factory Appearance.fromJson(Map<String, dynamic> j) => Appearance(
@@ -65,6 +70,12 @@ class Appearance {
     swipeZone: ((j['swipe_zone'] as num?)?.toInt() ?? 6).clamp(1, 10),
     autoLoadHistory: j['auto_load_history'] as bool? ?? true,
     windowMessages: ((j['window_messages'] as num?)?.toInt() ?? 1000).clamp(100, 10000),
+    deviceShape: switch (j['device_shape']) {
+      'round' => 'round',
+      'square' => 'square',
+      'phone' => 'phone',
+      _ => 'auto',
+    },
   );
 
   Map<String, dynamic> toJson() => {
@@ -82,6 +93,7 @@ class Appearance {
     'swipe_zone': swipeZone,
     'auto_load_history': autoLoadHistory,
     'window_messages': windowMessages,
+    'device_shape': deviceShape,
   };
 
   Appearance copyWith({
@@ -99,6 +111,7 @@ class Appearance {
     int? swipeZone,
     bool? autoLoadHistory,
     int? windowMessages,
+    String? deviceShape,
   }) => Appearance(
     themeMode: themeMode ?? this.themeMode,
     colorSource: colorSource ?? this.colorSource,
@@ -114,6 +127,7 @@ class Appearance {
     swipeZone: swipeZone ?? this.swipeZone,
     autoLoadHistory: autoLoadHistory ?? this.autoLoadHistory,
     windowMessages: windowMessages ?? this.windowMessages,
+    deviceShape: deviceShape ?? this.deviceShape,
   );
 
   ThemeMode get mode => switch (themeMode) {

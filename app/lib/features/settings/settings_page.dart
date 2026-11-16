@@ -200,6 +200,21 @@ class SettingsPage extends ConsumerWidget {
           onChanged: (v) => setA(a.copyWith(fontScale: v)),
         ),
       ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        child: ChoiceField<String>(
+          label: t('设备形态', 'Device shape'),
+          value: a.deviceShape,
+          minSegmentWidth: 76,
+          options: [
+            ('auto', t('自动', 'Auto')),
+            ('round', t('圆形表', 'Round watch')),
+            ('square', t('方形表', 'Square watch')),
+            ('phone', t('手机', 'Phone')),
+          ],
+          onChanged: (v) => setA(a.copyWith(deviceShape: v)),
+        ),
+      ),
       SwitchListTile(
         title: Text(t('紧凑布局', 'Compact layout')),
         subtitle: Text(t('收紧消息与文字间距；按钮大小不变', 'Tighter message and text spacing; buttons keep their size')),
