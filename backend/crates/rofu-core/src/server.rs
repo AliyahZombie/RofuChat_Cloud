@@ -42,6 +42,7 @@ pub struct AppState {
     pub generating: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pub shutdown: CancellationToken,
     pub tasks: TaskTracker,
+    pub plugins: crate::plugins::host::PluginState,
 }
 impl AppState {
     pub async fn new(config: &Config) -> Result<Self> {
@@ -61,6 +62,7 @@ impl AppState {
             generating: Default::default(),
             shutdown: CancellationToken::new(),
             tasks: TaskTracker::new(),
+            plugins: Default::default(),
         })
     }
 }

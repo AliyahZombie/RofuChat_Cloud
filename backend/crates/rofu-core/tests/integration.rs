@@ -2249,7 +2249,9 @@ async fn tool_summary_contract(h: &Harness) {
         .fetch_one(&h.server.state.db.pool)
         .await
         .unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&stored).unwrap(), cleared);
+    let stored: Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["format"], "legacy-main");
+    assert_eq!(rofu_core::plugins::legacy_tool(stored), cleared);
 }
 
 async fn run_suite(database: Option<String>) {

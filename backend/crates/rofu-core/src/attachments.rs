@@ -8,40 +8,13 @@ use sqlx::Row;
 
 impl Db {
     pub async fn put_attachment(&self, uid: &str, url: &str) -> Result<Value> {
-        let (meta, payload) = url.split_once(',').context("invalid image data URL")?;
-        let mime = meta
-            .strip_prefix("data:")
-            .and_then(|m| m.strip_suffix(";base64"))
-            .filter(|m| {
-                matches!(
-                    *m,
-                    "image/png"
-                        | "image/jpeg"
-                        | "image/gif"
-                        | "image/webp"
-                        | "image/avif"
-                        | "image/bmp"
-                )
-            })
-            .context("unsupported image MIME type")?;
-        let bytes = STANDARD.decode(payload).context("invalid image base64")?;
-        if bytes.len() > 24 * 1024 * 1024 {
-            bail!("image exceeds 24MB");
-        }
-        let mut hash = Sha256::new();
-        hash.update(uid.as_bytes());
-        hash.update([0]);
-        hash.update(mime.as_bytes());
-        hash.update([0]);
-        hash.update(&bytes);
-        let id = format!("{:x}", hash.finalize());
-        let mut reference = json!({"id":id,"mime":mime,"bytes":bytes.len()});
-        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
-            reference["width"] = json!(u32::from_be_bytes(bytes[16..20].try_into()?));
-            reference["height"] = json!(u32::from_be_bytes(bytes[20..24].try_into()?));
-        }
+        let prepared = prepare_attachment(uid, url)?;
+        let reference = prepared.reference;
+        let id = reference["id"].as_str().unwrap();
+        let mime = reference["mime"].as_str().unwrap();
+        let bytes = prepared.bytes;
         sqlx::query("INSERT INTO attachments(id,user_id,mime,data,metadata) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING")
-            .bind(&id).bind(uid).bind(mime).bind(bytes).bind(reference.to_string()).execute(&self.pool).await?;
+            .bind(id).bind(uid).bind(mime).bind(bytes).bind(reference.to_string()).execute(&self.pool).await?;
         Ok(reference)
     }
 
@@ -152,4 +125,98 @@ impl Db {
         }
         Ok(())
     }
+}
+
+/// A blob prepared without writes, so plugin rollback and beforeSend cancellation
+/// also leave the attachment store untouched.
+#[derive(Clone)]
+pub struct PreparedAttachment {
+    pub reference: Value,
+    pub bytes: Vec<u8>,
+}
+fn prepare_attachment(uid: &str, url: &str) -> Result<PreparedAttachment> {
+    let (meta, payload) = url.split_once(',').context("invalid image data URL")?;
+    let mime = meta
+        .strip_prefix("data:")
+        .and_then(|m| m.strip_suffix(";base64"))
+        .filter(|m| {
+            matches!(
+                *m,
+                "image/png"
+                    | "image/jpeg"
+                    | "image/gif"
+                    | "image/webp"
+                    | "image/avif"
+                    | "image/bmp"
+            )
+        })
+        .context("unsupported image MIME type")?;
+    let bytes = STANDARD.decode(payload).context("invalid image base64")?;
+    if bytes.len() > 24 * 1024 * 1024 {
+        bail!("image exceeds 24MB");
+    }
+    let mut hash = Sha256::new();
+    hash.update(uid.as_bytes());
+    hash.update([0]);
+    hash.update(mime.as_bytes());
+    hash.update([0]);
+    hash.update(&bytes);
+    let id = format!("{:x}", hash.finalize());
+    let mut reference = json!({"id":id,"mime":mime,"bytes":bytes.len()});
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
+        reference["width"] = json!(u32::from_be_bytes(bytes[16..20].try_into()?));
+        reference["height"] = json!(u32::from_be_bytes(bytes[20..24].try_into()?));
+    }
+    Ok(PreparedAttachment { reference, bytes })
+}
+impl Db {
+    pub fn stage_images<'a>(
+        &'a self,
+        uid: &'a str,
+        value: &'a mut Value,
+        blobs: &'a mut Vec<PreparedAttachment>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            match value {
+                Value::Object(object) => {
+                    if let Some(images) = object.get_mut("images") {
+                        let images = images.as_array_mut().context("images must be array")?;
+                        for image in images {
+                            if let Some(url) = image.as_str().filter(|s| s.starts_with("data:")) {
+                                let blob = prepare_attachment(uid, url)?;
+                                *image = blob.reference.clone();
+                                blobs.push(blob);
+                            } else if let Some(id) = image.get("id").and_then(Value::as_str) {
+                                *image = self.attachment_reference(uid, id).await?;
+                            } else if !image.is_string() {
+                                bail!("image must be a data URL, URL or attachment reference");
+                            }
+                        }
+                    }
+                    for key in ["parts", "swipes", "tail"] {
+                        if let Some(child) = object.get_mut(key) {
+                            self.stage_images(uid, child, blobs).await?;
+                        }
+                    }
+                }
+                Value::Array(a) => {
+                    for child in a {
+                        self.stage_images(uid, child, blobs).await?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+    }
+}
+pub async fn store_prepared(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    uid: &str,
+    blobs: &[PreparedAttachment],
+) -> Result<()> {
+    for blob in blobs {
+        sqlx::query("INSERT INTO attachments(id,user_id,mime,data,metadata) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING").bind(blob.reference["id"].as_str().unwrap()).bind(uid).bind(blob.reference["mime"].as_str().unwrap()).bind(&blob.bytes).bind(blob.reference.to_string()).execute(&mut **tx).await?;
+    }
+    Ok(())
 }

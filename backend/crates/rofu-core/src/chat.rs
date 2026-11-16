@@ -2,6 +2,10 @@ use crate::{
     api::{self, ApiError, ApiResult},
     card, context, jstool, llm, mcp, memory,
     model::{flag, id, instant, normalized, now, number, summarize, text},
+    plugins::{
+        self,
+        host::{Operation, Session},
+    },
     server::AppState,
     swipes,
 };
@@ -339,22 +343,49 @@ pub async fn begin(s: AppState, uid: String, cid: String, body: Value) -> ApiRes
     let conv = api::conversation(&s, &uid, &cid).await?;
     let character = api::required(&s, &uid, "character", &text(&conv, "character_id")).await?;
     let (model, provider) = resolve(&s, &uid, &character, false).await?;
+    if body.get("plugin_protocol").is_some_and(|v| v != 1)
+        || body.get("client_id").is_some_and(|v| !v.is_string())
+        || body
+            .get("ui_capabilities")
+            .is_some_and(|v| !v.as_array().is_some_and(|a| a.iter().all(Value::is_string)))
+    {
+        return Err(ApiError::bad("E_VALIDATION: invalid plugin negotiation"));
+    }
+    let history = s.db.messages(&uid, &cid).await?;
+    let edit = text(&body, "edit_message_id");
+    if (!edit.is_empty()
+        && !history
+            .iter()
+            .any(|m| m["id"] == edit && m["role"] == "user"))
+        || (edit.is_empty()
+            && flag(&body, "regenerate", false)
+            && !history.iter().any(|m| m["role"] == "user"))
+    {
+        return Err(ApiError::bad("no matching user message"));
+    }
+    if !flag(&body, "regenerate", false) || !edit.is_empty() {
+        let mut validation = body.clone();
+        s.db.stage_images(&uid, &mut validation, &mut vec![])
+            .await
+            .map_err(|e| ApiError::bad(e.to_string()))?;
+    }
     let cancel = CancellationToken::new();
     running.insert(cid.clone(), cancel.clone());
     drop(running);
-    let prep = prepare(&s, &uid, &cid, &body).await;
-    let user = match prep {
-        Ok(user) => user,
-        Err(e) => {
-            s.generating.lock().await.remove(&cid);
-            return Err(e);
-        }
-    };
     let (tx, rx) = mpsc::unbounded_channel();
+    let operation = Operation::new(tx.clone(), cancel.clone(), &body);
     s.tasks.clone().spawn(async move {
-        let work = run(
-            &s, &uid, &cid, &character, &model, &provider, user, &tx, &cancel,
-        )
+        let work = async {
+            let plugins = plugins::hooks::enabled(&s, &uid, &character).await?;
+            round(
+                &s, &uid, &cid, &character, &model, &provider, &body, &plugins, &operation,
+            )
+            .await?;
+            drain_with_plugins(
+                &s, &uid, &cid, &character, &model, &provider, &plugins, &operation,
+            )
+            .await
+        }
         .await;
         if let Err(e) = work {
             tracing::warn!(error=%e,"generation failed");
@@ -363,30 +394,151 @@ pub async fn begin(s: AppState, uid: String, cid: String, body: Value) -> ApiRes
         s.generating.lock().await.remove(&cid);
         emit(&tx, json!({"type":"done"}));
     });
+    Ok(event_stream(rx))
+}
+pub(crate) fn event_stream(rx: mpsc::UnboundedReceiver<Value>) -> Response {
     let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
         .map(|v| Ok::<_, Infallible>(SseEvent::default().data(v.to_string())));
-    Ok(Sse::new(stream)
+    Sse::new(stream)
         .keep_alive(
             KeepAlive::new()
                 .interval(Duration::from_secs(15))
                 .text("ping"),
         )
-        .into_response())
+        .into_response()
+}
+#[allow(clippy::too_many_arguments)]
+async fn round(
+    s: &AppState,
+    uid: &str,
+    cid: &str,
+    c: &Value,
+    model: &Value,
+    provider: &Value,
+    body: &Value,
+    plugins: &[Value],
+    op: &Operation,
+) -> Result<()> {
+    if op.cancel.is_cancelled() {
+        return Ok(());
+    }
+    let mut body = body.clone();
+    let mut c = c.clone();
+    let history = s.db.messages(uid, cid).await?;
+    let target = if !text(&body, "edit_message_id").is_empty() {
+        history
+            .iter()
+            .find(|m| m["id"] == body["edit_message_id"] && m["role"] == "user")
+    } else {
+        history.iter().rev().find(|m| m["role"] == "user")
+    };
+    let mode = if !text(&body, "edit_message_id").is_empty() {
+        "edit"
+    } else if flag(&body, "regenerate", false) {
+        "regenerate"
+    } else {
+        "send"
+    };
+    if mode != "send" && target.is_none() {
+        bail!("no matching user message");
+    }
+    let payload = json!({"mode":mode,"target_message_id":if mode=="send"{Value::Null}else{target.map(|m|m["id"].clone()).unwrap_or(Value::Null)},"content":if mode=="regenerate"{target.map(|m|m["content"].clone()).unwrap_or(Value::Null)}else{body.get("content").cloned().unwrap_or_else(||json!(""))},"images":if mode=="regenerate"{target.map(|m|m["parts"]["images"].clone()).unwrap_or_else(||json!([]))}else{body.get("images").cloned().unwrap_or_else(||json!([]))},"params":c["params"]});
+    let result = plugins::hooks::run(s, uid, cid, plugins, "beforeSend", payload, op, true).await;
+    if result.cancelled || op.cancel.is_cancelled() {
+        return Ok(());
+    }
+    body["content"] = result.payload["content"].clone();
+    body["images"] = result.payload["images"].clone();
+    c["params"] = result.payload["params"].clone();
+    let prepared = prepare(s, uid, cid, &body, result.staged)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    run(
+        s, uid, cid, &c, model, provider, prepared, &op.tx, &op.cancel, plugins, op,
+    )
+    .await
+}
+pub(crate) async fn drain_follow_ups(
+    s: &AppState,
+    uid: &str,
+    cid: &str,
+    op: &Operation,
+) -> Result<()> {
+    if op.follow_ups.lock().await.queue.is_empty() {
+        return Ok(());
+    }
+    let conv = api::conversation(s, uid, cid)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    let c = api::required(s, uid, "character", &text(&conv, "character_id"))
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    let (model, provider) = resolve(s, uid, &c, false)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    let plugins = plugins::hooks::enabled(s, uid, &c).await?;
+    drain_with_plugins(s, uid, cid, &c, &model, &provider, &plugins, op).await
+}
+#[allow(clippy::too_many_arguments)]
+async fn drain_with_plugins(
+    s: &AppState,
+    uid: &str,
+    cid: &str,
+    c: &Value,
+    model: &Value,
+    provider: &Value,
+    plugins: &[Value],
+    op: &Operation,
+) -> Result<()> {
+    let mut child = op.clone();
+    loop {
+        if op.cancel.is_cancelled() {
+            op.follow_ups.lock().await.queue.clear();
+            break;
+        }
+        let next = op.follow_ups.lock().await.queue.pop_front();
+        let Some(body) = next else {
+            break;
+        };
+        child.round += 1;
+        round(s, uid, cid, c, model, provider, &body, plugins, &child).await?;
+    }
+    Ok(())
 }
 struct Prepared {
     user: Value,
     assistant: Option<Value>,
 }
-async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<Prepared> {
+async fn prepare(
+    s: &AppState,
+    uid: &str,
+    cid: &str,
+    body: &Value,
+    mut staged: Vec<Session>,
+) -> ApiResult<Prepared> {
     let mut body = body.clone();
+    let mut blobs = vec![];
     // Regenerate ignores the supplied images, including malformed/foreign refs.
     if !flag(&body, "regenerate", false) || !text(&body, "edit_message_id").is_empty() {
-        s.db.externalize_images(uid, &mut body)
+        s.db.stage_images(uid, &mut body, &mut blobs)
             .await
             .map_err(|e| ApiError::bad(e.to_string()))?;
     }
     let body = &body;
-    let messages = s.db.messages(uid, cid).await?;
+    let messages = staged
+        .last()
+        .map(|v| v.messages.clone())
+        .unwrap_or(s.db.messages(uid, cid).await?);
+    for session in &mut staged {
+        session.stage_images().await?;
+        plugins::host::validate_messages(&session.messages, uid, cid)
+            .map_err(|e| ApiError::bad(e.to_string()))?;
+    }
+    let mut tx = s.db.pool.begin().await?;
+    crate::attachments::store_prepared(&mut tx, uid, &blobs).await?;
+    for session in &staged {
+        session.commit_into(&mut tx).await?;
+    }
     let edit = text(body, "edit_message_id");
     let regenerate = flag(body, "regenerate", false);
     if regenerate || !edit.is_empty() {
@@ -399,7 +551,6 @@ async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<
         }
         .ok_or_else(|| ApiError::bad("no matching user message"))?;
         let mut target = target.clone();
-        let mut tx = s.db.pool.begin().await?;
         let mut assistant = None;
         let cutoff = if !edit.is_empty() {
             swipes::archive_tail(&mut tx, uid, &mut target).await?;
@@ -440,6 +591,9 @@ async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<
             .await?;
         swipes::store(&mut tx, uid, &target).await?;
         tx.commit().await?;
+        for session in &staged {
+            session.finish_commit().await;
+        }
         return Ok(Prepared {
             user: target,
             assistant,
@@ -457,7 +611,8 @@ async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<
             .map(|m| number(m, "seq", 0))
             .max()
             .unwrap_or(0)
-            + 1000,
+            .checked_add(1000)
+            .ok_or_else(|| ApiError::bad("E_VALIDATION: seq overflow"))?,
         "user",
         &text(body, "content"),
     );
@@ -466,15 +621,29 @@ async fn prepare(s: &AppState, uid: &str, cid: &str, body: &Value) -> ApiResult<
         .cloned()
         .map(Value::Array)
         .unwrap_or_else(|| json!([]));
-    s.db.save_message(uid, &user).await?;
+    swipes::store(&mut tx, uid, &user).await?;
+    tx.commit().await?;
+    for session in &staged {
+        session.finish_commit().await;
+    }
     Ok(Prepared {
         user,
         assistant: None,
     })
 }
+pub(crate) async fn tool_definitions(
+    s: &AppState,
+    uid: &str,
+    c: &Value,
+    model: &Value,
+) -> Result<Vec<Value>> {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    Ok(Toolbox::load(s, uid, c, model, &tx).await?.definitions)
+}
 struct Toolbox {
     definitions: Vec<Value>,
     local: HashMap<String, Value>,
+    plugins: HashMap<String, (Value, Value)>,
     mcp: Vec<mcp::Connection>,
     remote: HashMap<String, (usize, String)>,
     memory: bool,
@@ -484,6 +653,7 @@ impl Toolbox {
         let mut this = Self {
             definitions: vec![],
             local: HashMap::new(),
+            plugins: HashMap::new(),
             mcp: vec![],
             remote: HashMap::new(),
             memory: false,
@@ -497,7 +667,7 @@ impl Toolbox {
         }
         if let Some(ids) = c["tool_ids"].as_array() {
             for tid in ids {
-                if let Some(t) = s.db.get(uid, "tool", tid.as_str().unwrap_or("")).await? {
+                if let Some(t) = s.db.get(uid, "plugin", tid.as_str().unwrap_or("")).await? {
                     if !flag(&t, "enabled", true) {
                         continue;
                     }
@@ -505,6 +675,16 @@ impl Toolbox {
                         .as_array()
                         .is_some_and(|a| !a.is_empty() && !a.contains(&model["id"]))
                     {
+                        continue;
+                    }
+                    if t["format"] == "module-v1" {
+                        if let Some(tools) = t["manifest"]["tools"].as_array() {
+                            for tool in tools {
+                                let name = format!("p_{}_{}", text(&t, "id"), text(tool, "id"));
+                                this.definitions.push(json!({"name":name,"description":tool["description"],"parameters":tool["parameters"]}));
+                                this.plugins.insert(name, (t.clone(), tool.clone()));
+                            }
+                        }
                         continue;
                     }
                     let name = jstool::sanitize(&text(&t, "name"));
@@ -557,12 +737,45 @@ impl Toolbox {
         uid: &str,
         c: &Value,
         call: &Value,
+        cid: &str,
+        operation: &Operation,
     ) -> (String, bool) {
         let args: Value = match serde_json::from_str(&text(call, "arguments")) {
             Ok(a) => a,
             Err(e) => return (format!("Invalid tool arguments: {e}"), true),
         };
         let name = text(call, "name");
+        if let Some((plugin, tool)) = self.plugins.get(&name) {
+            let outcome = async {
+                plugins::validate_args(&tool["parameters"], &args)?;
+                let mut outcome = plugins::host::invoke(
+                    s,
+                    uid,
+                    cid,
+                    plugin,
+                    &text(tool, "handler"),
+                    args,
+                    "tool",
+                    operation,
+                    None,
+                )
+                .await?;
+                outcome.session.commit().await?;
+                Ok::<_, anyhow::Error>(if let Some(v) = outcome.result.as_str() {
+                    v.to_owned()
+                } else {
+                    outcome.result.to_string()
+                })
+            }
+            .await;
+            return match outcome {
+                Ok(v) => (v, false),
+                Err(e) => {
+                    plugins::hooks::error(operation, plugin, "tool", &e);
+                    (e.to_string(), true)
+                }
+            };
+        }
         if let Some(tool) = self.local.get(&name) {
             let v = jstool::run(text(tool, "code"), args).await;
             return (text(&v, "result"), flag(&v, "is_error", false));
@@ -624,6 +837,8 @@ async fn run(
     prepared: Prepared,
     tx: &Events,
     cancel: &CancellationToken,
+    plugins: &[Value],
+    operation: &Operation,
 ) -> Result<()> {
     let start = Instant::now();
     let mut conv = api::conversation(s, uid, cid)
@@ -633,9 +848,14 @@ async fn run(
     s.db.save_conversation(uid, &conv).await?;
     let user = prepared.user;
     emit(tx, json!({"type":"user_message","message":user}));
-    let mut assistant = prepared
-        .assistant
-        .unwrap_or_else(|| message(cid, number(&user, "seq", 0) + 1000, "assistant", ""));
+    let mut assistant = prepared.assistant.unwrap_or(message(
+        cid,
+        number(&user, "seq", 0)
+            .checked_add(1000)
+            .ok_or_else(|| anyhow::anyhow!("E_VALIDATION: seq overflow"))?,
+        "assistant",
+        "",
+    ));
     assistant["model"] = model["id"].clone();
     assistant["model_name"] = model["name"].clone();
     assistant["model_icon"] = model["icon"].clone();
@@ -643,6 +863,7 @@ async fn run(
     emit(tx, json!({"type":"assistant_start","message":assistant}));
     let mut tool_definitions = vec![];
     let mut reasoning = None;
+    let mut assistant_present = true;
     let generation=async{
         let mut toolbox=tokio::select!{_ = cancel.cancelled()=>return Ok(()),t=Toolbox::load(s,uid,c,model,tx)=>t?};
         tool_definitions=toolbox.definitions.clone();
@@ -674,9 +895,28 @@ async fn run(
             // Receiver closure means all parsed events have been consumed.
             (&mut worker).await??;reasoning_end(&mut assistant,tx,&mut reasoning);
             if calls.is_empty(){return Ok(());}
-            for call in calls {
-                emit(tx,json!({"type":"tool_start","id":call["id"],"name":call["name"],"arguments":call["arguments"]}));let t=Instant::now();
-                let (result,is_error)=tokio::select!{_ = cancel.cancelled()=>return Ok(()),v=toolbox.execute(s,uid,c,&call)=>v};let result=result.chars().take(20_000).collect::<String>();let duration=t.elapsed().as_millis() as i64;
+            for mut call in calls {
+                s.db.save_message(uid,&assistant).await?;
+                let args=serde_json::from_str::<Value>(&text(&call,"arguments"));
+                let name=text(&call,"name");
+                let tool=if let Some((plugin,definition))=toolbox.plugins.get(&name){json!({"kind":"plugin","plugin_id":plugin["id"],"id":definition["id"],"name":name})}
+                    else if let Some(plugin)=toolbox.local.get(&name){json!({"kind":"plugin","plugin_id":plugin["id"],"id":"main","name":name})}
+                    else {json!({"kind":if toolbox.remote.contains_key(&name){"mcp"}else{"memory"},"plugin_id":null,"id":name,"name":name})};
+                let parameters=toolbox.definitions.iter().find(|d|d["name"]==call["name"]).map(|d|d["parameters"].clone()).unwrap_or_else(||json!({}));
+                let mut payload=json!({"assistant_id":assistant["id"],"tool":tool,"call_id":call["id"],"args":args.as_ref().ok(),"parameters":parameters});
+                if args.is_ok(){payload=plugins::hooks::run(s,uid,cid,plugins,"beforeToolCall",payload,operation,false).await.payload;call["arguments"]=json!(payload["args"].to_string());}
+                match s.db.message(uid,&text(&assistant,"id")).await?{Some(updated)=>assistant=updated,None=>{assistant_present=false;return Ok(());}}
+                emit(tx,json!({"type":"tool_start","id":call["id"],"name":call["name"],"arguments":call["arguments"]}));
+                let t=Instant::now();let skipped=payload.get("skip").is_some();
+                let (result,is_error)=if skipped {(text(&payload["skip"],"result"),flag(&payload["skip"],"is_error",false))}
+                    else{tokio::select!{_=cancel.cancelled()=>return Ok(()),v=toolbox.execute(s,uid,c,&call,cid,operation)=>v}};
+                let duration=t.elapsed().as_millis() as i64;
+                // Tool handlers can mutate the live assistant through the same staged API.
+                match s.db.message(uid,&text(&assistant,"id")).await?{Some(updated)=>assistant=updated,None=>{assistant_present=false;return Ok(());}}
+                payload["result"]=json!(result);payload["is_error"]=json!(is_error);payload["duration_ms"]=json!(duration);payload["skipped"]=json!(skipped);
+                payload=plugins::hooks::run(s,uid,cid,plugins,"afterToolCall",payload,operation,false).await.payload;
+                match s.db.message(uid,&text(&assistant,"id")).await?{Some(updated)=>assistant=updated,None=>{assistant_present=false;return Ok(());}}
+                let result=text(&payload,"result").chars().take(20_000).collect::<String>();let is_error=flag(&payload,"is_error",false);
                 assistant["parts"]["segments"].as_array_mut().unwrap().push(json!({"type":"tool","id":call["id"],"name":call["name"],"arguments":call["arguments"],"result":result,"is_error":is_error,"duration_ms":duration}));
                 emit(tx,json!({"type":"tool_end","id":call["id"],"result":result,"is_error":is_error,"duration_ms":duration}));s.db.save_message(uid,&assistant).await?;
             }
@@ -689,7 +929,9 @@ async fn run(
         assistant["parts"]["error"] = json!(e.to_string());
         emit(tx, json!({"type":"error","error":e.to_string()}));
     }
-    s.db.save_message(uid, &assistant).await?;
+    if assistant_present {
+        s.db.save_message(uid, &assistant).await?;
+    }
     {
         let _lock = s.generating.lock().await;
         conv = api::conversation(s, uid, cid)
@@ -698,9 +940,32 @@ async fn run(
         conv["updated_at"] = json!(now());
         s.db.save_conversation(uid, &conv).await?;
     }
-    emit(tx, json!({"type":"assistant_done","message":assistant}));
+    if !cancel.is_cancelled() && generation.is_ok() && assistant_present {
+        plugins::hooks::run(
+            s,
+            uid,
+            cid,
+            plugins,
+            "afterReply",
+            json!({"user_message_id":user["id"],"assistant":assistant,"status":"completed"}),
+            operation,
+            false,
+        )
+        .await;
+        match s.db.message(uid, &text(&assistant, "id")).await? {
+            Some(updated) => assistant = updated,
+            None => assistant_present = false,
+        }
+    }
+    if assistant_present {
+        emit(tx, json!({"type":"assistant_done","message":assistant}));
+    }
     if !cancel.is_cancelled() && generation.is_ok() {
-        if instant(c) {
+        if assistant_present
+            && instant(c)
+            && assistant["role"] == "assistant"
+            && assistant["actual_status"] != "ok"
+        {
             emit(tx, json!({"type":"actual_pending","id":assistant["id"]}));
             match actual(s, uid, &mut assistant, c).await {
                 Ok(()) => emit(tx, json!({"type":"actual","message":assistant})),
@@ -992,12 +1257,16 @@ pub async fn compress(
         })
         .collect::<Vec<_>>();
     let summary=fast_for_conversation(s,uid,c,cid,"Summarize the earlier conversation in its language. Fully preserve events, decisions, commitments, relationship changes, current situation and unresolved threads. Merge previous summaries.",&serde_json::to_string(&input)?).await?;
-    let m = message(
-        cid,
-        number(&visible[count], "seq", 0) - 1,
-        "summary",
-        &summary,
-    );
+    let all = s.db.messages(uid, cid).await?;
+    let mut summary_seq = number(&visible[count], "seq", 0)
+        .checked_sub(1)
+        .ok_or_else(|| anyhow::anyhow!("E_VALIDATION: seq overflow"))?;
+    while all.iter().any(|m| m["seq"] == summary_seq) {
+        summary_seq = summary_seq
+            .checked_sub(1)
+            .ok_or_else(|| anyhow::anyhow!("E_VALIDATION: seq overflow"))?;
+    }
+    let m = message(cid, summary_seq, "summary", &summary);
     let hidden = old.iter().map(|m| text(m, "id")).collect::<Vec<_>>();
     let mut tx = s.db.pool.begin().await?;
     for old in old {
@@ -1074,6 +1343,7 @@ async fn context_info_with_tools(
         // Provider usage describes the request before actual/summary postprocessing.
         .filter(|_| {
             !instant(&c)
+                && !flag(&conv, "plugin_context_edited", false)
                 && !history
                     .iter()
                     .any(|m| m["role"] == "summary" && flag(m, "visible", true))

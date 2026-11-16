@@ -284,6 +284,8 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
                 }
                 let mut tx = s.db.pool.begin().await?;
                 for table in [
+                    "plugin_kv",
+                    "plugin_storage",
                     "attachments",
                     "sessions",
                     "entities",
@@ -323,6 +325,11 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
                 .unwrap_or_else(|| json!(crate::model::now()));
             return Ok(ok(s.db.save(&uid, "settings", v).await?));
         }
+    }
+    if let Some(response) =
+        crate::plugins::routes::dispatch(&s, &uid, &method, &parts, &body).await?
+    {
+        return Ok(response);
     }
     if let Some(response) =
         crate::routes::dispatch(&s, &uid, &method, &path, &parts, &body, &query).await?
@@ -389,6 +396,9 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
                     }
                 }
                 for v in &mut values {
+                    if kind == "character" {
+                        crate::plugins::project_character(&s, &uid, v).await?;
+                    }
                     redact(kind, v, true);
                 }
                 return Ok(ok(json!(values)));
@@ -408,6 +418,9 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
             let eid = parts[1];
             let mut v = required(&s, &uid, kind, eid).await?;
             if method == Method::GET {
+                if kind == "character" {
+                    crate::plugins::project_character(&s, &uid, &mut v).await?;
+                }
                 redact(kind, &mut v, false);
                 return Ok(ok(v));
             }
@@ -416,6 +429,9 @@ pub async fn dispatch(State(s): State<AppState>, req: Request) -> Result<Respons
             }
             if method == Method::DELETE {
                 let running = s.generating.lock().await;
+                if kind == "memory" {
+                    ensure_character_idle(&s, &uid, &text(&v, "character_id"), &running).await?;
+                }
                 if kind == "character" {
                     for conv in s.db.conversations(&uid).await? {
                         if text(&conv, "character_id") == eid
@@ -451,6 +467,21 @@ async fn save_entity(
 ) -> ApiResult<Value> {
     if !input.is_object() {
         return Err(ApiError::bad("expected object"));
+    }
+    let mutation_guard = if kind == "character" || kind == "memory" {
+        Some(s.generating.lock().await)
+    } else {
+        None
+    };
+    if let Some(running) = &mutation_guard {
+        let character_id = if kind == "character" {
+            old.as_ref().map(|v| text(v, "id"))
+        } else {
+            Some(text(input, "character_id"))
+        };
+        if let Some(character_id) = character_id {
+            ensure_character_idle(s, uid, &character_id, running).await?;
+        }
     }
     let mut v = normalized(kind, input);
     v.as_object_mut().unwrap().remove("id");
@@ -500,6 +531,35 @@ async fn save_entity(
                 required(s, uid, "tool", tid.as_str().unwrap_or("")).await?;
             }
         }
+        if let Some(old) = &old {
+            let mut legacy = v["tool_ids"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter();
+            let mut order = vec![];
+            for id in old["tool_ids"].as_array().into_iter().flatten() {
+                if s.db
+                    .get(uid, "tool", id.as_str().unwrap_or(""))
+                    .await?
+                    .is_some()
+                {
+                    if let Some(next) = legacy.next() {
+                        order.push(next);
+                    }
+                } else if s
+                    .db
+                    .get(uid, "plugin", id.as_str().unwrap_or(""))
+                    .await?
+                    .is_some()
+                {
+                    order.push(id.clone());
+                }
+            }
+            order.extend(legacy);
+            v["tool_ids"] = json!(order);
+        }
+        v.as_object_mut().unwrap().remove("plugin_ids");
     }
     if kind == "memory" {
         v["source"] = json!("user");
@@ -508,6 +568,27 @@ async fn save_entity(
         }
     }
     let mut out = s.db.save(uid, kind, v).await?;
+    if kind == "character" {
+        crate::plugins::project_character(s, uid, &mut out).await?;
+    }
     redact(kind, &mut out, false);
     Ok(out)
+}
+
+pub(crate) async fn ensure_character_idle(
+    s: &AppState,
+    uid: &str,
+    character_id: &str,
+    running: &HashMap<String, tokio_util::sync::CancellationToken>,
+) -> ApiResult<()> {
+    for conv in s.db.conversations(uid).await? {
+        if (character_id.is_empty() || conv["character_id"] == character_id)
+            && running.contains_key(&text(&conv, "id"))
+        {
+            return Err(ApiError::conflict(
+                "character has an active conversation operation",
+            ));
+        }
+    }
+    Ok(())
 }

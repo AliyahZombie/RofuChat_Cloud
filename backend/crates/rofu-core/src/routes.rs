@@ -198,7 +198,10 @@ pub async fn dispatch(
                     return Ok(Some(ok(conv)));
                 }
                 if method == Method::PATCH {
-                    let _lock = s.generating.lock().await;
+                    let lock = s.generating.lock().await;
+                    if lock.contains_key(cid) {
+                        return Err(ApiError::conflict("conversation is generating"));
+                    }
                     conv = api::conversation(s, uid, cid).await?;
                     if !body["title"].is_string() {
                         return Err(ApiError::bad("title must be a string"));
@@ -404,7 +407,10 @@ pub async fn dispatch(
                 return result.map(Some);
             }
             if parts[2] == "branch" {
-                let _lock = s.generating.lock().await;
+                let lock = s.generating.lock().await;
+                if lock.contains_key(&cid) {
+                    return Err(ApiError::conflict("conversation is generating"));
+                }
                 let mut conv = api::conversation(s, uid, &cid).await?;
                 conv["id"] = json!(id());
                 conv["created_at"] = json!(now());

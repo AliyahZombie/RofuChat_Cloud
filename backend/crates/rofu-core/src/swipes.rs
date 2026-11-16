@@ -60,7 +60,9 @@ pub fn sync(m: &mut Value) {
                 .map(Value::Array)
                 .unwrap_or_else(|| json!([]));
         }
-        m["swipes"][i] = swipe;
+        let mut preserved = m["swipes"][i].clone();
+        crate::model::merge(&mut preserved, &swipe);
+        m["swipes"][i] = preserved;
         m["swipe_index"] = json!(i);
     }
 }

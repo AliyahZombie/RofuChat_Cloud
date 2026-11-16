@@ -24,7 +24,7 @@ tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 url = "2"
 
-rquickjs = { version = "0.9", features = ["parallel"] }
+rquickjs = { version = "0.9", features = ["parallel", "futures"] }
 png = "0.17"
 
 [dev-dependencies]
@@ -33,4 +33,4 @@ tempfile = "3"
 # rquickjs-sys ships no pregenerated bindings for Android targets; generate them with bindgen
 # (libclang from the runner, NDK sysroot passed by cargo-ndk).
 [target.'cfg(target_os = "android")'.dependencies]
-rquickjs = { version = "0.9", features = ["parallel", "bindgen"] }
+rquickjs = { version = "0.9", features = ["parallel", "futures", "bindgen"] }

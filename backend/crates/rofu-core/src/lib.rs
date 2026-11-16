@@ -21,3 +21,5 @@ pub mod sse;
 mod swipes;
 
 pub mod attachments;
+
+pub mod plugins;

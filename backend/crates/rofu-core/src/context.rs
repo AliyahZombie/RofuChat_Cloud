@@ -140,17 +140,31 @@ pub fn build(
                             _ => {}
                         }
                     }
-                    if !buffer.is_empty() {
+                    if m["tool_calls"].as_array().is_some_and(|a| !a.is_empty()) {
+                        out.push(json!({"role":"assistant","content":buffer,"tool_calls":m["tool_calls"]}));
+                    } else if !buffer.is_empty() {
                         out.push(json!({"role":"assistant","content":buffer}));
                     }
                     continue;
                 }
             }
-            if content.is_empty() {
+            if content.is_empty() && m["tool_calls"].as_array().is_none_or(|a| a.is_empty()) {
                 continue;
             }
         }
         let mut message = json!({"role":role,"content":content});
+        if role == "assistant" {
+            if let Some(calls) = m.get("tool_calls") {
+                message["tool_calls"] = calls.clone();
+            }
+        }
+        if role == "tool" {
+            for key in ["call_id", "name"] {
+                if let Some(v) = m.get(key) {
+                    message[key] = v.clone();
+                }
+            }
+        }
         if role == "user" && vision {
             message["images"] = m["parts"]["images"]
                 .as_array()
